@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
+from dataclasses import dataclass
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
-
 
 SYSTEM_PROMPT = """You are the FPS Coach assistant. Help the user interpret their in-app
 calibration, comfort, practice plan, and manually configured response curve. Be concise and
@@ -30,6 +29,11 @@ class ChatSettings:
     api_key: str = ""
     temperature: float = 0.35
     timeout_seconds: int = 120
+    # When using the Ollama provider, pull the model automatically if it is not
+    # already installed locally. Set to False to require a manual ``ollama pull``.
+    auto_pull: bool = True
+    # Downloading a model can take a while; allow a longer timeout for the pull.
+    pull_timeout_seconds: int = 3600
 
 
 class AIChatClient:
@@ -56,6 +60,100 @@ class AIChatClient:
                 result.append({"role": role, "content": content})
         return result
 
+    @staticmethod
+    def _ollama_api_base(base_url: str) -> str:
+        """Return the Ollama ``/api`` root for a validated base URL."""
+        return base_url if base_url.endswith("/api") else base_url + "/api"
+
+    def _get(self, url: str, headers: dict[str, str]) -> dict[str, Any]:
+        request = Request(url, headers=headers, method="GET")
+        try:
+            with urlopen(request, timeout=max(5, self.settings.timeout_seconds)) as response:
+                body = response.read(4_000_000)
+        except HTTPError as error:
+            detail = error.read(800).decode("utf-8", errors="replace").strip()
+            raise ChatProviderError(f"Provider returned HTTP {error.code}: {detail or error.reason}") from error
+        except URLError as error:
+            raise ChatProviderError(f"Could not reach the provider: {error.reason}") from error
+        except TimeoutError as error:
+            raise ChatProviderError("The model request timed out.") from error
+        try:
+            value = json.loads(body)
+        except json.JSONDecodeError as error:
+            raise ChatProviderError("The provider returned an invalid JSON response.") from error
+        if not isinstance(value, dict):
+            raise ChatProviderError("The provider returned an unexpected response.")
+        return value
+
+    def _ollama_has_model(self, api_base: str, model: str) -> bool:
+        """Return True if ``model`` is already installed in the local Ollama."""
+        response = self._get(api_base + "/tags", {})
+        installed = response.get("models")
+        if not isinstance(installed, list):
+            return False
+        family = model.split(":", 1)[0]
+        for item in installed:
+            name = str(item.get("name", "")) if isinstance(item, dict) else ""
+            if name == model or name.split(":", 1)[0] == family:
+                return True
+        return False
+
+    def _pull_ollama_model(self, api_base: str, model: str, progress=None) -> None:
+        """Download ``model`` into the local Ollama, streaming NDJSON progress.
+
+        ``progress`` is an optional callable invoked with each status string so a
+        UI can show download progress. Raises ChatProviderError on failure.
+        """
+        request = Request(
+            api_base + "/pull",
+            data=json.dumps({"model": model, "stream": True}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=max(30, self.settings.pull_timeout_seconds)) as response:
+                for raw in response:
+                    line = raw.decode("utf-8", errors="replace").strip()
+                    if not line:
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(event, dict):
+                        continue
+                    if event.get("error"):
+                        raise ChatProviderError(f"Could not pull '{model}': {event['error']}")
+                    if progress is not None:
+                        status = str(event.get("status", "")).strip()
+                        if status:
+                            progress(status)
+        except HTTPError as error:
+            detail = error.read(800).decode("utf-8", errors="replace").strip()
+            raise ChatProviderError(f"Could not pull '{model}': HTTP {error.code}: {detail or error.reason}") from error
+        except URLError as error:
+            raise ChatProviderError(f"Could not reach Ollama to pull '{model}': {error.reason}") from error
+        except TimeoutError as error:
+            raise ChatProviderError(f"Pulling '{model}' timed out.") from error
+
+    def ensure_ollama_model(self, api_base: str, model: str, progress=None) -> None:
+        """Guarantee ``model`` is available locally before an Ollama chat request.
+
+        If it is missing and ``settings.auto_pull`` is enabled, download it;
+        otherwise raise a ChatProviderError with manual instructions.
+        """
+        if self._ollama_has_model(api_base, model):
+            return
+        if not self.settings.auto_pull:
+            raise ChatProviderError(
+                f"Model '{model}' is not installed. Run:  ollama pull {model}"
+            )
+        if progress is not None:
+            progress(f"Model '{model}' not found locally - downloading...")
+        self._pull_ollama_model(api_base, model, progress=progress)
+        if not self._ollama_has_model(api_base, model):
+            raise ChatProviderError(f"Model '{model}' is still unavailable after pulling.")
+
     def _post(self, url: str, payload: dict[str, Any], headers: dict[str, str]) -> dict[str, Any]:
         request = Request(
             url,
@@ -81,12 +179,23 @@ class AIChatClient:
             raise ChatProviderError("The provider returned an unexpected response.")
         return value
 
-    def chat(self, messages: list[dict[str, str]], curve_context: str = "") -> str:
+    def chat(self, messages: list[dict[str, str]], curve_context: str = "", progress=None) -> str:
         model = self.settings.model.strip()
         if not model:
             raise ChatProviderError("Choose a model name in AI settings.")
         base_url = self._validated_base_url(self.settings.base_url)
+        # The built-in safety prompt is always first and cannot be overridden.
         conversation = [{"role": "system", "content": SYSTEM_PROMPT}]
+        # Pre-configured persona / instructions / recommendations from
+        # config/ai_profile.toml are injected as an ADDITIONAL system message.
+        try:
+            from fps_coach.ai_profile import load_profile
+
+            preconfig = load_profile().extra_system_text()
+        except Exception:
+            preconfig = ""
+        if preconfig:
+            conversation.append({"role": "system", "content": preconfig})
         if curve_context.strip():
             conversation.append(
                 {
@@ -98,6 +207,8 @@ class AIChatClient:
         conversation.extend(self._bounded_messages(messages))
 
         if self.settings.provider == "ollama":
+            api_base = self._ollama_api_base(base_url)
+            self.ensure_ollama_model(api_base, model, progress=progress)
             endpoint = base_url + ("/chat" if base_url.endswith("/api") else "/api/chat")
             response = self._post(
                 endpoint,

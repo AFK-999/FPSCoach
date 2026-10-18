@@ -7,11 +7,16 @@ from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QApplication
 
 from fps_coach.backend import CoreBackend
+from fps_coach.env_repair import ensure_environment
 from fps_coach.ui.main_window import MainWindow
 from fps_coach.ui.styles import APP_STYLE
 
 
 def main() -> int:
+    # Auto-repair the editable install if the project folder was moved/renamed.
+    # Fast no-op when nothing changed; never raises.
+    ensure_environment()
+
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
     )

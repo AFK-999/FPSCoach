@@ -5,9 +5,13 @@ __pycache__/
 .ruff_cache/
 .venv/
 
-# Native builds
+# Build artifacts / installers
 build/
 out/
+dist/
+
+# Runtime environment marker written by env_repair
+.fpscoach_env.json
 *.pyd
 *.dll
 *.lib

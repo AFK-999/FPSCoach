@@ -1,0 +1,60 @@
+# Build & packaging
+
+FPS Coach ships in two installer flavors. Both are produced by the same script
+with a different `-Flavor` argument.
+
+| Flavor | AI runtime/model | Installer size | Who it's for |
+|--------|------------------|----------------|--------------|
+| **lite** | None bundled. User installs Ollama; the app auto-pulls the model on first chat. | Small | Users who already have Ollama, or want the smallest download. |
+| **full** | Embeds the Ollama runtime **and** the Qwen 3 1.7B weights. AI works offline out of the box. | Large | Users who want zero setup. |
+
+## Prerequisites (build machine, Windows x64)
+
+- Python 3.11 (`py -3.11`)
+- Visual Studio 2022 C++ Build Tools (for the native `fpscoach_native` module)
+- [Inno Setup 6](https://jrsoftware.org/isinfo.php) with `iscc` on `PATH`
+- For the **full** build: either the Ollama Windows runtime + Qwen weights
+  pre-downloaded, or `ollama` on `PATH` so the script can `ollama pull qwen3:1.7b`.
+
+## Build
+
+Double-click one of these in the project root, or run from a terminal:
+
+```
+Build-Lite.bat      ::  -> dist\FPSCoach-Setup-lite-<version>-x64.exe
+Build-Full.bat      ::  -> dist\FPSCoach-Setup-full-<version>-x64.exe
+```
+
+Equivalent direct calls:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\build.ps1 -Flavor lite
+powershell -ExecutionPolicy Bypass -File scripts\build.ps1 -Flavor full
+```
+
+### What the script does
+1. Creates/updates `.venv` and installs the project + PyInstaller.
+2. Stamps `python\fps_coach\build_info.py` with the flavor.
+3. **full only:** `scripts\fetch_ai_assets.ps1` stages the Ollama runtime and
+   Qwen 3 1.7B weights into `build\ai_assets\`.
+4. Freezes the app with PyInstaller (`installer\fpscoach.spec`).
+5. Compiles the matching Inno Setup script in `installer\`.
+
+### Staging AI assets without a network pull
+Set these before running `Build-Full.bat` to copy from local folders instead:
+
+```
+set FPSCOACH_OLLAMA_SRC=C:\path\to\ollama-windows
+set FPSCOACH_QWEN_SRC=C:\path\to\qwen3-1.7b-model
+```
+
+> **Licensing:** confirm redistribution terms for the Ollama runtime and the
+> Qwen 3 1.7B weights before publishing the full installer.
+
+## Related runtime behavior
+- **Auto-pull:** on the lite build, `ai_chat.py` pulls the configured model the
+  first time the user chats (disable with `auto_pull=False` / env `FPSCOACH_AUTO_PULL=0`).
+- **Self-repair:** `env_repair.ensure_environment()` runs at startup and repairs
+  the editable install if the project folder was moved or renamed.
+- **AI pre-config:** `config\ai_profile.toml` holds the persona, instructions,
+  and recommendations injected into every chat.
