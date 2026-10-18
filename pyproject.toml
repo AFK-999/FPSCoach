@@ -1,0 +1,42 @@
+[build-system]
+requires = [
+  "scikit-build-core>=0.10",
+  "pybind11>=2.12",
+]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "fpscoach"
+version = "0.1.0"
+description = "Local Windows capture and movement-curve coaching foundation"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "PySide6>=6.7,<7",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+  "ruff>=0.6",
+]
+
+[project.scripts]
+fpscoach = "fps_coach.app:main"
+
+[tool.scikit-build]
+cmake.version = ">=3.23"
+build-dir = "build/{wheel_tag}"
+wheel.packages = ["python/fps_coach"]
+
+[tool.pytest.ini_options]
+pythonpath = ["python"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]
