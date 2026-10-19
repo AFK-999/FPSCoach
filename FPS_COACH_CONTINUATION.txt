@@ -145,6 +145,11 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     /home/user/workspace/FPSCoach   (clone of https://github.com/AFK-999/FPSCoach.git)
     Remote origin/main = e9e69a2   (the visual REDESIGN; based on 04e6b0f)
     Working branch     = fix/redesign-backend-wiring (from e9e69a2), NOT pushed.
+    REV50 STATUS: rev49 plus (1) Calibration Undo and Redo for the sensitivity curve
+    (Ctrl+Z / Ctrl+Y, in-session only, not the reverted calibration history), (2) a
+    current/older curve key above the chart, (3) a "Coach is thinking" animation in
+    AI Coach while a request runs. Still NOT pushed (no credentials here). Open: the
+    1120 px top-bar overlap.
     REV49 STATUS: visual redesign on the working branch (changelog rev45), plus
     rev46 (drawn training figures), rev47 (top bar fits, core status is a dot,
     slider readouts), rev48 (crosshair overlay, off by default, user-approved
@@ -1148,6 +1153,30 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
               slider and the new capture arguments); app.py quit run exit 0, no traceback.
               NOT verified: real display, Win32 window list, native capture, real Ollama,
               real game curve files, Windows build.
+
+  2026-10-19 (rev50)  CURVE UNDO/REDO, CURRENT VS OLDER KEY, CHAT THINKING ANIMATION.
+              - Calibration: Undo and Redo buttons for the sensitivity curve, with Ctrl+Z
+                and Ctrl+Y. They step back through curve changes made in this session:
+                calibration results, imported curves, AI-adjusted curves, and chart drags.
+                Up to 50 steps. This is NOT the saved calibration history, which was
+                reverted in rev15 and is not back. Undo does not reset the calibration
+                task or the progress bar; it only restores the curve.
+              - Calibration: a key above the chart. Solid line = "Current curve". Dashed
+                amber = "Older curve", or "Older curve (none yet)" before there is one.
+                The card subtitle now explains both lines.
+              - AI Coach: a "Coach is thinking" pill with three pulsing dots, in a strip
+                under the transcript text while a request runs (a chat message or the
+                post-calibration note). It hides on reply or error. In performance mode
+                the dots are drawn still.
+              - Files: ui/pages_setup.py (history, legend, buttons), ui/pages_coach.py
+                (ThinkingIndicator, request counting), ui/widgets.py (CurveLegend),
+                ui/icons.py (undo, redo glyphs), tests/test_curve_history.py (15 tests).
+              - Tests: pytest 132/132. ruff F clean. compileall OK. Wiring script 32/32.
+                Offscreen screenshots checked (calibration key and buttons, chat pill).
+              - NOT verified: live display, Windows focus, Ctrl+Z with real keyboard focus
+                (the shortcut is registered and tested, not pressed), a live AI provider
+                reply (the indicator is driven by its start and stop calls).
+              - OPEN: 1120 px top-bar overlap (unchanged).
 
   2026-10-19 (rev49)  CROSSHAIR EDIT MODE, LOCK, PRIVACY POLICY. DECLINED PART 2.
               - Crosshair tab: "Edit position..." turns into "Lock position" while

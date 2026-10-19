@@ -206,6 +206,22 @@ def _draw_refresh(p: QPainter, c: QColor) -> None:
     p.drawPath(_poly([(20.0, 3.5), (20.0, 8.5), (15.0, 8.5)]))
 
 
+def _draw_undo(p: QPainter, c: QColor) -> None:
+    _outline(p, c)
+    curve = QPainterPath(QPointF(18.0, 18.0))
+    curve.cubicTo(QPointF(21.0, 10.0), QPointF(14.0, 5.0), QPointF(6.5, 9.5))
+    p.drawPath(curve)
+    p.drawPath(_poly([(10.5, 7.0), (6.5, 9.5), (8.0, 13.5)]))
+
+
+def _draw_redo(p: QPainter, c: QColor) -> None:
+    _outline(p, c)
+    curve = QPainterPath(QPointF(6.0, 18.0))
+    curve.cubicTo(QPointF(3.0, 10.0), QPointF(10.0, 5.0), QPointF(17.5, 9.5))
+    p.drawPath(curve)
+    p.drawPath(_poly([(13.5, 7.0), (17.5, 9.5), (16.0, 13.5)]))
+
+
 def _draw_play(p: QPainter, c: QColor) -> None:
     _fill(p, c)
     p.drawPath(_poly([(8.0, 5.5), (19.0, 12.0), (8.0, 18.5)], closed=True))
@@ -300,6 +316,8 @@ _DRAWERS: dict[str, Callable[[QPainter, QColor], None]] = {
     "stop": _draw_stop,
     "upload": _draw_upload,
     "download": _draw_download,
+    "undo": _draw_undo,
+    "redo": _draw_redo,
     "mic": _draw_mic,
     "send": _draw_send,
     "check": _draw_check,

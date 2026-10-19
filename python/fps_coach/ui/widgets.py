@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from PySide6.QtCore import QPointF, QSettings, QSize, Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, QSettings, QSize, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QFontMetrics, QLinearGradient, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QAbstractButton,
@@ -237,6 +237,67 @@ class Segmented(QFrame):
 # ---------------------------------------------------------------------------
 # Sensitivity curve chart
 # ---------------------------------------------------------------------------
+
+class CurveLegend(QWidget):
+    """Key for the sensitivity chart: which line is the current curve and which is older.
+
+    The current curve is a solid accent line with a dot. The older curve is a dashed
+    amber line. When there is no older curve yet, its entry says so instead of hiding.
+    """
+
+    _CURRENT = "Current curve"
+    _OLDER = "Older curve"
+    _OLDER_EMPTY = "Older curve (none yet)"
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._has_older = False
+        self.setFixedHeight(22)
+        self.setToolTip(
+            "Current: the curve Export writes. Older: the curve from before the latest "
+            "calibration, import, or edit."
+        )
+
+    def set_has_older(self, has_older: bool) -> None:
+        self._has_older = bool(has_older)
+        self.update()
+
+    def paintEvent(self, event):
+        pal = active_palette()
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        font_metrics = QFontMetrics(self.font())
+        mid = self.height() / 2
+        text_rect_h = self.height()
+        x = 0.0
+
+        # Current curve: solid accent line with a dot.
+        accent = QColor(pal["accent"])
+        p.setPen(QPen(accent, 2.5))
+        p.drawLine(QPointF(x, mid), QPointF(x + 22, mid))
+        p.setBrush(accent)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawEllipse(QPointF(x + 11, mid), 3, 3)
+        x += 28
+        p.setPen(QColor(pal["text2"]))
+        label = self._CURRENT
+        p.drawText(QRectF(x, 0, font_metrics.horizontalAdvance(label) + 4, text_rect_h),
+                   Qt.AlignmentFlag.AlignVCenter, label)
+        x += font_metrics.horizontalAdvance(label) + 24
+
+        # Older curve: dashed amber line (dimmed when there is none).
+        amber = QColor(pal["amber"])
+        if not self._has_older:
+            amber.setAlpha(110)
+        p.setPen(QPen(amber, 2, Qt.PenStyle.DashLine))
+        p.drawLine(QPointF(x, mid), QPointF(x + 22, mid))
+        x += 28
+        p.setPen(QColor(pal["text2"]) if self._has_older else QColor(pal["text3"]))
+        label = self._OLDER if self._has_older else self._OLDER_EMPTY
+        p.drawText(QRectF(x, 0, font_metrics.horizontalAdvance(label) + 4, text_rect_h),
+                   Qt.AlignmentFlag.AlignVCenter, label)
+        p.end()
+
 
 class CurveChart(QWidget):
     """Sensitivity curve with an optional previous curve and draggable points.

@@ -5,9 +5,11 @@ previous window. The layout is new: the transcript sits beside the tuning panel.
 """
 from __future__ import annotations
 
+import math
 from copy import deepcopy
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -31,6 +33,7 @@ from fps_coach.analytics import AnalyticsStore
 from fps_coach.chat_suggestions import suggest
 from fps_coach.curve_adjust import apply_preset, normalized_overlay
 
+from .styles import active_palette, fx_enabled
 from .threads import _ChatRequest, _ModelPullThread, _OllamaStatusCheck, _VoiceListenThread
 from .widgets import (
     CurveChart,
@@ -46,6 +49,81 @@ from .widgets import (
 )
 
 
+class ThinkingIndicator(QWidget):
+    """A small "Coach is thinking" pill with three pulsing dots.
+
+    It sits in a strip reserved at the bottom of the transcript, so it never covers the
+    text. With effects off (performance mode) the dots are drawn still.
+    """
+
+    _STEPS = 10  # frames per pulse cycle
+    _INTERVAL_MS = 120
+
+    def __init__(self, host: QWidget, animate: bool = True):
+        super().__init__(host)
+        self._host = host
+        self._animate = animate
+        self._phase = 0
+        self.setFixedSize(176, 28)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._timer = QTimer(self)
+        self._timer.setInterval(self._INTERVAL_MS)
+        self._timer.timeout.connect(self._tick)
+        host.installEventFilter(self)
+        self.hide()
+
+    def start(self) -> None:
+        self._phase = 0
+        self._place()
+        self.show()
+        self.raise_()
+        if self._animate:
+            self._timer.start()
+        self.update()
+
+    def stop(self) -> None:
+        self._timer.stop()
+        self.hide()
+
+    def _tick(self) -> None:
+        self._phase = (self._phase + 1) % self._STEPS
+        self.update()
+
+    def _place(self) -> None:
+        self.move(12, max(0, self._host.height() - self.height() - 8))
+
+    def eventFilter(self, obj, event):  # noqa: N802 - Qt naming
+        if obj is self._host and event.type() == QEvent.Type.Resize:
+            self._place()
+        return False
+
+    def paintEvent(self, event):  # noqa: N802 - Qt naming
+        pal = active_palette()
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = QRectF(0.5, 0.5, self.width() - 1, self.height() - 1)
+        p.setPen(QPen(QColor(pal["line"]), 1))
+        p.setBrush(QColor(pal["surface2"]))
+        p.drawRoundedRect(rect, 14, 14)
+        accent = QColor(pal["accent"])
+        cy = self.height() / 2
+        for i in range(3):
+            if self._animate:
+                wave = 0.5 + 0.5 * math.sin(2 * math.pi * self._phase / self._STEPS - i * 1.1)
+            else:
+                wave = 0.6
+            radius = 2.6 + 1.6 * wave
+            color = QColor(accent)
+            color.setAlpha(int(110 + 145 * wave))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(color)
+            p.drawEllipse(QPointF(16 + i * 11, cy), radius, radius)
+        p.setPen(QColor(pal["text2"]))
+        p.drawText(QRectF(52, 0, self.width() - 58, self.height()),
+                   Qt.AlignmentFlag.AlignVCenter, "Coach is thinking")
+        p.end()
+
+
 class AIChatPage(QWidget):
     """AI Coach chat. Sends turns through ai_chat.AIChatClient (Ollama by default),
     adds the latest calibration as context, and takes one spoken phrase as input.
@@ -56,6 +134,8 @@ class AIChatPage(QWidget):
 
     assistant_said = Signal(str)  # emitted with each AI response (coach strip, TTS)
     curve_adjusted = Signal(object, object, str)  # (previous, current, note)
+
+    _THINKING_STRIP = 44  # px reserved under the transcript text while a request runs
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -88,6 +168,12 @@ class AIChatPage(QWidget):
         self.transcript.setReadOnly(True)
         self.transcript.setMinimumHeight(380)
         lay.addWidget(self.transcript, 1)
+        # Visible while a request is running, so the transcript is never blank-looking.
+        self._pending_requests = 0
+        self._thinking = ThinkingIndicator(
+            self.transcript,
+            animate=fx_enabled(str(self._settings.value("ui/mode", "luxurious"))),
+        )
 
         self.suggestion_bar = QHBoxLayout()
         self.suggestion_bar.setSpacing(8)
@@ -238,6 +324,8 @@ class AIChatPage(QWidget):
         self._proactive_request.response_ready.connect(self._proactive_received)
         self._proactive_request.request_failed.connect(self._proactive_quiet_fail)
         self._proactive_request.finished.connect(self._proactive_finished)
+        self._proactive_request.finished.connect(self._request_finished)
+        self._request_started()
         self._proactive_request.start()
 
     def _proactive_received(self, answer: str) -> None:
@@ -356,7 +444,23 @@ class AIChatPage(QWidget):
         self._thread.request_failed.connect(self._on_failed)
         self.send_btn.setEnabled(False)
         self._thread.finished.connect(lambda: self.send_btn.setEnabled(True))
+        self._thread.finished.connect(self._request_finished)
+        self._request_started()
         self._thread.start()
+
+    def _request_started(self) -> None:
+        """Show the thinking indicator. Requests can overlap, so this is counted."""
+        self._pending_requests += 1
+        if self._pending_requests == 1:
+            self.transcript.setViewportMargins(0, 0, 0, self._THINKING_STRIP)
+            self._thinking.start()
+
+    def _request_finished(self) -> None:
+        """Hide the indicator once every pending request has finished (reply or error)."""
+        self._pending_requests = max(0, self._pending_requests - 1)
+        if self._pending_requests == 0:
+            self._thinking.stop()
+            self.transcript.setViewportMargins(0, 0, 0, 0)
 
     def _on_reply(self, answer: str):
         self._messages.append({"role": "assistant", "content": answer})

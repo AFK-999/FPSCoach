@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtGui import QImage, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -43,6 +43,7 @@ from fps_coach.window_enum import get_window_rect, list_windows
 from .calibration import CalibrationCanvas
 from .widgets import (
     CurveChart,
+    CurveLegend,
     _apply_chart_edit,
     set_glyph,
     _card,
@@ -595,6 +596,9 @@ class CalibrationPage(QWidget):
         self._profile = None         # the curve Export writes (imported, calibrated, or edited)
         self._base_profile = None    # imported curve that calibration adjusts
         self._chart_baseline = None  # chart values before the latest drag
+        # Undo/redo history for the curve. Each entry is a full snapshot taken before a change.
+        self._undo: list[dict] = []
+        self._redo: list[dict] = []
 
         scroll, outer = _content_page(1240)
         _page_root(self, scroll)
@@ -639,14 +643,27 @@ class CalibrationPage(QWidget):
         # Right: the curve.
         curve_card, curve_lay = _card(
             "Sensitivity curve",
-            "Previous curve in amber for comparison. Drag points to fine-tune.",
+            "Solid line: current curve. Dashed amber: older curve. Drag points to fine-tune.",
         )
+        self.legend = CurveLegend()
+        curve_lay.addWidget(self.legend)
         self.chart = CurveChart()
         self.chart.setMinimumHeight(260)
         curve_lay.addWidget(self.chart, 1)
 
         btn_row = QHBoxLayout()
         btn_row.setSpacing(8)
+        self.undo_btn = QPushButton(" Undo")
+        self.undo_btn.setObjectName("secondary")
+        set_glyph(self.undo_btn, "undo")
+        self.undo_btn.setToolTip("Undo the last curve change (Ctrl+Z)")
+        self.redo_btn = QPushButton(" Redo")
+        self.redo_btn.setObjectName("secondary")
+        set_glyph(self.redo_btn, "redo")
+        self.redo_btn.setToolTip("Redo the change you undid (Ctrl+Y)")
+        btn_row.addWidget(self.undo_btn)
+        btn_row.addWidget(self.redo_btn)
+        btn_row.addStretch(1)
         self.import_btn = QPushButton(" Import")
         self.import_btn.setObjectName("secondary")
         set_glyph(self.import_btn, "upload")
@@ -668,6 +685,15 @@ class CalibrationPage(QWidget):
         self.chart.curve_adjusted.connect(self._on_curve_adjusted)
         self.save_btn.clicked.connect(self._save)
         self.import_btn.clicked.connect(self._import_curve)
+        self.undo_btn.clicked.connect(self.undo)
+        self.redo_btn.clicked.connect(self.redo)
+        # Keyboard: Ctrl+Z / Ctrl+Y (and Ctrl+Shift+Z), active while this page has focus.
+        for seq, handler in ((QKeySequence(QKeySequence.StandardKey.Undo), self.undo),
+                             (QKeySequence(QKeySequence.StandardKey.Redo), self.redo)):
+            shortcut = QShortcut(seq, self)
+            shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(handler)
+        self._update_history_buttons()
 
     def _on_progress(self, completed: int, total: int):
         self.progress.setRange(0, max(1, total))
@@ -675,12 +701,71 @@ class CalibrationPage(QWidget):
 
     def _set_chart(self, points, previous=None):
         self.chart.set_previous(previous)
+        self.legend.set_has_older(bool(previous))
         self.chart.points = list(points)
         self._chart_baseline = list(points)
         self.chart.update()
 
+    # -- undo / redo ----------------------------------------------------------
+    _HISTORY_LIMIT = 50
+
+    def _snapshot(self, points=None) -> dict:
+        """Everything that shows or drives the curve, so it can be put back exactly."""
+        return {
+            "points": list(points if points is not None else self.chart.points),
+            "previous": list(self.chart.previous_points) if self.chart.previous_points else None,
+            "profile": deepcopy(self._profile),
+            "base": deepcopy(self._base_profile),
+            "baseline": list(self._chart_baseline) if self._chart_baseline is not None else None,
+            "hint": self.hint.text(),
+        }
+
+    def _checkpoint(self, points=None) -> None:
+        """Record the state before a change. Call this before mutating the curve."""
+        self._undo.append(self._snapshot(points))
+        del self._undo[:-self._HISTORY_LIMIT]
+        self._redo.clear()
+        self._update_history_buttons()
+
+    def _restore(self, snap: dict, message: str) -> None:
+        self._profile = deepcopy(snap["profile"])
+        self._base_profile = deepcopy(snap["base"])
+        self._chart_baseline = list(snap["baseline"]) if snap["baseline"] is not None else None
+        self.chart.previous_points = list(snap["previous"]) if snap["previous"] else None
+        self.legend.set_has_older(bool(self.chart.previous_points))
+        self.chart.points = list(snap["points"])
+        self.chart.update()
+        self.hint.setText(message)
+        self.profile_changed.emit({"restored": True})
+        if self._base_profile is not None:
+            self.base_profile_changed.emit(deepcopy(self._base_profile))
+        self._update_history_buttons()
+
+    def undo(self) -> None:
+        if not self._undo:
+            return
+        self._redo.append(self._snapshot())
+        self._restore(self._undo.pop(), "Undid the last change.")
+
+    def redo(self) -> None:
+        if not self._redo:
+            return
+        self._undo.append(self._snapshot())
+        self._restore(self._redo.pop(), "Redid the change.")
+
+    def _update_history_buttons(self) -> None:
+        self.undo_btn.setEnabled(bool(self._undo))
+        self.redo_btn.setEnabled(bool(self._redo))
+        self.undo_btn.setToolTip(
+            f"Undo the last curve change (Ctrl+Z){' - ' + str(len(self._undo)) + ' saved' if self._undo else ' - nothing to undo'}"
+        )
+        self.redo_btn.setToolTip(
+            f"Redo the change you undid (Ctrl+Y){' - nothing to redo' if not self._redo else ''}"
+        )
+
     def _on_complete(self, summary: dict, recommendation: dict):
         self._last_recommendation = recommendation
+        self._checkpoint()  # a calibration result is a change: the old curve can be undone
         try:
             if self._base_profile is not None:
                 # An imported curve is adjusted by the result instead of replaced.
@@ -703,6 +788,10 @@ class CalibrationPage(QWidget):
     def _on_curve_adjusted(self, points):
         points = [float(v) for v in points]
         baseline = self._chart_baseline or points
+        # The drag has already moved the chart points, so record the pre-drag baseline.
+        # A click that moved nothing is not a change, so it gets no history entry.
+        if baseline != points:
+            self._checkpoint(points=baseline)
         if self._profile is None:
             # No curve yet: treat the chart values as the curve's output-speed shape.
             n = len(points)
@@ -729,6 +818,7 @@ class CalibrationPage(QWidget):
         except (CurveFormatError, OSError) as exc:
             self.hint.setText(f"Import failed: {exc}")
             return
+        self._checkpoint()
         self._base_profile = deepcopy(profile)
         self._profile = deepcopy(profile)
         self.base_profile_changed.emit(deepcopy(profile))
@@ -740,6 +830,7 @@ class CalibrationPage(QWidget):
 
     def set_adjusted(self, previous, current, note: str) -> None:
         """Show an AI-adjusted curve as before/after and make it the curve Export writes."""
+        self._checkpoint()
         self._profile = deepcopy(current)
         prev_pts, cur_pts = normalized_overlay(previous, current)
         self._set_chart(_curve_samples(cur_pts), previous=_curve_samples(prev_pts))
