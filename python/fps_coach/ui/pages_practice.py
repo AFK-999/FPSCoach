@@ -542,10 +542,14 @@ class CrosshairPage(QWidget):
     """Crosshair designer: presets, live preview, JSON import/export and PNG export.
 
     Stores the original CrosshairConfig schema under "crosshair/config". The
-    crosshair is shown in this app and written to files; it is never drawn over a game.
+    crosshair is shown in this app and written to files. Activation (off by
+    default, stored under "crosshair/overlay_active") also draws it on the primary
+    screen as a click-through overlay. The overlay does not read or attach to any game.
     """
 
     edited = Signal(dict)
+    activation_changed = Signal(bool)
+    config_changed = Signal(object)
     SHAPES = ("cross_dot", "cross", "dot", "circle")
 
     def __init__(self, parent=None):
@@ -573,6 +577,19 @@ class CrosshairPage(QWidget):
         body.addWidget(preview_card, 3)
 
         controls_card, controls_lay = _card("Parameters")
+
+        # Activation: one clear switch for the on-screen overlay. Off by default.
+        self.activation = QPushButton()
+        self.activation.setObjectName("activation")
+        self.activation.setCheckable(True)
+        self.activation.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.activation.setChecked(self.s.value("crosshair/overlay_active", False, type=bool))
+        self.activation.toggled.connect(self._on_activation_toggled)
+        self.activation_note = _label("", "cardSubtitle", wrap=True)
+        controls_lay.addWidget(self.activation)
+        controls_lay.addWidget(self.activation_note)
+        self._update_activation_text(self.activation.isChecked())
+
         form = QGridLayout()
         form.setHorizontalSpacing(12)
         form.setVerticalSpacing(10)
@@ -695,8 +712,22 @@ class CrosshairPage(QWidget):
         )
         self._refresh()
 
+    def _update_activation_text(self, active: bool) -> None:
+        self.activation.setText("Crosshair overlay: On" if active else "Crosshair overlay: Off")
+        self.activation_note.setText(
+            "Drawn on your primary screen, click-through, above other windows."
+            if active else
+            "Off. The crosshair is shown here and exported only; nothing is drawn on screen."
+        )
+
+    def _on_activation_toggled(self, checked: bool) -> None:
+        self.s.setValue("crosshair/overlay_active", bool(checked))
+        self._update_activation_text(bool(checked))
+        self.activation_changed.emit(bool(checked))
+
     def _refresh(self):
         self.preview.set_config(self._model)
+        self.config_changed.emit(self._model)
         self.color_btn.setText(f"Color  {self._model.color}")
         self.s.setValue("crosshair/config", json.dumps(self._model.to_dict()))
         self.edited.emit(self._model.to_dict())

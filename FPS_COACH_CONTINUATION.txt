@@ -145,9 +145,10 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     /home/user/workspace/FPSCoach   (clone of https://github.com/AFK-999/FPSCoach.git)
     Remote origin/main = e9e69a2   (the visual REDESIGN; based on 04e6b0f)
     Working branch     = fix/redesign-backend-wiring (from e9e69a2), NOT pushed.
-    REV47 STATUS: visual redesign on the working branch (changelog rev45), plus
-    rev46 (drawn training figures) and rev47 (top bar fits, core status is a dot,
-    slider readouts). Still NOT pushed. Push needs GitHub credentials that this
+    REV48 STATUS: visual redesign on the working branch (changelog rev45), plus
+    rev46 (drawn training figures), rev47 (top bar fits, core status is a dot,
+    slider readouts) and rev48 (crosshair Activation overlay, off by default,
+    user-approved reversal of the no-draw-over-game boundary). Still NOT pushed. Push needs GitHub credentials that this
     sandbox does not have. Exact command for a machine with access:
         git push origin fix/redesign-backend-wiring:main
                          Commits on it (newest first): f6af4b9 rev43, 9b2c551 rev42,
@@ -1145,6 +1146,35 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
               slider and the new capture arguments); app.py quit run exit 0, no traceback.
               NOT verified: real display, Win32 window list, native capture, real Ollama,
               real game curve files, Windows build.
+
+  2026-10-19 (rev48)  CROSSHAIR ACTIVATION (on-screen overlay).
+              - Crosshair tab: "Crosshair overlay: On/Off" switch at the top of
+                Parameters. Off by default; the choice is saved under
+                crosshair/overlay_active. A note under the switch says what it does.
+              - When On, ui/crosshair_overlay.py draws the crosshair at the centre of
+                the PRIMARY display: frameless, click-through
+                (WindowTransparentForInput), always on top, never takes focus. It is
+                sized to the crosshair and redraws on every config change.
+              - BOUNDARY REVERSED ON USER INSTRUCTION. The project previously said the
+                app does not draw on any game (crosshair.py docstring, Crosshair page
+                docstring, rev21 anti-cheat note). The user asked for the overlay and
+                confirmed it after I flagged the conflict. Those docstrings and the
+                Privacy page now describe the overlay as off by default, drawn on the
+                user's own screen only, and not reading, attaching to, or injecting into
+                any game. Still declined and NOT built: gameplay-derived feedback,
+                target or shooting detection.
+              - Wiring: CrosshairPage.activation_changed(bool) and config_changed(object)
+                are new signals. config_changed is emitted from _refresh, because the
+                existing "edited" signal is still a no-op. MainWindow creates the
+                overlay lazily, shows it at start-up if saved On, and closes it in
+                closeEvent. The dashboard crosshair tile shows "Overlay on/off".
+              - Tests: tests/test_crosshair_overlay.py (5). pytest 110/110. ruff F clean.
+                Wiring script 32/32.
+              - Screenshots (sandbox): Crosshair page with Activation On; overlay on a
+                grey backdrop (transparent around the cross).
+              - NOT verified: live display, Windows behaviour, click-through in a real
+                window, multi-monitor, exclusive-fullscreen games (a Qt window will not
+                appear above exclusive fullscreen; borderless or windowed works).
 
   2026-10-19 (rev47)  TOP BAR AND SLIDER READOUTS.
               - AI Coach tab fully visible. The core status is now a 10 px dot in the

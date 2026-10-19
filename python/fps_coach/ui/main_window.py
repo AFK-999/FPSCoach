@@ -45,6 +45,7 @@ from fps_coach.analytics import AnalyticsStore
 from fps_coach.backend import CoreBackend
 
 from .pages_coach import AIChatPage, PrivacyPage, SettingsPage
+from .crosshair_overlay import CrosshairOverlay
 from .pages_practice import CrosshairPage, TrainingPage
 from .pages_setup import CalibrationPage, CapturePage, DashboardPage, GuidePage, RecommendationPage
 from .styles import build_style, fx_enabled, set_active_theme
@@ -304,6 +305,27 @@ class MainWindow(QMainWindow):
         self.settings_page.settings_changed.connect(self._on_settings_changed)
         self.training_page.session_recorded.connect(self._on_session_recorded)
         self.crosshair_page.edited.connect(self._on_crosshair_edited)
+        self.crosshair_page.activation_changed.connect(self._set_crosshair_overlay)
+        self.crosshair_page.config_changed.connect(self._on_crosshair_config)
+        # The overlay is created only when Activation is on (saved setting, default off).
+        self._overlay: CrosshairOverlay | None = None
+        if self.crosshair_page.activation.isChecked():
+            self._set_crosshair_overlay(True)
+
+    def _set_crosshair_overlay(self, active: bool) -> None:
+        if active:
+            if self._overlay is None:
+                self._overlay = CrosshairOverlay(self.crosshair_page._model, parent=self)
+            self._overlay.set_config(self.crosshair_page._model)
+            self._overlay.show()
+        elif self._overlay is not None:
+            self._overlay.hide()
+        self._refresh_dashboard()
+
+    def _on_crosshair_config(self, config) -> None:
+        if self._overlay is not None:
+            self._overlay.set_config(config)
+        self._refresh_dashboard()
 
     def _install_shortcuts(self) -> None:
         for index, (key, _label_text) in enumerate(NAV_TABS, start=1):
@@ -369,7 +391,8 @@ class MainWindow(QMainWindow):
             ),
             "crosshair": (
                 model.shape.replace("_", " ").title(),
-                f"Color {model.color} \u00b7 opacity {model.opacity:.0%}",
+                f"Overlay {'on' if self.crosshair_page.activation.isChecked() else 'off'}"
+                f" \u00b7 {model.color} \u00b7 opacity {model.opacity:.0%}",
             ),
             "chat": (
                 str(user_turns),
@@ -505,6 +528,9 @@ class MainWindow(QMainWindow):
         self.s.setValue("ui/coach_panel", False)
 
     def closeEvent(self, event):
+        overlay = getattr(self, "_overlay", None)
+        if overlay is not None:
+            overlay.close()
         if self._voice_service is not None:
             self._voice_service.stop()
             self._voice_service.wait(1500)

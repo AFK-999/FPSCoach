@@ -412,6 +412,8 @@ class PrivacyPage(QWidget):
             "Screen capture frames are processed in memory and never written to disk.",
             "AI requests are sent only to the endpoint you configure in Settings.",
             "Voice recognition can run fully offline via a local model.",
+            "The optional crosshair overlay (off by default) draws only on your own screen. "
+            "It does not read the game, attach to it, or inject into it.",
             "Preferences are stored in your system's settings store. The chat transcript is kept only for this session.",
         ]
         card, lay = _card("Data handling")
