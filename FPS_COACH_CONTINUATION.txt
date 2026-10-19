@@ -1,7 +1,7 @@
 ================================================================================
 FPS COACH — CONTINUATION / HANDOFF DOCUMENT
 Copy-paste this whole file into a new agent chat to resume with zero context loss.
-Last updated: 2026-10-19 (rev 35)  (update after EVERY response)
+Last updated: 2026-10-19 (rev 36)  (update after EVERY response)
 
 *** IMPORTANT (rev4): The REAL repo was provided and differs a lot from the
 *** earlier scaffold. Work on the REAL repo at /home/user/workspace/FPSCoach
@@ -930,8 +930,17 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
                 points, known leftovers, and next steps. Section 9 resolved items marked.
               - Full workspace zip generated after this response:
                 /home/user/workspace/FPSCoach-workspace.zip (includes .git).
+                (rev36: this whole-workspace zip was removed; see rev36.)
               - Repo state at this point: origin/main 04e6b0f; local af5c879 (rev34)
                 plus this doc commit; NOT pushed. Tests 92/92.
+
+  2026-10-19 (rev36)  DELIVERABLE CHANGE (user request). No code changes.
+              - Removed the whole-workspace zip (FPSCoach-workspace.zip).
+              - Deliverable is now the repo only: /home/user/workspace/FPSCoach-full-repo.zip
+                (the FPSCoach git repo including .git; caches excluded). Same name as
+                the rev8 bundle, so the user can find it where they expect.
+              - Repo state: origin/main 04e6b0f; local commits af5c879 (rev34) and
+                b5256c1 (rev35) plus this doc commit; NOT pushed. Tests 92/92.
 
 --------------------------------------------------------------------------------
 9. OPEN QUESTIONS / ACTION ITEMS
