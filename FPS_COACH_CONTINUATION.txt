@@ -1,7 +1,7 @@
 ================================================================================
 FPS COACH — CONTINUATION / HANDOFF DOCUMENT
 Copy-paste this whole file into a new agent chat to resume with zero context loss.
-Last updated: 2026-10-19 (rev 34)  (update after EVERY response)
+Last updated: 2026-10-19 (rev 35)  (update after EVERY response)
 
 *** IMPORTANT (rev4): The REAL repo was provided and differs a lot from the
 *** earlier scaffold. Work on the REAL repo at /home/user/workspace/FPSCoach
@@ -141,56 +141,55 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
 --------------------------------------------------------------------------------
 7. WHERE WE LEFT OFF  (read me first)
 --------------------------------------------------------------------------------
-  CONTEXT: The workspace had NO pre-existing FPS Coach source. Rather than stay
-  blocked, we SCAFFOLDED a working project from scratch that implements the
-  requested features. These scaffold files are real and tested (Python verified
-  to import + build system messages; see rev2 log). They must be reconciled with
-  your real codebase if/when it is provided.
+  REPO (the only source of truth):
+    /home/user/workspace/FPSCoach   (clone of https://github.com/AFK-999/FPSCoach.git)
+    Remote origin/main = 04e6b0f   (includes the rev20-33 features)
+    Local HEAD         = rev34 TTS commit (af5c879), 1 ahead, NOT pushed
+    Git history on origin: 0a6f205 Initial commit -> 3189f28 -> e2da6c7 -> 04e6b0f
+    NOTE: the rev5-rev33 commit hashes quoted in the changelog below were local to
+    the earlier sandbox and are NOT on the remote. The changelog is the record of
+    what was built; use git log for the real hashes.
+    The old scaffold (src/, config/, installer/ at workspace root) is OBSOLETE.
 
-  FILES CREATED (all under /home/user/workspace):
-    pyproject.toml                      - package + editable install config
-    src/fps_coach/__init__.py           - version + build flavor exposure
-    src/fps_coach/__main__.py           - entry point: self-repair THEN launch UI
-    src/fps_coach/env_repair.py         - TASK B: startup self-repair (moved/renamed)
-    src/fps_coach/ai/__init__.py
-    src/fps_coach/ai/profile.py         - TASK C: AI preconfig loader
-    src/fps_coach/ai/backend.py         - Ollama + OpenAI-compatible chat
-    config/ai_profile.toml              - TASK C: editable instructions/recs/persona
-    scripts/build.bat                   - TASK A: build.bat lite|full (flavor switch)
-    scripts/fetch_ai_assets.bat         - TASK A(full): stage Ollama + Qwen weights
-    scripts/setup_embedded_ai.bat       - TASK A(full): first-run embedded AI setup
-    scripts/repair_install.bat          - TASK B: batch wrapper over env_repair
-    scripts/launch.bat                  - repair then run
-    installer/fpscoach_lite.iss         - TASK A: Lite installer (no AI assets)
-    installer/fpscoach_full.iss         - TASK A: Full installer (embeds AI)
-    tests/test_scaffold.py              - smoke tests
+  STATUS:
+    - Tests: 92/92 pass (python3 -m pytest -q, from the repo root).
+    - Lint: ruff clean on all files changed in rev34 (ruff 0.17.1).
+    - Full feature set from the handoff is present in the repo (rev1-rev34).
+    - Unverified: anything that needs Windows or a display. Qt UI cannot render
+      in this sandbox (no libGL/libEGL/libxkbcommon/libdbus). Also unverified:
+      PyInstaller, Inno Setup (iscc), scripts/build.ps1, SAPI5 and PowerShell TTS,
+      Vosk audio capture, Ollama auto-launch.
 
-  HOW THE REQUESTED FEATURES MAP:
-    TASK A (two builds): scripts/build.bat takes `lite|full`, stamps
-      src/fps_coach/build_info.py, and compiles the matching .iss. Full pulls in
-      Ollama + qwen3:1.7b via fetch_ai_assets.bat into build/stage_full/.
-    TASK B (self-repair): env_repair.ensure_healthy() runs at startup
-      (__main__.py) and from launch.bat/repair_install.bat. Detects moved/renamed
-      folder via a marker file + checks the editable install target, then re-runs
-      `pip install -e .`. Quoted paths -> handles spaces.
-    TASK C (AI preconfig): config/ai_profile.toml holds persona + instructions +
-      recommendations; profile.build_system_messages() injects them as system
-      messages into every chat (backend.chat prepends them automatically).
+  LATEST WORK (rev34): TTS hardening in python/fps_coach/tts_service.py.
+    init_engine() fallback chain: pyttsx3 default -> other pyttsx3 drivers for
+    the OS (macOS: avspeech) -> Windows only: PowerShell System.Speech.
+    Platform deps (win32: pywin32 [pythoncom], comtypes) checked and installed.
+    com_apartment() initializes COM on the worker thread (Windows).
+    Failures produce format_unavailable() text in the chat.
 
-  VERIFIED: PYTHONPATH=src python imported profile + env_repair; system message
-  built (1298 chars); project_root detection OK; needs_repair()=False in dev.
-  (pytest not installed in this sandbox; tests written but not run here.)
+  BUILD ENTRY POINTS (Windows):
+    Build-Lite.bat / Build-Full.bat  ->  scripts/build.ps1 -Flavor lite|full
+    Outputs: dist\FPSCoach-Setup-lite-<ver>-x64.exe
+             dist\FPSCoach-Setup-full-<ver>-x64.exe
+    Installer scripts: installer/fpscoach-lite.iss, installer/fpscoach-full.iss
+    PyInstaller spec:  installer/fpscoach.spec
 
-  IMMEDIATE NEXT STEPS:
-    1. If you have the REAL codebase, drop it in and reconcile with this scaffold
-       (or tell me to adapt the scaffold to your structure).
-    2. Provide/confirm the C++ core build (core\build.bat hook is stubbed).
-    3. Add the actual UI module at src/fps_coach/ui/app.py (run() entry).
-    4. Supply Ollama Windows runtime + Qwen 3 1.7B source for the Full build
-       (set FPSCOACH_OLLAMA_SRC / FPSCOACH_QWEN_SRC) and confirm licensing.
-    5. Install Inno Setup (iscc) on the build machine, or swap installer tool.
+  KNOWN LEFTOVERS (user decided to leave these as-is in rev34/rev35):
+    - python/fps_coach/calibration_history.py + tests/test_calibration_history.py:
+      rev14 feature that rev15 reverted. Not imported by the UI (dead code), still tested.
+    - Tracked clutter: .fpscoach-update-backups/ (about 82 files), the
+      FPSCoach-all-changes.patch file, FPS_COACH_CONTINUATION.txt, and the root
+      .bat scripts (Update/Reset/Apply/Repair). Not in .gitignore.
 
---------------------------------------------------------------------------------
+  NEXT STEPS (in order):
+    1. Push: git push origin main (user runs this with their credentials).
+    2. On a Windows machine: run Build-Lite.bat and Build-Full.bat; confirm both
+       installers are produced (full should be large, ~1GB+).
+    3. Windows smoke test: every tab, Settings theme switch, coach panel, voice
+       (Vosk, mic), TTS (pywin32 + SAPI5, plus PowerShell fallback if SAPI5 fails).
+    4. Resolve the licensing questions in section 9 before shipping the Full build.
+    5. Optional, if the user asks: revert calibration_history and untrack the clutter.
+
 8. CHANGELOG  (append one entry per response; newest at bottom)
 --------------------------------------------------------------------------------
   2026-10-18  Created continuation doc. Captured current task (2 build packages
@@ -903,19 +902,8 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
                   monkeypatched tts tests). Actual speech runs on user's machine.
               Commits: ...af6b663, 9027afa (+ pending rev33 doc). ALL local, NOT pushed.
 
---------------------------------------------------------------------------------
-9. OPEN QUESTIONS / ACTION ITEMS (need answers to finish)
---------------------------------------------------------------------------------
-  [ ] Where is the real source? (upload to workspace or provide repo URL)
-  [ ] What installer tech is in use (Inno Setup / NSIS / other)?
-  [ ] Exact Qwen 3 1.7B source/tag + confirm redistribution license is OK.
-  [ ] Confirm Ollama redistribution terms for the FULL embedded build.
-  [ ] Target Windows arch(s) and min OS version.
-  [ ] Where should AI preconfig live (file path / format: json/yaml/toml)?
-  [ ] Preferred naming for the two installers.
-================================================================================
   2026-10-19 (rev34)  TTS HARDENING (tts_service.py + _TtsService worker). Local
-              commit (NOT pushed).
+              commit af5c879 (NOT pushed).
                 - Engine fallback chain: pyttsx3 default driver -> other pyttsx3 drivers
                   for this OS (macOS: avspeech) -> Windows only: PowerShell System.Speech
                   (no pip packages). pyttsx3 ships only SAPI5 on Windows, so the
@@ -935,3 +923,25 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
                 close / auto-off); real pyttsx3 in sandbox (no eSpeak) -> clear message.
               NOT VERIFIED: real SAPI5 / PowerShell speech on Windows (needs a Windows
                 machine with a voice installed).
+
+  2026-10-19 (rev35)  WORKFLOW CONTINUATION (user request). No code changes.
+              - Handoff doc refreshed: section 7 rewritten (the old scaffold notes are
+                obsolete) to describe the real repo, status, latest work, build entry
+                points, known leftovers, and next steps. Section 9 resolved items marked.
+              - Full workspace zip generated after this response:
+                /home/user/workspace/FPSCoach-workspace.zip (includes .git).
+              - Repo state at this point: origin/main 04e6b0f; local af5c879 (rev34)
+                plus this doc commit; NOT pushed. Tests 92/92.
+
+--------------------------------------------------------------------------------
+9. OPEN QUESTIONS / ACTION ITEMS
+--------------------------------------------------------------------------------
+  [x] Real source: provided as the GitHub repo; cloned to ./FPSCoach (rev4 onward).
+  [x] Installer technology: Inno Setup (installer/*.iss) + PyInstaller spec
+      (installer/fpscoach.spec), driven by scripts/build.ps1.
+  [x] AI preconfig location: config/ai_profile.toml (TOML), loaded by ai_profile.py.
+  [x] Installer naming: FPSCoach-Setup-{lite|full}-{version}-x64.exe (from the .iss files).
+  [ ] Exact Qwen 3 1.7B source/tag and confirmation that redistribution is allowed.
+      The build pulls the Ollama tag qwen3:1.7b; the license has not been confirmed.
+  [ ] Ollama redistribution terms for the embedded Full build (not confirmed).
+  [ ] Target Windows arch and minimum OS. Installers are x64; no minimum OS is set.
