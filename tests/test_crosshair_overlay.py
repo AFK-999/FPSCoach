@@ -39,7 +39,6 @@ def test_overlay_window_flags_and_click_through(qapp) -> None:
     assert flags & Qt.WindowType.WindowTransparentForInput
     assert overlay.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
     assert overlay.testAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
-    assert overlay.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
     overlay.deleteLater()
 
 

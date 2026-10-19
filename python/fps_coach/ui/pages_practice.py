@@ -550,6 +550,8 @@ class CrosshairPage(QWidget):
     edited = Signal(dict)
     activation_changed = Signal(bool)
     config_changed = Signal(object)
+    edit_mode_changed = Signal(bool)  # True = edit (drag), False = locked
+    position_reset = Signal()
     SHAPES = ("cross_dot", "cross", "dot", "circle")
 
     def __init__(self, parent=None):
@@ -589,6 +591,26 @@ class CrosshairPage(QWidget):
         controls_lay.addWidget(self.activation)
         controls_lay.addWidget(self.activation_note)
         self._update_activation_text(self.activation.isChecked())
+
+        # Position: Edit (drag the overlay) then Lock. Always starts locked.
+        self.edit_position = QPushButton("Edit position\u2026")
+        self.edit_position.setObjectName("secondary")
+        self.edit_position.setCheckable(True)
+        self.edit_position.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.edit_position.toggled.connect(self._on_edit_toggled)
+        self.centre_position = QPushButton("Reset to centre")
+        self.centre_position.setObjectName("secondary")
+        self.centre_position.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.centre_position.clicked.connect(self._on_reset_position)
+        position_row = QHBoxLayout()
+        position_row.setSpacing(8)
+        position_row.addWidget(self.edit_position)
+        position_row.addWidget(self.centre_position)
+        position_row.addStretch(1)
+        controls_lay.addLayout(position_row)
+        self.position_note = _label("", "cardSubtitle", wrap=True)
+        controls_lay.addWidget(self.position_note)
+        self._update_position_text(False)
 
         form = QGridLayout()
         form.setHorizontalSpacing(12)
@@ -717,13 +739,30 @@ class CrosshairPage(QWidget):
         self.activation_note.setText(
             "Drawn on your primary screen, click-through, above other windows."
             if active else
-            "Off. The crosshair is shown here and exported only; nothing is drawn on screen."
+            "Off. The crosshair is shown here and exported. It appears on screen only while you edit its position."
         )
 
     def _on_activation_toggled(self, checked: bool) -> None:
         self.s.setValue("crosshair/overlay_active", bool(checked))
         self._update_activation_text(bool(checked))
         self.activation_changed.emit(bool(checked))
+
+    def _update_position_text(self, editing: bool) -> None:
+        self.edit_position.setText("Lock position" if editing else "Edit position\u2026")
+        self.position_note.setText(
+            "Drag the crosshair to where you want it, then click Lock position. "
+            "While editing, the overlay takes the mouse."
+            if editing else
+            "Locked. The overlay ignores the mouse, so clicks go to the game. "
+            "The position is saved."
+        )
+
+    def _on_edit_toggled(self, checked: bool) -> None:
+        self._update_position_text(bool(checked))
+        self.edit_mode_changed.emit(bool(checked))
+
+    def _on_reset_position(self) -> None:
+        self.position_reset.emit()
 
     def _refresh(self):
         self.preview.set_config(self._model)

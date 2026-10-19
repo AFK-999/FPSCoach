@@ -392,6 +392,20 @@ class AIChatPage(QWidget):
         self.transcript.clear()
 
 
+PRIVACY_POINTS: tuple[str, ...] = (
+        "Screen capture frames are processed in memory and never written to disk.",
+        "AI requests are sent only to the endpoint you configure in Settings.",
+        "Voice recognition can run fully offline via a local model.",
+        "The crosshair overlay is off by default. When it is on, or while you edit its "
+        "position, it draws a crosshair on your primary screen only. The active crosshair "
+        "overlay does not interact with or inject "
+        "into any game processes. It does not read game frames, hook input, or read or "
+        "write game memory. Locked, it ignores the mouse so clicks reach the game.",
+        "The capture window list reads window titles and process names only, so you can "
+        "choose a window. It does not read or write any process's memory.",
+        "Preferences are stored in your system's settings store. The chat transcript is kept only for this session.",
+)
+
 class PrivacyPage(QWidget):
     """What stays on this machine, and a real way to delete the stored history."""
 
@@ -408,14 +422,7 @@ class PrivacyPage(QWidget):
             eyebrow="Help",
         ))
 
-        points = [
-            "Screen capture frames are processed in memory and never written to disk.",
-            "AI requests are sent only to the endpoint you configure in Settings.",
-            "Voice recognition can run fully offline via a local model.",
-            "The optional crosshair overlay (off by default) draws only on your own screen. "
-            "It does not read the game, attach to it, or inject into it.",
-            "Preferences are stored in your system's settings store. The chat transcript is kept only for this session.",
-        ]
+        points = PRIVACY_POINTS
         card, lay = _card("Data handling")
         for point in points:
             row = QHBoxLayout()

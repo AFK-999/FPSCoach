@@ -145,10 +145,12 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     /home/user/workspace/FPSCoach   (clone of https://github.com/AFK-999/FPSCoach.git)
     Remote origin/main = e9e69a2   (the visual REDESIGN; based on 04e6b0f)
     Working branch     = fix/redesign-backend-wiring (from e9e69a2), NOT pushed.
-    REV48 STATUS: visual redesign on the working branch (changelog rev45), plus
+    REV49 STATUS: visual redesign on the working branch (changelog rev45), plus
     rev46 (drawn training figures), rev47 (top bar fits, core status is a dot,
-    slider readouts) and rev48 (crosshair Activation overlay, off by default,
-    user-approved reversal of the no-draw-over-game boundary). Still NOT pushed. Push needs GitHub credentials that this
+    slider readouts), rev48 (crosshair overlay, off by default, user-approved
+    reversal of the no-draw-over-game boundary) and rev49 (overlay edit mode and
+    lock, privacy policy in app and docs/PRIVACY.md; gameplay feedback and target
+    detection DECLINED, not built). Still NOT pushed. Push needs GitHub credentials that this
     sandbox does not have. Exact command for a machine with access:
         git push origin fix/redesign-backend-wiring:main
                          Commits on it (newest first): f6af4b9 rev43, 9b2c551 rev42,
@@ -1146,6 +1148,35 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
               slider and the new capture arguments); app.py quit run exit 0, no traceback.
               NOT verified: real display, Win32 window list, native capture, real Ollama,
               real game curve files, Windows build.
+
+  2026-10-19 (rev49)  CROSSHAIR EDIT MODE, LOCK, PRIVACY POLICY. DECLINED PART 2.
+              - Crosshair tab: "Edit position..." turns into "Lock position" while
+                editing. Edit mode shows a dashed frame and the overlay takes the mouse,
+                so you can drag the crosshair. Lock makes the overlay click-through again
+                and fixed. "Reset to centre" moves it back and clears the saved position.
+              - Position is saved on each drag (crosshair/overlay_x, crosshair/overlay_y)
+                and restored on start-up. Edit mode is never saved; it always starts
+                locked. The overlay is clamped to the primary display.
+              - Click-through is the WindowTransparentForInput window flag. Qt ties the
+                WA_TransparentForMouseEvents attribute to that flag, so the attribute is
+                no longer set separately (setting both kept click-through on).
+              - Privacy: the in-app Privacy page and new docs/PRIVACY.md state that the
+                active crosshair overlay does not interact with or inject into any game
+                processes. The window list reads window titles and process names only
+                (window_enum.py opens processes with query-only rights).
+              - Tests: tests/test_crosshair_edit.py (7). pytest 117/117 (drag test uses
+                QTest and runs). ruff F clean. Wiring script 32/32.
+              - NOT verified: real display, Windows behaviour, whether a Tool window
+                takes focus when clicked in edit mode, multi-monitor, exclusive
+                fullscreen (a Qt window does not appear above it).
+              DECLINED (part 2): the user asked for gameplay-based feedback and target
+              detection, and for an in-game overlay that gives such feedback. NOT built.
+              Reason: target detection from game capture plus live on-screen feedback
+              during play is an aim-assist tool. It breaks anti-cheat rules and gives an
+              unfair advantage over other players. The earlier decline (rev16/18/19 and
+              the rev21 note) still stands. Offered instead: post-session analytics from
+              the app's own drills (already built, Training page), and the coach panel.
+              The overlay that remains draws only a static crosshair the user placed.
 
   2026-10-19 (rev48)  CROSSHAIR ACTIVATION (on-screen overlay).
               - Crosshair tab: "Crosshair overlay: On/Off" switch at the top of

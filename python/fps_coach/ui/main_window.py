@@ -307,20 +307,56 @@ class MainWindow(QMainWindow):
         self.crosshair_page.edited.connect(self._on_crosshair_edited)
         self.crosshair_page.activation_changed.connect(self._set_crosshair_overlay)
         self.crosshair_page.config_changed.connect(self._on_crosshair_config)
-        # The overlay is created only when Activation is on (saved setting, default off).
+        self.crosshair_page.edit_mode_changed.connect(self._on_crosshair_edit_mode)
+        self.crosshair_page.position_reset.connect(self._on_crosshair_position_reset)
+        # The overlay is created only when Activation is on or the position is being
+        # edited. Activation is saved (default off). Edit mode is never saved: it starts locked.
         self._overlay: CrosshairOverlay | None = None
         if self.crosshair_page.activation.isChecked():
             self._set_crosshair_overlay(True)
 
+    def _ensure_overlay(self) -> CrosshairOverlay:
+        if self._overlay is None:
+            self._overlay = CrosshairOverlay(
+                self.crosshair_page._model, centre=self._saved_overlay_centre(), parent=self
+            )
+            self._overlay.position_committed.connect(self._save_overlay_centre)
+        return self._overlay
+
+    def _saved_overlay_centre(self):
+        from PySide6.QtCore import QPoint
+
+        if not (self.s.contains("crosshair/overlay_x") and self.s.contains("crosshair/overlay_y")):
+            return None
+        return QPoint(int(self.s.value("crosshair/overlay_x")), int(self.s.value("crosshair/overlay_y")))
+
+    def _save_overlay_centre(self, centre) -> None:
+        self.s.setValue("crosshair/overlay_x", int(centre.x()))
+        self.s.setValue("crosshair/overlay_y", int(centre.y()))
+
     def _set_crosshair_overlay(self, active: bool) -> None:
         if active:
-            if self._overlay is None:
-                self._overlay = CrosshairOverlay(self.crosshair_page._model, parent=self)
-            self._overlay.set_config(self.crosshair_page._model)
-            self._overlay.show()
-        elif self._overlay is not None:
+            overlay = self._ensure_overlay()
+            overlay.set_config(self.crosshair_page._model)
+            overlay.show()
+        elif self._overlay is not None and not self._overlay.editing:
             self._overlay.hide()
         self._refresh_dashboard()
+
+    def _on_crosshair_edit_mode(self, editing: bool) -> None:
+        overlay = self._ensure_overlay()
+        overlay.set_config(self.crosshair_page._model)
+        overlay.set_editing(editing)
+        if editing or self.crosshair_page.activation.isChecked():
+            overlay.show()
+        else:
+            overlay.hide()  # locked and not activated: nothing should be on screen
+
+    def _on_crosshair_position_reset(self) -> None:
+        for key in ("crosshair/overlay_x", "crosshair/overlay_y"):
+            self.s.remove(key)
+        overlay = self._ensure_overlay()
+        overlay.reset_centre()
 
     def _on_crosshair_config(self, config) -> None:
         if self._overlay is not None:
