@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 from PySide6.QtCore import QPointF, QSettings, QSize, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QLinearGradient, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QBrush, QColor, QFontMetrics, QLinearGradient, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QAbstractButton,
     QFrame,
@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QSlider,
     QVBoxLayout,
     QWidget,
 )
@@ -150,6 +151,58 @@ def _page_root(page: QWidget, scroll: QScrollArea) -> None:
     layout = QVBoxLayout(page)
     layout.setContentsMargins(0, 0, 0, 0)
     layout.addWidget(scroll)
+
+
+class ValueSlider(QWidget):
+    """A horizontal slider with a live readout of its exact value.
+
+    The readout updates on every change, including while the handle is dragged.
+    It forwards the small QSlider API the pages use (value, setValue, valueChanged),
+    so it can stand in for a plain QSlider. `fmt` turns the integer value into the
+    text shown (for example "12 px", "35%", or "0.35").
+    """
+
+    valueChanged = Signal(int)
+
+    def __init__(self, lo: int, hi: int, fmt=str, parent=None):
+        super().__init__(parent)
+        self._fmt = fmt
+        self._slider = QSlider(Qt.Orientation.Horizontal)
+        self._slider.setRange(lo, hi)
+
+        self._readout = QLabel()
+        self._readout.setObjectName("sliderValue")
+        self._readout.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        # Fix the readout width to the widest value in range so the slider does not jump.
+        metrics = QFontMetrics(self._readout.font())
+        widest = max(metrics.horizontalAdvance(fmt(v)) for v in range(lo, hi + 1))
+        self._readout.setMinimumWidth(widest + 4)
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(10)
+        lay.addWidget(self._slider, 1)
+        lay.addWidget(self._readout)
+
+        self._update_readout(self._slider.value())
+        self._slider.valueChanged.connect(self._on_slider_changed)
+
+    def _update_readout(self, value: int) -> None:
+        self._readout.setText(self._fmt(value))
+
+    def _on_slider_changed(self, value: int) -> None:
+        self._update_readout(value)
+        self.valueChanged.emit(value)
+
+    def value(self) -> int:
+        return self._slider.value()
+
+    def setValue(self, value: int) -> None:
+        self._slider.setValue(value)
+
+    def setToolTip(self, text: str) -> None:  # noqa: N802 - Qt naming
+        super().setToolTip(text)
+        self._slider.setToolTip(text)
 
 
 class Segmented(QFrame):

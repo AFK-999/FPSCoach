@@ -145,9 +145,9 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     /home/user/workspace/FPSCoach   (clone of https://github.com/AFK-999/FPSCoach.git)
     Remote origin/main = e9e69a2   (the visual REDESIGN; based on 04e6b0f)
     Working branch     = fix/redesign-backend-wiring (from e9e69a2), NOT pushed.
-    REV45 STATUS: full visual redesign committed on the working branch (see
-    changelog rev45), including drawn training figures and the top-bar and
-    capture fixes. Still NOT pushed. Push needs GitHub credentials that this
+    REV47 STATUS: visual redesign on the working branch (changelog rev45), plus
+    rev46 (drawn training figures) and rev47 (top bar fits, core status is a dot,
+    slider readouts). Still NOT pushed. Push needs GitHub credentials that this
     sandbox does not have. Exact command for a machine with access:
         git push origin fix/redesign-backend-wiring:main
                          Commits on it (newest first): f6af4b9 rev43, 9b2c551 rev42,
@@ -1145,6 +1145,32 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
               slider and the new capture arguments); app.py quit run exit 0, no traceback.
               NOT verified: real display, Win32 window list, native capture, real Ollama,
               real game curve files, Windows build.
+
+  2026-10-19 (rev47)  TOP BAR AND SLIDER READOUTS.
+              - AI Coach tab fully visible. The core status is now a 10 px dot in the
+                bar (green = Native core, amber = Preview mode). Its full text is in the
+                tooltip and the accessible name, and the Capture page still states it.
+                This frees the room the old pill took.
+              - The window cannot be narrower than the top bar needs. Its minimum width
+                is measured from the layout (1244 px in the sandbox; this changes with
+                the font). Before this, at 1120 px the tab strip ran under the status dot
+                and utility buttons.
+              - Tab padding: label width (bold) + 60 px. This leaves room for the active
+                (bold) label. A +48 setting clipped "Dashboard" and "Crosshair".
+              - Every slider shows its exact value live, while dragging. New widget
+                ValueSlider (ui/widgets.py) wraps a QSlider and forwards value,
+                setValue and valueChanged. Crosshair sliders show px and %. Settings
+                Temperature shows the stored 0.00-1.50 value (the slider works in
+                hundredths). Readout width is fixed to the widest value in range.
+              - build_info.py: BOM-only change from the build script reverted, not
+                committed.
+              - Tests: tests/test_value_slider.py (4 checks). pytest 105/105. ruff F
+                clean. compileall ok. Wiring script 32/32.
+              - Screenshot checks (sandbox): AI Coach visible at 1244, 1280, 1360 and
+                1600 px. Crosshair readouts rendered. Settings temperature readout
+                checked by value (not by eye).
+              - Not checked: the Settings page at full size after the change, and the
+                Dashboard tile border artifact (still open from rev45).
 
   2026-10-19 (rev45)  FULL VISUAL REDESIGN ("Vantage"), on top of rev44 features.
               - Navigation: horizontal top bar. Seven working tabs (Dashboard, Capture,

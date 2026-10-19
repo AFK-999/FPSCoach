@@ -19,7 +19,6 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
-    QSlider,
     QTextEdit,
     QToolButton,
     QVBoxLayout,
@@ -35,6 +34,7 @@ from fps_coach.curve_adjust import apply_preset, normalized_overlay
 from .threads import _ChatRequest, _ModelPullThread, _OllamaStatusCheck, _VoiceListenThread
 from .widgets import (
     CurveChart,
+    ValueSlider,
     _card,
     _content_page,
     _curve_samples,
@@ -526,8 +526,8 @@ class SettingsPage(QWidget):
         form.addLayout(model_row, 2, 1)
 
         form.addWidget(_label("Temperature", "formLabel"), 3, 0)
-        self.temperature = QSlider(Qt.Horizontal)
-        self.temperature.setRange(0, 150)
+        # Stored as 0.00-1.50; the slider works in hundredths so the readout shows the stored value.
+        self.temperature = ValueSlider(0, 150, fmt=lambda v: f"{v / 100:.2f}")
         self.temperature.setValue(int(float(self.s.value("ai/temperature", 0.35)) * 100))
         self.temperature.valueChanged.connect(self._on_ai_changed)
         form.addWidget(self.temperature, 3, 1)

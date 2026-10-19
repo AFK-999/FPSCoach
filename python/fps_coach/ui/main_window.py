@@ -153,7 +153,11 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        root.addWidget(self._build_topbar())
+        topbar = self._build_topbar()
+        root.addWidget(topbar)
+        # The window cannot be narrower than the top bar needs: brand, every tab (so AI Coach
+        # is never cut off), the core dot, and the utility buttons. Measured from the layout.
+        self.setMinimumWidth(topbar.layout().totalMinimumSize().width())
 
         self.coach_panel = CoachStrip(self)
         self.coach_panel.closed.connect(self._on_coach_closed)
@@ -205,7 +209,9 @@ class MainWindow(QMainWindow):
             # Reserve room for the bold (checked) weight so the label never clips.
             bold = btn.font()
             bold.setWeight(bold.Weight.DemiBold)
-            btn.setMinimumWidth(QFontMetrics(bold).horizontalAdvance(label) + 56)
+            # Bold label width + icon, icon spacing, the 12 px side padding, and a margin so
+            # the active (bold) label is never clipped.
+            btn.setMinimumWidth(QFontMetrics(bold).horizontalAdvance(label) + 60)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setIconSize(QSize(18, 18))
             btn.clicked.connect(lambda _c=False, k=key: self._select_page(k))
@@ -223,17 +229,25 @@ class MainWindow(QMainWindow):
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setWidget(tabs_host)
         scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        # The tab strip never gets narrower than its tabs, so the window cannot shrink
+        # to a width where the last tab (AI Coach) is cut off or needs scrolling.
+        tab_buttons = list(self._nav_buttons.values())
+        scroll.setMinimumWidth(sum(b.minimumWidth() for b in tab_buttons) + tabs.spacing() * (len(tab_buttons) - 1))
         lay.addWidget(scroll, 1)
 
         # Native core status (restored from the original): capture is either the
         # real native core or the Python preview mode.
-        self.core_status = QLabel("Native core" if self._backend.native_available else "Preview mode")
-        self.core_status.setObjectName("pill")
-        self.core_status.setFixedHeight(24)
-        self.core_status.setToolTip(self._backend.core_label)
+        # Shown as a small status dot so it does not take room from the tabs.
+        # The full text is in the tooltip and on the Capture page.
+        core_text = "Native core" if self._backend.native_available else "Preview mode"
+        self.core_status = QLabel()
+        self.core_status.setObjectName("coreDot")
+        self.core_status.setFixedSize(10, 10)
+        self.core_status.setToolTip(f"{core_text}: {self._backend.core_label}")
+        self.core_status.setAccessibleName(f"Capture core: {core_text}")
         _set_state(self.core_status, "good" if self._backend.native_available else "warn")
         lay.addWidget(self.core_status)
-        lay.addSpacing(8)
+        lay.addSpacing(12)
 
         for key, label in UTILITY:
             btn = QToolButton()

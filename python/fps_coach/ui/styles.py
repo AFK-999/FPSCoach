@@ -163,6 +163,12 @@ QLabel#pill {
     background: $surface2; border: 1px solid $line; border-radius: 11px;
     padding: 3px 10px; color: $text2; font-size: 12px;
 }
+QLabel#coreDot { border-radius: 5px; background: $warn; }
+QLabel#coreDot[state="good"] { background: $good; }
+QLabel#coreDot[state="warn"] { background: $warn; }
+QLabel#sliderValue {
+    color: $text; font-size: 12px; font-family: "Cascadia Mono", "Consolas", monospace;
+}
 QLabel#pill[state="good"] { color: $good; border-color: $line2; }
 QLabel#pill[state="warn"] { color: $warn; border-color: $line2; }
 QLabel#stepBadge {

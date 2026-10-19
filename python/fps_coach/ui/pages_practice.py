@@ -28,7 +28,6 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSizePolicy,
-    QSlider,
     QVBoxLayout,
     QWidget,
 )
@@ -41,6 +40,7 @@ from fps_coach.crosshair import CrosshairConfig, preset_names
 from .styles import STAGE
 from .widgets import (
     CrosshairPreview,
+    ValueSlider,
     _draw_crosshair,
     Segmented,
     _card,
@@ -595,7 +595,7 @@ class CrosshairPage(QWidget):
         self.length = self._slider(0, 64)
         self.gap = self._slider(0, 40)
         self.dot = self._slider(0, 12)
-        self.opacity = self._slider(10, 100)
+        self.opacity = self._slider(10, 100, suffix="%")
         for row, (text, slider) in enumerate((
             ("Thickness", self.thickness),
             ("Arm length", self.length),
@@ -650,10 +650,8 @@ class CrosshairPage(QWidget):
         self._refresh()
 
     @staticmethod
-    def _slider(lo: int, hi: int) -> QSlider:
-        slider = QSlider(Qt.Orientation.Horizontal)
-        slider.setRange(lo, hi)
-        return slider
+    def _slider(lo: int, hi: int, suffix: str = " px") -> ValueSlider:
+        return ValueSlider(lo, hi, fmt=lambda v: f"{v}{suffix}")
 
     def _load_model(self) -> CrosshairConfig:
         raw = self.s.value("crosshair/config", "")
