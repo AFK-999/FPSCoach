@@ -29,14 +29,14 @@ import sys
 import time
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QSettings, QTimer, QThread, Signal, QSize, QPointF
+from PySide6.QtCore import Qt, QSettings, QTimer, QThread, Signal, QSize, QPointF, QRectF
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QPainterPath, QImage, QPixmap
 from PySide6.QtWidgets import (
     QColorDialog,
     QApplication, QMainWindow, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
     QGridLayout, QFrame, QScrollArea, QStackedWidget, QLineEdit, QTextEdit, QComboBox,
     QCheckBox, QSlider, QProgressBar, QButtonGroup, QToolButton, QMessageBox, QFileDialog,
-    QListWidget, QListWidgetItem,
+    QListWidget,
 )
 
 from .icons import icon, pixmap
@@ -47,6 +47,8 @@ from fps_coach.ai_chat import (
     AIChatClient, ChatProviderError, ChatSettings, check_ollama, curve_context, pull_model,
 )
 from fps_coach.backend import CoreBackend
+from fps_coach import scenarios as scenario_defs
+from fps_coach.analytics import AnalyticsStore, SessionResult
 from fps_coach.window_enum import get_window_rect, list_windows
 from fps_coach.crosshair import PRESETS as CROSSHAIR_PRESETS, CrosshairConfig, preset_names
 from fps_coach.curve_adjust import adjust_from_recommendation, normalized_overlay
@@ -1913,126 +1915,295 @@ class CrosshairPage(QWidget):
 # ---------------------------------------------------------------------------
 
 class TrainingCanvas(QWidget):
-    """Live target-tracking practice canvas."""
+    """Runs a target-clicking scenario and records accuracy + reaction times."""
 
-    session_recorded = Signal(dict)
+    finished = Signal(str, list, int, int)  # scenario_key, reaction_times_ms, hits, misses
+    progress = Signal(int, int)
 
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setMinimumHeight(320)
-        self.setFocusPolicy(Qt.StrongFocus)
-        self._target = QPointF(0.5, 0.5)
+    KILL_MS = 420  # fast kill animation: well under half a second
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._rng = random.Random()
+        self._scenario = None
+        self._active = False
+        self._visible_target = False
+        self._target = QPointF(0, 0)
+        self._radius = 20
+        self._vx = self._vy = 0.0
+        self._spawn_time = 0.0
         self._hits = 0
         self._misses = 0
-        self._running = False
-        self._timer = QTimer(self)
-        self._timer.timeout.connect(self._tick)
+        self._reaction_times: list[float] = []
+        self.setMinimumHeight(360)
+        self.setMouseTracking(True)
+        self._move_timer = QTimer(self)
+        self._move_timer.setInterval(16)
+        self._move_timer.timeout.connect(self._advance)
 
-    def start(self):
+        # Enemy sprites (auto-loaded, cached) with a procedural fallback.
+        self._sprites = self._load_sprites()
+        self._target_pix: QPixmap | None = None
+        # Lightweight kill animations.
+        self._anim_enabled = True
+        self._kills: list[dict] = []
+        self._kill_timer = QTimer(self)
+        self._kill_timer.setInterval(16)
+        self._kill_timer.timeout.connect(self._kill_tick)
+
+    @staticmethod
+    def _load_sprites() -> list[QPixmap]:
+        from fps_coach.enemy_sprites import sprite_files
+
+        pixmaps: list[QPixmap] = []
+        for path in sprite_files():
+            pix = QPixmap(str(path))
+            if not pix.isNull():
+                pixmaps.append(pix)
+        return pixmaps
+
+    def set_animations(self, enabled: bool) -> None:
+        self._anim_enabled = bool(enabled)
+        if not enabled:
+            self._kills.clear()
+            self._kill_timer.stop()
+            self.update()
+
+    def start(self, scenario) -> None:
+        self._scenario = scenario
+        self._radius = scenario.target_radius
+        self._active = True
         self._hits = 0
         self._misses = 0
-        self._running = True
-        self._randomize_target()
-        self._timer.start(900)
+        self._reaction_times = []
+        self.progress.emit(0, scenario.target_count)
+        self._next_target()
+        if scenario.moving:
+            self._move_timer.start()
         self.update()
 
-    def stop(self):
-        self._running = False
-        self._timer.stop()
-        self.session_recorded.emit({
-            "hits": self._hits,
-            "misses": self._misses,
-            "accuracy": self._accuracy(),
-            "timestamp": time.time(),
-        })
-
-    def _accuracy(self):
-        total = self._hits + self._misses
-        return round(self._hits / total, 3) if total else 0.0
-
-    def _randomize_target(self):
-        self._target = QPointF(random.uniform(0.1, 0.9), random.uniform(0.1, 0.9))
-        self.update()
-
-    def _tick(self):
-        self._misses += 1
-        self._randomize_target()
-
-    def mousePressEvent(self, event):
-        if not self._running:
+    def stop(self) -> None:
+        """End the drill early. Attempts made so far are recorded; nothing is recorded if there were none."""
+        if not self._active:
             return
-        rect = self.rect()
-        tx = rect.left() + self._target.x() * rect.width()
-        ty = rect.top() + self._target.y() * rect.height()
-        if (event.pos() - QPointF(tx, ty).toPoint()).manhattanLength() < 24:
-            self._hits += 1
-            self._randomize_target()
+        self._active = False
+        self._visible_target = False
+        self._move_timer.stop()
+        if self._hits + self._misses > 0:
+            key = self._scenario.key if self._scenario else ""
+            self.finished.emit(key, list(self._reaction_times), self._hits, self._misses)
+        self.update()
 
-    def paintEvent(self, event):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
-        p.fillRect(self.rect(), QColor("#0d1013"))
-        pen = QPen(QColor(255, 255, 255, 16))
-        p.setPen(pen)
-        p.drawRect(self.rect().adjusted(0, 0, -1, -1))
-
-        if self._running:
-            rect = self.rect()
-            tx = rect.left() + self._target.x() * rect.width()
-            ty = rect.top() + self._target.y() * rect.height()
-            p.setPen(Qt.NoPen)
-            p.setBrush(QBrush(QColor("#d98f3b")))
-            p.drawEllipse(QPointF(tx, ty), 14, 14)
-            p.setPen(QPen(QColor("#1a1106"), 1.5))
-            p.setBrush(Qt.NoBrush)
-            p.drawEllipse(QPointF(tx, ty), 6, 6)
+    def _next_target(self) -> None:
+        if not self._scenario:
+            return
+        margin = self._radius + 8
+        w = max(margin * 2 + 1, self.width())
+        h = max(margin * 2 + 1, self.height())
+        self._target = QPointF(
+            self._rng.uniform(margin, w - margin),
+            self._rng.uniform(margin, h - margin),
+        )
+        # Pick an enemy figure for this target.
+        self._target_pix = self._rng.choice(self._sprites) if self._sprites else None
+        if self._scenario.moving:
+            angle = self._rng.uniform(0, 2 * math.pi)
+            self._vx = math.cos(angle) * self._scenario.speed
+            self._vy = math.sin(angle) * self._scenario.speed
+        delay = self._scenario.spawn_delay_ms
+        if delay > 0:
+            self._visible_target = False
+            self.update()
+            QTimer.singleShot(int(self._rng.uniform(300, delay)), self._reveal_target)
         else:
-            p.setPen(QColor("#9a958c"))
-            p.drawText(self.rect(), Qt.AlignCenter, "Press Start to begin the drill")
+            self._reveal_target()
+
+    def _reveal_target(self) -> None:
+        if not self._active:
+            return
+        self._visible_target = True
+        self._spawn_time = time.perf_counter()
+        self.update()
+
+    def _advance(self) -> None:
+        if not (self._active and self._visible_target and self._scenario and self._scenario.moving):
+            return
+        dt = self._move_timer.interval() / 1000.0
+        x = self._target.x() + self._vx * dt
+        y = self._target.y() + self._vy * dt
+        margin = self._radius + 4
+        if x < margin or x > self.width() - margin:
+            self._vx = -self._vx
+            x = max(margin, min(self.width() - margin, x))
+        if y < margin or y > self.height() - margin:
+            self._vy = -self._vy
+            y = max(margin, min(self.height() - margin, y))
+        self._target = QPointF(x, y)
+        self.update()
+
+    def mousePressEvent(self, event) -> None:  # noqa: ANN001
+        if not self._active or event.button() != Qt.MouseButton.LeftButton:
+            return super().mousePressEvent(event)
+        if not self._visible_target:
+            return
+        dist = math.hypot(event.position().x() - self._target.x(), event.position().y() - self._target.y())
+        if dist <= self._radius:
+            self._hits += 1
+            self._reaction_times.append((time.perf_counter() - self._spawn_time) * 1000.0)
+            self._spawn_kill(self._target.x(), self._target.y(), self._radius, self._target_pix)
+            done = self._hits >= (self._scenario.target_count if self._scenario else 0)
+            self.progress.emit(self._hits, self._scenario.target_count if self._scenario else 0)
+            if done:
+                self._finish()
+            else:
+                self._next_target()  # next target spawns immediately
+        else:
+            self._misses += 1
+
+    def _spawn_kill(self, cx: float, cy: float, radius: float, pix: QPixmap | None) -> None:
+        if not self._anim_enabled:
+            return
+        self._kills.append({"cx": cx, "cy": cy, "radius": radius, "pix": pix, "t0": time.perf_counter()})
+        if not self._kill_timer.isActive():
+            self._kill_timer.start()
+
+    def _kill_tick(self) -> None:
+        now = time.perf_counter()
+        self._kills = [k for k in self._kills if (now - k["t0"]) * 1000.0 < self.KILL_MS]
+        if not self._kills:
+            self._kill_timer.stop()
+        self.update()
+
+    def _finish(self) -> None:
+        self._active = False
+        self._visible_target = False
+        self._move_timer.stop()
+        key = self._scenario.key if self._scenario else ""
+        self.finished.emit(key, list(self._reaction_times), self._hits, self._misses)
+        self.update()
+
+    def _draw_enemy(self, painter: QPainter, cx: float, cy: float, radius: float,
+                    pix: QPixmap | None, scale: float = 1.0) -> None:
+        if pix is not None and not pix.isNull():
+            height = 2.4 * radius * scale
+            width = height * pix.width() / max(1, pix.height())
+            painter.drawPixmap(
+                QRectF(cx - width / 2, cy - height / 2, width, height),
+                pix,
+                QRectF(0, 0, pix.width(), pix.height()),
+            )
+            return
+        # Procedural vector enemy fallback (head + torso), scalable.
+        r = radius * scale
+        body = QColor("#70e1ba")
+        painter.setPen(QPen(QColor("#06110d"), 2))
+        painter.setBrush(body)
+        painter.drawEllipse(QPointF(cx, cy - r * 0.55), r * 0.38, r * 0.38)  # head
+        torso = QRectF(cx - r * 0.5, cy - r * 0.1, r, r * 1.0)
+        painter.drawRoundedRect(torso, r * 0.2, r * 0.2)                      # body
+
+    def paintEvent(self, event) -> None:  # noqa: ANN001
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.fillRect(self.rect(), QColor("#0d1013"))
+        pen = QPen(QColor(255, 255, 255, 16))
+        painter.setPen(pen)
+        painter.drawRect(self.rect().adjusted(0, 0, -1, -1))
+
+        # Kill animations (expanding + fading enemy ghost with a hit ring).
+        now = time.perf_counter()
+        for kill in self._kills:
+            progress = min(1.0, (now - kill["t0"]) * 1000.0 / self.KILL_MS)
+            scale = 1.0 + 0.6 * progress
+            painter.setOpacity(max(0.0, 1.0 - progress))
+            self._draw_enemy(painter, kill["cx"], kill["cy"], kill["radius"], kill["pix"], scale)
+            ring = QColor("#b4ffe6")
+            ring.setAlpha(int(180 * (1.0 - progress)))
+            painter.setPen(QPen(ring, 2))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            rr = kill["radius"] * (1.0 + 1.4 * progress)
+            painter.drawEllipse(QPointF(kill["cx"], kill["cy"]), rr, rr)
+        painter.setOpacity(1.0)
+
+        if self._active and self._visible_target:
+            self._draw_enemy(painter, self._target.x(), self._target.y(), self._radius, self._target_pix)
+        elif not self._active and not self._kills:
+            painter.setPen(QColor("#9a958c"))
+            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "Choose a scenario and press Start")
+        elif self._active and not self._visible_target:
+            painter.setPen(QColor("#9a958c"))
+            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "Get ready\u2026")
+
+
+def _scenario_name(key: str) -> str:
+    try:
+        return scenario_defs.get(key).name
+    except KeyError:
+        return key
 
 
 class AnalyticsPage(QWidget):
-    def __init__(self, parent=None):
+    """Performance analytics: accuracy and reaction-time trends from the shared store."""
+
+    def __init__(self, store: AnalyticsStore, parent=None):
         super().__init__(parent)
+        self._store = store
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(16)
 
-        card, lay = _card("Session history", "Accuracy across your recent training drills.")
+        metrics = QHBoxLayout()
+        self.acc_metric = QLabel("\u2014")
+        self.rt_metric = QLabel("\u2014")
+        self.best_metric = QLabel("\u2014")
+        for title, widget in (
+            ("Avg accuracy", self.acc_metric),
+            ("Avg reaction", self.rt_metric),
+            ("Best reaction", self.best_metric),
+        ):
+            card, lay = _card(title)
+            widget.setObjectName("metric")
+            lay.addWidget(widget)
+            metrics.addWidget(card, 1)
+        outer.addLayout(metrics)
+
+        card, lay = _card("Session history", "Your most recent training drills, newest first.")
         self.list_widget = QListWidget()
         self.list_widget.setObjectName("sessionList")
         lay.addWidget(self.list_widget)
-
-        summary_row = QHBoxLayout()
-        self.avg_label = QLabel("Average accuracy: —")
-        self.avg_label.setObjectName("metric")
-        summary_row.addWidget(self.avg_label)
-        summary_row.addStretch(1)
-        lay.addLayout(summary_row)
-
         outer.addWidget(card)
-        self._sessions = []
+        self.refresh()
 
-    def add_session(self, result):
-        self._sessions.append(result)
-        item = QListWidgetItem(
-            f"Accuracy {result['accuracy'] * 100:.0f}%  —  {result['hits']} hits / {result['misses']} misses"
-        )
-        self.list_widget.insertItem(0, item)
-        avg = sum(s["accuracy"] for s in self._sessions) / len(self._sessions)
-        self.avg_label.setText(f"Average accuracy: {avg * 100:.0f}%")
+    def refresh(self) -> None:
+        agg = self._store.aggregate()
+        self.list_widget.clear()
+        if agg["total"] == 0:
+            for metric in (self.acc_metric, self.rt_metric, self.best_metric):
+                metric.setText("\u2014")
+            self.list_widget.addItem("No sessions yet. Run a scenario in Training to start tracking.")
+            return
+        self.acc_metric.setText(f"{agg['avg_accuracy'] * 100:.0f}%")
+        self.rt_metric.setText(f"{agg['avg_reaction_ms']:.0f} ms")
+        self.best_metric.setText(f"{agg['best_reaction_ms']:.0f} ms")
+        for s in self._store.recent(8):
+            self.list_widget.addItem(
+                f"{s.when()}  \u00b7  {_scenario_name(s.scenario)}  \u00b7  acc {s.accuracy * 100:.0f}%  \u00b7  "
+                f"avg {s.avg_reaction_ms:.0f} ms"
+            )
 
 
 class TrainingPage(QWidget):
-    session_recorded = Signal(dict)
+    """Scenario-based training: pick a drill, run it, record analytics.
 
-    def __init__(self, parent=None):
+    Results are saved to the shared AnalyticsStore. The analytics view opens from
+    'View analytics'.
+    """
+
+    session_recorded = Signal(object)  # SessionResult
+
+    def __init__(self, store: AnalyticsStore, parent=None):
         super().__init__(parent)
-        self.history = []
-
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-
+        self._store = store
         self.stack = QStackedWidget()
 
         train_widget = QWidget()
@@ -2041,7 +2212,7 @@ class TrainingPage(QWidget):
         outer.setSpacing(20)
 
         head_row = QHBoxLayout()
-        head_row.addWidget(_page_header("Training", "A short reaction drill to validate your current curve."))
+        head_row.addWidget(_page_header("Training", "Scenario drills to validate your curve. No game is read."))
         head_row.addStretch(1)
         self.analytics_btn = QPushButton(" View analytics")
         self.analytics_btn.setObjectName("secondary")
@@ -2051,8 +2222,24 @@ class TrainingPage(QWidget):
         outer.addLayout(head_row)
 
         card, lay = _card()
+        pick_row = QHBoxLayout()
+        self.scenario = QComboBox()
+        for sc in scenario_defs.list_scenarios():
+            self.scenario.addItem(sc.name, sc.key)
+        self.scenario.currentIndexChanged.connect(self._describe)
+        pick_row.addWidget(self.scenario, 1)
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 1)
+        self.progress.setValue(0)
+        pick_row.addWidget(self.progress, 1)
+        lay.addLayout(pick_row)
+        self.desc = _label("", "cardSubtitle", wrap=True)
+        lay.addWidget(self.desc)
+
         self.canvas = TrainingCanvas()
-        lay.addWidget(self.canvas)
+        self.canvas.progress.connect(self._on_progress)
+        self.canvas.finished.connect(self._on_finished)
+        lay.addWidget(self.canvas, 1)
 
         btn_row = QHBoxLayout()
         self.start_btn = QPushButton(" Start drill")
@@ -2067,10 +2254,12 @@ class TrainingPage(QWidget):
         btn_row.addStretch(1)
         lay.addLayout(btn_row)
 
-        outer.addWidget(card)
-        outer.addStretch(1)
+        self.result = _label("", "cardSubtitle", wrap=True)
+        lay.addWidget(self.result)
 
-        self.analytics_page = AnalyticsPage()
+        outer.addWidget(card, 1)
+
+        self.analytics_page = AnalyticsPage(store)
         back_wrap = QWidget()
         back_lay = QVBoxLayout(back_wrap)
         back_lay.setContentsMargins(28, 24, 28, 24)
@@ -2087,31 +2276,55 @@ class TrainingPage(QWidget):
 
         self.stack.addWidget(train_widget)
         self.stack.addWidget(back_wrap)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
         root.addWidget(self.stack)
 
         self.start_btn.clicked.connect(self._start)
         self.stop_btn.clicked.connect(self._stop)
-        self.canvas.session_recorded.connect(self._on_session)
+        self._describe()
 
-    def _start(self):
-        self.start_btn.setEnabled(False)
-        self.stop_btn.setEnabled(True)
-        self.canvas.start()
+    def _describe(self, *_args) -> None:
+        sc = scenario_defs.get(self.scenario.currentData())
+        self.desc.setText(sc.description)
 
-    def _stop(self):
-        self.start_btn.setEnabled(True)
-        self.stop_btn.setEnabled(False)
+    def _set_running(self, running: bool) -> None:
+        self.start_btn.setEnabled(not running)
+        self.stop_btn.setEnabled(running)
+        self.scenario.setEnabled(not running)
+
+    def _start(self) -> None:
+        sc = scenario_defs.get(self.scenario.currentData())
+        self.result.setText("")
+        self.progress.setRange(0, sc.target_count)
+        self.progress.setValue(0)
+        self._set_running(True)
+        self.canvas.start(sc)
+
+    def _stop(self) -> None:
         self.canvas.stop()
+        self._set_running(False)
 
-    def _on_session(self, result):
-        self.history.append(result)
-        self.analytics_page.add_session(result)
+    def _on_progress(self, done: int, total: int) -> None:
+        self.progress.setRange(0, max(1, total))
+        self.progress.setValue(done)
+
+    def _on_finished(self, key: str, reaction_times: list, hits: int, misses: int) -> None:
+        self._set_running(False)
+        result = SessionResult.create(key, reaction_times, hits, misses)
+        self._store.add(result)
+        self.analytics_page.refresh()
+        self.result.setText(
+            f"Done - accuracy {result.accuracy * 100:.0f}%, "
+            f"avg reaction {result.avg_reaction_ms:.0f} ms, best {result.best_reaction_ms:.0f} ms."
+        )
         self.session_recorded.emit(result)
 
-    def _show_analytics(self):
+    def _show_analytics(self) -> None:
+        self.analytics_page.refresh()
         self.stack.setCurrentIndex(1)
 
-    def _show_training(self):
+    def _show_training(self) -> None:
         self.stack.setCurrentIndex(0)
 
 
@@ -2243,7 +2456,10 @@ class MainWindow(QMainWindow):
         self.guide_page = GuidePage()
         self.capture_page = CapturePage(self._backend)
         self.calibration_page = CalibrationPage(self._backend)
-        self.training_page = TrainingPage()
+        self._analytics_store = AnalyticsStore.load(
+            Path(__file__).resolve().parents[3] / ".fpscoach_analytics.json"
+        )
+        self.training_page = TrainingPage(self._analytics_store)
         self.recommendation_page = RecommendationPage(self._backend)
         self.crosshair_page = CrosshairPage()
         self.chat_page = AIChatPage()
@@ -2378,7 +2594,7 @@ class MainWindow(QMainWindow):
         self._apply_voice_commands()
 
     def _on_session_recorded(self, result):
-        self.coach_panel.say(f"Session complete — {result['accuracy'] * 100:.0f}% accuracy.")
+        self.coach_panel.say(f"Session complete — {result.accuracy * 100:.0f}% accuracy.")
 
     def _on_crosshair_edited(self, config):
         pass
