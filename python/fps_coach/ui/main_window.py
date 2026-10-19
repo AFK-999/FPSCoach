@@ -30,6 +30,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QSettings, QTimer, QThread, Signal, QSize, QPointF
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QPainterPath, QImage, QPixmap
 from PySide6.QtWidgets import (
+    QColorDialog,
     QApplication, QMainWindow, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
     QGridLayout, QFrame, QScrollArea, QStackedWidget, QLineEdit, QTextEdit, QComboBox,
     QCheckBox, QSlider, QProgressBar, QButtonGroup, QToolButton, QMessageBox, QFileDialog,
@@ -44,7 +45,7 @@ from fps_coach.ai_chat import (
     AIChatClient, ChatProviderError, ChatSettings, check_ollama, curve_context, pull_model,
 )
 from fps_coach.backend import CoreBackend
-from fps_coach.crosshair import CrosshairConfig
+from fps_coach.crosshair import PRESETS as CROSSHAIR_PRESETS, CrosshairConfig, preset_names
 from fps_coach.curve_io import CurveFormatError, recommendation_profile, save_curve
 
 ORG_NAME = "VantageLabs"
@@ -1471,55 +1472,55 @@ class CoachPanel(QFrame):
 # Crosshair
 # ---------------------------------------------------------------------------
 
-def _draw_crosshair(painter: QPainter, rect, config: dict):
-    painter.save()
-    painter.setRenderHint(QPainter.Antialiasing)
-    cx = rect.center().x()
-    cy = rect.center().y()
+def _draw_crosshair(painter: QPainter, cx: float, cy: float, cfg: CrosshairConfig) -> None:
+    """Paint the crosshair centered at (cx, cy). Shared by the preview and PNG export."""
+    cfg = cfg.normalized()
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setOpacity(cfg.opacity)
+    color = QColor(cfg.color)
+    outline = QColor(cfg.outline_color)
 
-    color = QColor(config.get("color", "#d98f3b"))
-    thickness = float(config.get("thickness", 2.0))
-    length = float(config.get("length", 10.0))
-    gap = float(config.get("gap", 4.0))
-    outline = config.get("outline", True)
-    dot = config.get("dot", False)
+    def seg(x1, y1, x2, y2):
+        if cfg.outline:
+            painter.setPen(QPen(outline, cfg.thickness + 2))
+            painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+        painter.setPen(QPen(color, cfg.thickness))
+        painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
 
-    if outline:
-        pen_outline = QPen(QColor(0, 0, 0, 180))
-        pen_outline.setWidthF(thickness + 2)
-        pen_outline.setCapStyle(Qt.FlatCap)
-        painter.setPen(pen_outline)
-        _draw_crosshair_lines(painter, cx, cy, gap, length)
-
-    pen = QPen(color)
-    pen.setWidthF(thickness)
-    pen.setCapStyle(Qt.FlatCap)
-    painter.setPen(pen)
-    _draw_crosshair_lines(painter, cx, cy, gap, length)
-
-    if dot:
-        painter.setBrush(QBrush(color))
-        painter.setPen(Qt.NoPen)
-        painter.drawEllipse(QPointF(cx, cy), thickness, thickness)
-
-    painter.restore()
-
-
-def _draw_crosshair_lines(painter, cx, cy, gap, length):
-    painter.drawLine(QPointF(cx - gap - length, cy), QPointF(cx - gap, cy))
-    painter.drawLine(QPointF(cx + gap, cy), QPointF(cx + gap + length, cy))
-    painter.drawLine(QPointF(cx, cy - gap - length), QPointF(cx, cy - gap))
-    painter.drawLine(QPointF(cx, cy + gap), QPointF(cx, cy + gap + length))
+    if cfg.shape in ("cross", "cross_dot"):
+        g, s = cfg.gap, cfg.size
+        seg(cx - g - s, cy, cx - g, cy)
+        seg(cx + g, cy, cx + g + s, cy)
+        seg(cx, cy - g - s, cx, cy - g)
+        seg(cx, cy + g, cx, cy + g + s)
+    if cfg.shape == "circle":
+        r = cfg.size
+        if cfg.outline:
+            painter.setPen(QPen(outline, cfg.thickness + 2))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawEllipse(QPointF(cx, cy), r, r)
+        painter.setPen(QPen(color, cfg.thickness))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawEllipse(QPointF(cx, cy), r, r)
+    if cfg.shape in ("dot", "cross_dot") and cfg.dot_size > 0:
+        if cfg.outline:
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(outline)
+            painter.drawEllipse(QPointF(cx, cy), cfg.dot_size + 1.5, cfg.dot_size + 1.5)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(color)
+        painter.drawEllipse(QPointF(cx, cy), cfg.dot_size, cfg.dot_size)
+    painter.setOpacity(1.0)
 
 
 class CrosshairPreview(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setMinimumSize(240, 240)
-        self.config = {"color": "#d98f3b", "thickness": 2.0, "length": 10.0, "gap": 4.0, "outline": True, "dot": False}
+        self._cfg = CrosshairConfig()
 
-    def set_config(self, config):
-        self.config = config
+    def set_config(self, cfg: CrosshairConfig):
+        self._cfg = cfg
         self.update()
 
     def paintEvent(self, event):
@@ -1528,20 +1529,24 @@ class CrosshairPreview(QWidget):
         pen = QPen(QColor(255, 255, 255, 14))
         p.setPen(pen)
         p.drawRect(self.rect().adjusted(0, 0, -1, -1))
-        _draw_crosshair(p, self.rect(), self.config)
+        _draw_crosshair(p, self.width() / 2, self.height() / 2, self._cfg)
 
 
 class CrosshairPage(QWidget):
-    """Crosshair designer. Reads and writes the original CrosshairConfig schema under
-    the "crosshair/config" key, so designs saved by the original app load here."""
+    """Crosshair designer: presets, live preview, JSON import/export and PNG export.
+
+    Stores the original CrosshairConfig schema under "crosshair/config". The
+    crosshair is shown in this app and written to files; it is never drawn over a game.
+    """
 
     edited = Signal(dict)
+    SHAPES = ("cross_dot", "cross", "dot", "circle")
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.s = _settings()
         self._model = self._load_model()
-        self.config = self._ui_config(self._model)
+        self._loading = False
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(28, 24, 28, 24)
@@ -1557,52 +1562,67 @@ class CrosshairPage(QWidget):
         form.setHorizontalSpacing(12)
         form.setVerticalSpacing(10)
 
-        form.addWidget(_label("Thickness", "formLabel"), 0, 0)
-        self.thickness = QSlider(Qt.Horizontal)
-        self.thickness.setRange(1, 12)
-        self.thickness.setValue(int(self.config["thickness"]))
-        self.thickness.valueChanged.connect(self._on_change)
-        form.addWidget(self.thickness, 0, 1)
+        form.addWidget(_label("Preset", "formLabel"), 0, 0)
+        self.preset = QComboBox()
+        self.preset.addItem("Choose a preset…", "")
+        for name in preset_names():
+            self.preset.addItem(name.replace("_", " ").title(), name)
+        self.preset.currentIndexChanged.connect(self._apply_preset)
+        form.addWidget(self.preset, 0, 1)
 
-        form.addWidget(_label("Length", "formLabel"), 1, 0)
-        self.length = QSlider(Qt.Horizontal)
-        self.length.setRange(0, 64)
-        self.length.setValue(int(self.config["length"]))
-        self.length.valueChanged.connect(self._on_change)
-        form.addWidget(self.length, 1, 1)
+        form.addWidget(_label("Shape", "formLabel"), 1, 0)
+        self.shape = QComboBox()
+        self.shape.addItems(list(self.SHAPES))
+        self.shape.currentIndexChanged.connect(self._on_change)
+        form.addWidget(self.shape, 1, 1)
 
-        form.addWidget(_label("Gap", "formLabel"), 2, 0)
-        self.gap = QSlider(Qt.Horizontal)
-        self.gap.setRange(0, 40)
-        self.gap.setValue(int(self.config["gap"]))
-        self.gap.valueChanged.connect(self._on_change)
-        form.addWidget(self.gap, 2, 1)
+        self.thickness = self._slider(1, 12)
+        self.length = self._slider(0, 64)
+        self.gap = self._slider(0, 40)
+        self.dot = self._slider(0, 12)
+        self.opacity = self._slider(10, 100)
+        for row, (text, slider) in enumerate((
+            ("Thickness", self.thickness),
+            ("Arm length", self.length),
+            ("Center gap", self.gap),
+            ("Dot size", self.dot),
+            ("Opacity", self.opacity),
+        ), start=2):
+            form.addWidget(_label(text, "formLabel"), row, 0)
+            form.addWidget(slider, row, 1)
+            slider.valueChanged.connect(self._on_change)
 
         self.outline = QCheckBox("Outline")
-        self.outline.setChecked(self.config["outline"])
         self.outline.toggled.connect(self._on_change)
-        form.addWidget(self.outline, 3, 0)
+        form.addWidget(self.outline, 7, 0)
 
-        self.dot = QCheckBox("Center dot")
-        self.dot.setChecked(self.config["dot"])
-        self.dot.toggled.connect(self._on_change)
-        form.addWidget(self.dot, 3, 1)
-
+        self.color_btn = QPushButton("Color")
+        self.color_btn.setObjectName("secondary")
+        self.color_btn.clicked.connect(self._pick_color)
+        form.addWidget(self.color_btn, 7, 1)
         controls_lay.addLayout(form)
 
         btn_row = QHBoxLayout()
-        export_btn = QPushButton(" Export")
+        export_btn = QPushButton(" Export JSON")
         export_btn.setObjectName("secondary")
         export_btn.setIcon(icon("download"))
-        export_btn.clicked.connect(self._export)
-        import_btn = QPushButton(" Import")
+        export_btn.clicked.connect(self._export_json_dialog)
+        import_btn = QPushButton(" Import JSON")
         import_btn.setObjectName("secondary")
         import_btn.setIcon(icon("upload"))
-        import_btn.clicked.connect(self._import)
+        import_btn.clicked.connect(self._import_dialog)
+        png_btn = QPushButton(" Export PNG")
+        png_btn.setObjectName("primary")
+        png_btn.setIcon(icon("download", "#1a1106"))
+        png_btn.clicked.connect(self._export_png_dialog)
         btn_row.addWidget(export_btn)
         btn_row.addWidget(import_btn)
+        btn_row.addWidget(png_btn)
         btn_row.addStretch(1)
         controls_lay.addLayout(btn_row)
+
+        self.status = _label("", "cardSubtitle", wrap=True)
+        controls_lay.addWidget(self.status)
 
         self.row = ResponsiveRow(spacing=20)
         self.row.add_widget(preview_card)
@@ -1610,9 +1630,16 @@ class CrosshairPage(QWidget):
         outer.addWidget(self.row)
         outer.addStretch(1)
 
-        self.preview.set_config(self.config)
+        self._sync_controls()
+        self._refresh()
 
-    # --- model <-> UI ---------------------------------------------------
+    @staticmethod
+    def _slider(lo: int, hi: int) -> QSlider:
+        slider = QSlider(Qt.Horizontal)
+        slider.setRange(lo, hi)
+        return slider
+
+    # --- model -----------------------------------------------------------
     def _load_model(self) -> CrosshairConfig:
         raw = self.s.value("crosshair/config", "")
         if raw:
@@ -1622,66 +1649,99 @@ class CrosshairPage(QWidget):
                 pass
         return CrosshairConfig().normalized()
 
-    @staticmethod
-    def _ui_config(model: CrosshairConfig) -> dict:
-        return {
-            "color": model.color,
-            "thickness": model.thickness,
-            "length": model.size,
-            "gap": model.gap,
-            "outline": model.outline,
-            "dot": model.dot_size > 0,
-        }
-
-    def _model_from_ui(self) -> CrosshairConfig:
+    def _with(self, **changes) -> CrosshairConfig:
         data = self._model.to_dict()
-        data["thickness"] = int(self.config["thickness"])
-        data["size"] = int(self.config["length"])
-        data["gap"] = int(self.config["gap"])
-        data["outline"] = bool(self.config["outline"])
-        data["dot_size"] = max(self._model.dot_size, 2) if self.config["dot"] else 0
+        data.update(changes)
         return CrosshairConfig.from_dict(data).normalized()
 
-    def _save(self):
-        self.s.setValue("crosshair/config", json.dumps(self._model.to_dict()))
+    def _sync_controls(self):
+        self._loading = True
+        try:
+            m = self._model
+            self.shape.setCurrentText(m.shape)
+            self.thickness.setValue(m.thickness)
+            self.length.setValue(m.size)
+            self.gap.setValue(m.gap)
+            self.dot.setValue(m.dot_size)
+            self.opacity.setValue(int(round(m.opacity * 100)))
+            self.outline.setChecked(m.outline)
+        finally:
+            self._loading = False
 
-    # --- events -----------------------------------------------------------
     def _on_change(self, *_args):
-        self.config["thickness"] = self.thickness.value()
-        self.config["length"] = self.length.value()
-        self.config["gap"] = self.gap.value()
-        self.config["outline"] = self.outline.isChecked()
-        self.config["dot"] = self.dot.isChecked()
-        self._model = self._model_from_ui()
-        self.preview.set_config(self.config)
-        self._save()
-        self.edited.emit(self.config)
+        if self._loading:
+            return
+        self._model = self._with(
+            shape=self.shape.currentText(),
+            thickness=self.thickness.value(),
+            size=self.length.value(),
+            gap=self.gap.value(),
+            dot_size=self.dot.value(),
+            opacity=self.opacity.value() / 100.0,
+            outline=self.outline.isChecked(),
+        )
+        self._refresh()
 
-    def _export(self):
+    def _refresh(self):
+        self.preview.set_config(self._model)
+        self.color_btn.setText(f"Color  {self._model.color}")
+        self.s.setValue("crosshair/config", json.dumps(self._model.to_dict()))
+        self.edited.emit(self._model.to_dict())
+
+    def _apply_preset(self, *_args):
+        key = self.preset.currentData()
+        if not key:
+            return
+        self._model = CROSSHAIR_PRESETS[key].normalized()
+        self._sync_controls()
+        self._refresh()
+
+    def _pick_color(self):
+        chosen = QColorDialog.getColor(QColor(self._model.color), self, "Crosshair color")
+        if chosen.isValid():
+            self._model = self._with(color=chosen.name())
+            self._refresh()
+
+    # --- import / export --------------------------------------------------
+    def export_png(self, path: str) -> bool:
+        size = 128
+        image = QImage(size, size, QImage.Format.Format_ARGB32)
+        image.fill(QColor(0, 0, 0, 0))
+        painter = QPainter(image)
+        _draw_crosshair(painter, size / 2, size / 2, self._model)
+        painter.end()
+        ok = image.save(path, "PNG")
+        self.status.setText(f"Exported {path}" if ok else "Export failed.")
+        return bool(ok)
+
+    def export_json(self, path: str) -> None:
+        Path(path).write_text(json.dumps(self._model.to_dict(), indent=2))
+        self.status.setText(f"Exported {path}")
+
+    def import_json(self, path: str) -> None:
+        self._model = CrosshairConfig.from_dict(json.loads(Path(path).read_text())).normalized()
+        self._sync_controls()
+        self._refresh()
+        self.status.setText(f"Imported {path}")
+
+    def _export_png_dialog(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Export crosshair", "crosshair.png", "PNG (*.png)")
+        if path:
+            self.export_png(path)
+
+    def _export_json_dialog(self):
         path, _ = QFileDialog.getSaveFileName(self, "Export crosshair", "crosshair.json", "JSON (*.json)")
         if path:
-            Path(path).write_text(json.dumps(self._model.to_dict(), indent=2))
+            self.export_json(path)
 
-    def _import(self):
+    def _import_dialog(self):
         path, _ = QFileDialog.getOpenFileName(self, "Import crosshair", "", "JSON (*.json)")
-        if path:
-            try:
-                self._model = CrosshairConfig.from_dict(json.loads(Path(path).read_text())).normalized()
-            except (OSError, ValueError, TypeError) as exc:
-                QMessageBox.warning(self, "Vantage", f"Could not import crosshair: {exc}")
-                return
-            self.config = self._ui_config(self._model)
-            self._sync_controls()
-
-    def _sync_controls(self):
-        self.thickness.setValue(int(self.config["thickness"]))
-        self.length.setValue(int(self.config["length"]))
-        self.gap.setValue(int(self.config["gap"]))
-        self.outline.setChecked(bool(self.config["outline"]))
-        self.dot.setChecked(bool(self.config["dot"]))
-        self.preview.set_config(self.config)
-        self._save()
-        self.edited.emit(self.config)
+        if not path:
+            return
+        try:
+            self.import_json(path)
+        except (OSError, ValueError, TypeError) as exc:
+            QMessageBox.warning(self, "Vantage", f"Could not import crosshair: {exc}")
 
 
 # ---------------------------------------------------------------------------
