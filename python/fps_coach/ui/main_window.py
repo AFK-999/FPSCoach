@@ -51,7 +51,9 @@ from fps_coach import scenarios as scenario_defs
 from fps_coach.analytics import AnalyticsStore, SessionResult
 from fps_coach.window_enum import get_window_rect, list_windows
 from fps_coach.crosshair import PRESETS as CROSSHAIR_PRESETS, CrosshairConfig, preset_names
-from fps_coach.curve_adjust import adjust_from_recommendation, normalized_overlay
+from fps_coach.ai_curve_actions import apply_adjustment, parse_adjustment
+from fps_coach.chat_suggestions import suggest
+from fps_coach.curve_adjust import adjust_from_recommendation, apply_preset, normalized_overlay
 from fps_coach.curve_io import (
     CurveFormatError,
     chart_points,
@@ -619,6 +621,7 @@ class CalibrationPage(QWidget):
 
     recommendation_ready = Signal(dict, dict)
     profile_changed = Signal(dict)
+    base_profile_changed = Signal(object)  # imported CurveProfile (AI Coach builds on it)
 
     def __init__(self, backend: CoreBackend, parent=None):
         super().__init__(parent)
@@ -752,11 +755,19 @@ class CalibrationPage(QWidget):
             return
         self._base_profile = deepcopy(profile)
         self._profile = deepcopy(profile)
+        self.base_profile_changed.emit(deepcopy(profile))
         self._set_chart(_curve_samples(chart_points(profile)))
         self.hint.setText(
             f"Imported {Path(path).name}. Run calibration to adjust it, or drag points to edit it."
         )
         self.profile_changed.emit({"imported": path})
+
+    def set_adjusted(self, previous, current, note: str) -> None:
+        """Show an AI-adjusted curve as before/after and make it the curve Export writes."""
+        self._profile = deepcopy(current)
+        prev_pts, cur_pts = normalized_overlay(previous, current)
+        self._set_chart(_curve_samples(cur_pts), previous=_curve_samples(prev_pts))
+        self.hint.setText(f"{note} Export curve to save it.")
 
     def _save(self):
         if self._profile is None:
@@ -1016,9 +1027,14 @@ class _ChatRequest(QThread):
 
 class AIChatPage(QWidget):
     """AI Coach chat. Sends turns through ai_chat.AIChatClient (Ollama by default),
-    adds the latest calibration as context, and takes one spoken phrase as input."""
+    adds the latest calibration as context, and takes one spoken phrase as input.
+
+    Also offers suggested actions and curve tuning on an imported curve, and posts a
+    proactive note after each calibration.
+    """
 
     assistant_said = Signal(str)  # emitted with each AI response (Coach Panel, TTS)
+    curve_adjusted = Signal(object, object, str)  # (previous, current, note)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1026,7 +1042,13 @@ class AIChatPage(QWidget):
         self._thread = None
         self._voice_thread = None
         self._messages: list[dict[str, str]] = []
+        self._summary_context = ""
         self._calibration_context = ""
+        self._base_profile = None
+        self._adjusted_profile = None
+        self._proactive_pending = None
+        self._proactive_check = None
+        self._proactive_request = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(28, 24, 28, 24)
@@ -1038,6 +1060,10 @@ class AIChatPage(QWidget):
         self.transcript.setObjectName("transcript")
         self.transcript.setReadOnly(True)
         lay.addWidget(self.transcript, 1)
+
+        self.suggestion_bar = QHBoxLayout()
+        self.suggestion_bar.setSpacing(8)
+        lay.addLayout(self.suggestion_bar)
 
         input_row = QHBoxLayout()
         self.input = QLineEdit()
@@ -1056,16 +1082,222 @@ class AIChatPage(QWidget):
 
         outer.addWidget(card, 1)
 
+        tune_card, tune_lay = _card("Curve tuning")
+        self.quick_hint = _label(
+            "Import a curve in Calibration to enable one-click tuning.", "cardSubtitle", wrap=True
+        )
+        tune_lay.addWidget(self.quick_hint)
+        self.quick_preview = CurveChart()
+        self.quick_preview.setMinimumHeight(180)
+        # Read-only preview: the chart is shown, not edited, from here.
+        self.quick_preview.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.quick_preview.hide()
+        tune_lay.addWidget(self.quick_preview)
+        self.apply_to_rec = QPushButton(" Send to calibration")
+        self.apply_to_rec.setObjectName("secondary")
+        self.apply_to_rec.setIcon(icon("check"))
+        self.apply_to_rec.hide()
+        tune_lay.addWidget(self.apply_to_rec, 0, Qt.AlignLeft)
+        outer.addWidget(tune_card)
+
         self.send_btn.clicked.connect(self._send)
         self.input.returnPressed.connect(self._send)
+        self.input.textChanged.connect(self._refresh_suggestions)
         self.mic_btn.toggled.connect(self._start_voice)
+        self.apply_to_rec.clicked.connect(self._send_adjusted_to_calibration)
+        self._refresh_suggestions()
 
+    # --- calibration + imported curve context ----------------------------
     def set_calibration_context(self, summary: dict, recommendation: dict) -> None:
         """Give the coach the latest calibration so answers can refer to it."""
-        self._calibration_context = curve_context(summary, recommendation)
+        self._summary_context = curve_context(summary, recommendation)
+        self._refresh_context()
+
+    def notify_new_calibration(self, summary: dict, recommendation: dict) -> None:
+        """Called when a calibration completes: refresh the coach's context and post
+        a proactive note without waiting for the user."""
+        self.set_calibration_context(summary, recommendation)
+        self._append("Coach (auto)", self._local_proactive_note(summary, recommendation))
+        self._maybe_proactive_ai(summary, recommendation)
+
+    def set_base_profile(self, profile) -> None:
+        """Receive the imported curve so suggestions and AI adjustments can build on it."""
+        self._base_profile = deepcopy(profile) if profile is not None else None
+        self._adjusted_profile = None
+        if self._base_profile is not None:
+            self.quick_hint.setText(
+                f"Base curve: '{self._base_profile.name}'. Suggestions update as you type; "
+                "tap a tuning action to preview it below."
+            )
+        else:
+            self.quick_hint.setText("Import a curve in Calibration to enable one-click tuning.")
+            self.quick_preview.hide()
+            self.apply_to_rec.hide()
+        self._refresh_context()
+        self._refresh_suggestions()
+
+    def _refresh_context(self) -> None:
+        """Context = latest calibration summary + a description of the imported base curve."""
+        context = self._summary_context
+        if self._base_profile is not None:
+            pts = ", ".join(
+                f"({p.speed:.0f},{p.multiplier:.2f})" for p in self._base_profile.horizontal[:12]
+            )
+            context = (
+                f"{context}\n\nImported base curve '{self._base_profile.name}' "
+                f"({self._base_profile.source_format}); horizontal speed,gain points: {pts}. "
+                "When asked for adjustments, modify THIS curve rather than designing a new one."
+            )
+        self._calibration_context = context
+
+    def _local_proactive_note(self, summary: dict, recommendation: dict) -> str:
+        title = str(recommendation.get("title", "Recommendation"))
+        sens = float(recommendation.get("sensitivity_multiplier", 1.0) or 1.0)
+        conf = float(recommendation.get("confidence", 0.0)) * 100
+        path_eff = float(summary.get("path_efficiency", 0.0)) * 100
+        over = float(summary.get("overshoot_score", 0.0)) * 100
+        corr = float(summary.get("correction_score", 0.0)) * 100
+        parts = [
+            f"New calibration in. Direction: {title}.",
+            f"Suggested starting multiplier {sens:.2f}x (confidence {conf:.0f}%).",
+            f"Path efficiency {path_eff:.0f}%, overshoot {over:.0f}%, corrections {corr:.0f}%.",
+        ]
+        reasons = recommendation.get("reasons") or []
+        if reasons:
+            parts.append(f"Key point: {reasons[0]}")
+        if self._base_profile is not None:
+            parts.append(f"I've adjusted your imported curve '{self._base_profile.name}' to match.")
+        parts.append("Ask me anything about these results, or use a suggested action.")
+        return " ".join(parts)
+
+    # --- proactive AI (Ollama only, and only when the model is already present) ---
+    def _maybe_proactive_ai(self, summary: dict, recommendation: dict) -> None:
+        # Never trigger a surprise download or a paid API call without user action.
+        if str(self._settings.value("ai/provider", "ollama")) != "ollama":
+            return
+        if self._proactive_request is not None or self._proactive_check is not None:
+            return
+        settings = self._chat_settings()
+        if not settings.base_url or not settings.model:
+            return
+        self._proactive_pending = (summary, recommendation)
+        self._proactive_check = _OllamaStatusCheck(settings.base_url, settings.model, self)
+        self._proactive_check.status_ready.connect(self._on_proactive_status)
+        self._proactive_check.finished.connect(self._proactive_check_finished)
+        self._proactive_check.start()
+
+    def _proactive_check_finished(self) -> None:
+        if self._proactive_check is not None:
+            self._proactive_check.deleteLater()
+        self._proactive_check = None
+
+    def _on_proactive_status(self, reachable: bool, has_model: bool) -> None:
+        if not (reachable and has_model) or self._proactive_pending is None:
+            return
+        if self._proactive_request is not None:
+            return
+        instruction = (
+            "The user just completed a new calibration. Using the calibration summary "
+            "and current curve already in your context, give a brief (2-3 sentence) "
+            "proactive assessment and one concrete next step. Do not ask questions."
+        )
+        messages = list(self._messages) + [{"role": "user", "content": instruction}]
+        self._proactive_request = _ChatRequest(self._chat_settings(), messages, self._calibration_context, self)
+        self._proactive_request.response_ready.connect(self._proactive_received)
+        self._proactive_request.request_failed.connect(self._proactive_quiet_fail)
+        self._proactive_request.finished.connect(self._proactive_finished)
+        self._proactive_request.start()
+
+    def _proactive_received(self, answer: str) -> None:
+        self._messages.append({"role": "assistant", "content": answer})
+        self._append("Coach", answer)
+        self.assistant_said.emit(answer)
+        self._apply_ai_adjustment(answer)
+
+    def _proactive_quiet_fail(self, _message: str) -> None:
+        # The instant local note already covered the user; stay silent on failure.
+        pass
+
+    def _proactive_finished(self) -> None:
+        if self._proactive_request is not None:
+            self._proactive_request.deleteLater()
+        self._proactive_request = None
+
+    # --- suggestions, quick actions, AI-driven curve changes ----------------
+    def _refresh_suggestions(self, *_args) -> None:
+        """Rebuild the suggestion chips to match what the user is typing."""
+        while self.suggestion_bar.count():
+            item = self.suggestion_bar.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        for s in suggest(self.input.text(), self._base_profile is not None):
+            chip = QPushButton(s["label"])
+            chip.setObjectName("secondary")
+            if s["kind"] == "preset":
+                chip.clicked.connect(lambda checked=False, k=s["payload"]: self._apply_quick_action(k))
+            else:
+                chip.clicked.connect(lambda checked=False, p=s["payload"]: self._use_prompt(p))
+            self.suggestion_bar.addWidget(chip)
+        self.suggestion_bar.addStretch(1)
+
+    def _use_prompt(self, prompt: str) -> None:
+        """Drop a suggested question into the compose box for the user to send or edit."""
+        self.input.setText(prompt)
+        self.input.setFocus()
+
+    def _show_preview(self, adjusted, note: str) -> None:
+        self._adjusted_profile = adjusted
+        prev_pts, cur_pts = normalized_overlay(self._base_profile, adjusted)
+        self.quick_preview.set_previous(_curve_samples(prev_pts))
+        self.quick_preview.points = _curve_samples(cur_pts)
+        self.quick_preview.update()
+        self.quick_preview.show()
+        self.apply_to_rec.show()
+        self.quick_hint.setText(note)
+
+    def _apply_quick_action(self, key: str) -> None:
+        if self._base_profile is None:
+            self._append("Quick action", "Import a curve in Calibration first.")
+            return
+        try:
+            adjusted, note = apply_preset(self._base_profile, key)
+        except KeyError:
+            return
+        self._show_preview(adjusted, note)
+        self._append(
+            "Quick action",
+            f"{note}\nPreview updated. Multiplier now {adjusted.horizontal[0].multiplier:.2f}x at the first point.",
+        )
+
+    def _apply_ai_adjustment(self, answer: str) -> None:
+        """If the assistant recommended a curve change, apply it to the imported curve
+        and show it in the preview and on the Calibration graph."""
+        if self._base_profile is None:
+            return
+        plan = parse_adjustment(answer)
+        if not plan:
+            return
+        try:
+            adjusted, note = apply_adjustment(self._base_profile, plan)
+        except (ValueError, KeyError):
+            return
+        self._show_preview(adjusted, note)
+        self.curve_adjusted.emit(deepcopy(self._base_profile), deepcopy(adjusted), note)
+        self._append("Applied", f"{note} Updated the Calibration graph automatically.")
+
+    def _send_adjusted_to_calibration(self) -> None:
+        if self._base_profile is None or self._adjusted_profile is None:
+            return
+        self.curve_adjusted.emit(
+            deepcopy(self._base_profile),
+            deepcopy(self._adjusted_profile),
+            self._adjusted_profile.description or "Adjusted via AI quick action.",
+        )
+        self._append("Quick action", "Sent the adjusted curve to Calibration (open it to review and export).")
 
     def shutdown(self) -> None:
-        for thread in (self._thread, self._voice_thread):
+        for thread in (self._thread, self._voice_thread, self._proactive_check, self._proactive_request):
             if thread is not None and thread.isRunning():
                 thread.wait(2000)
 
@@ -1099,6 +1331,7 @@ class AIChatPage(QWidget):
         self._messages.append({"role": "assistant", "content": answer})
         self._append("Coach", answer)
         self.assistant_said.emit(answer)
+        self._apply_ai_adjustment(answer)
 
     def _on_failed(self, message: str):
         if self._messages and self._messages[-1]["role"] == "user":
@@ -2484,6 +2717,8 @@ class MainWindow(QMainWindow):
     def _wire_signals(self):
         self.calibration_page.recommendation_ready.connect(self._on_calibration_result)
         self.calibration_page.profile_changed.connect(self._on_profile_changed)
+        self.calibration_page.base_profile_changed.connect(self.chat_page.set_base_profile)
+        self.chat_page.curve_adjusted.connect(self._on_curve_adjusted)
         self.recommendation_page.recommendation_ready.connect(self._on_recommendation)
         self.chat_page.assistant_said.connect(self._on_assistant_said)
         self.chat_page.assistant_said.connect(self._speak_response)
@@ -2573,11 +2808,18 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     def _on_calibration_result(self, summary: dict, recommendation: dict):
         self.recommendation_page.update_result(summary, recommendation)
-        self.chat_page.set_calibration_context(summary, recommendation)
+        self.chat_page.notify_new_calibration(summary, recommendation)
         self._select_page("recommendation")
 
     def _on_profile_changed(self, profile):
         self.coach_panel.say("Calibration profile updated.")
+
+    def _on_curve_adjusted(self, previous, current, note: str):
+        # An AI quick action or directive produced an adjusted curve: show it on the
+        # Calibration graph as before/after and switch there.
+        self.calibration_page.set_adjusted(previous, current, note)
+        self.coach_panel.say(note)
+        self._select_page("calibration")
 
     def _on_recommendation(self, result):
         mult = float(result.get("sensitivity_multiplier", 1.0))
