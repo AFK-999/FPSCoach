@@ -114,6 +114,11 @@ class AnalyticsStore:
             "best_reaction_ms": round(min(bests), 1) if bests else 0.0,
         }
 
+    def clear(self) -> None:
+        """Delete every stored session and write the empty store to disk."""
+        self.sessions = []
+        self.save()
+
     def save(self) -> None:
         if not self.path:
             return

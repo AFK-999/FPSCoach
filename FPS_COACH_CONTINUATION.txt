@@ -145,6 +145,10 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     /home/user/workspace/FPSCoach   (clone of https://github.com/AFK-999/FPSCoach.git)
     Remote origin/main = e9e69a2   (the visual REDESIGN; based on 04e6b0f)
     Working branch     = fix/redesign-backend-wiring (from e9e69a2), NOT pushed.
+    REV45 STATUS: full visual redesign committed on the working branch (see
+    changelog rev45). Still NOT pushed. Push needs GitHub credentials that this
+    sandbox does not have. Exact command for a machine with access:
+        git push origin fix/redesign-backend-wiring:main
                          Commits on it (newest first): f6af4b9 rev43, 9b2c551 rev42,
                          a292b0f rev41, 3c92736 rev40, e6f4aac rev39, 7328318 rev38,
                          110d50e rev37 addendum, 6ce7dfe rev37 fix, ff8b165 + ab574cd
@@ -1140,6 +1144,53 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
               slider and the new capture arguments); app.py quit run exit 0, no traceback.
               NOT verified: real display, Win32 window list, native capture, real Ollama,
               real game curve files, Windows build.
+
+  2026-10-19 (rev45)  FULL VISUAL REDESIGN ("Vantage"), on top of rev44 features.
+              - Navigation: horizontal top bar. Seven working tabs (Dashboard, Capture,
+                Calibration, Recommendation, Training, Crosshair, AI Coach) with drawn
+                icons, plus icon-only Guide, Privacy, Settings. Ctrl+1..7 switch tabs.
+                Left sidebar removed. Core status ("Native core" / "Preview mode") in the bar.
+              - Coach: slim collapsible strip under the bar (was a floating overlay).
+                Hide/restore uses the existing ui/coach_panel setting.
+              - Icons: all 27 glyphs are drawn with QPainter paths (ui/icons.py).
+                No stock or emoji art. icon()/pixmap() API unchanged.
+              - Styles: new palette and stylesheet (ui/styles.py). Graphite surfaces, one
+                chartreuse accent, hairline borders. Light theme is soft gray (rev24).
+                "Stage" surfaces (training, calibration field, crosshair and capture
+                previews) stay dark in both themes.
+              - Recommendation: summary (left) and suggested curve (right) are a fixed
+                two-column layout. Nothing stacks on resize or minimize (ResponsiveRow
+                is no longer used here). The chart is read-only.
+              - Training: enemy figures are the bundled transparent sprites (robot and
+                drone). The hit ring is replaced by corner brackets. A hit plays a short
+                kill effect (flash, fade, shards, about 460 ms). Performance visual mode
+                turns kill effects off. A HUD shows hits, misses, and accuracy.
+                Drill / Analytics switch is a segmented control on the page.
+              - Dashboard: tile values are now filled (they were a "-" placeholder).
+                Tiles open their page on click. Up/down reorder and hide are persisted
+                (dashboard/order, dashboard/enabled). "Show hidden tiles" restores them.
+              - Privacy: "Clear" now really deletes saved training sessions
+                (AnalyticsStore.clear(), new) and the on-screen chat. Before, it only
+                showed a message.
+              - Settings: two-column layout. Advanced panel now states that no advanced
+                options exist yet (the old text implied some did).
+              - Split: main_window.py is the shell. Pages are in pages_setup.py,
+                pages_practice.py, pages_coach.py. Background threads are in threads.py.
+                Shared widgets (header, card, curve chart, crosshair draw, glyph
+                registry) are in widgets.py. Method bodies that were not changed were
+                moved verbatim from c30e552.
+              - Tests: tests/test_ui_redesign.py adds 7 offscreen checks (icons, light
+                palette, 7+3 navigation, all pages switch, side-by-side recommendation,
+                recommendation and dashboard fill, privacy clear).
+              NOT REVIEWED VISUALLY: capture, calibration, AI coach, settings, privacy,
+              crosshair, guide. They were built and switched to in the offscreen smoke
+              test, but I did not inspect their screenshots. Dashboard, recommendation
+              (dark and light), and training were inspected.
+              VERIFICATION (rev45, sandbox): pytest 99/99; ruff --select F clean on
+              python and tests; compileall ok; offscreen UI smoke 32/32; wiring script
+              32/32; app quit run rc 0, no traceback.
+              NOT verified: real display, Windows fonts (Segoe UI Variable), real
+              capture, real Ollama, Windows build, push to origin (no credentials).
 
 --------------------------------------------------------------------------------
 9. OPEN QUESTIONS / ACTION ITEMS

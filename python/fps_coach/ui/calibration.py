@@ -10,6 +10,8 @@ from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QCursor, QMouseEvent, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
+from .styles import STAGE
+
 
 class CalibrationCanvas(QWidget):
     """In-app target task; it observes only this explicit calibration session."""
@@ -149,9 +151,9 @@ class CalibrationCanvas(QWidget):
     def paintEvent(self, event) -> None:  # noqa: ANN001
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.fillRect(self.rect(), QColor("#0c1118"))
+        painter.fillRect(self.rect(), QColor(STAGE["stage_bg"]))
 
-        grid_pen = QPen(QColor("#17202b"), 1)
+        grid_pen = QPen(QColor(STAGE["stage_grid"]), 1)
         painter.setPen(grid_pen)
         for x in range(24, self.width(), 24):
             painter.drawLine(x, 0, x, self.height())
@@ -159,14 +161,14 @@ class CalibrationCanvas(QWidget):
             painter.drawLine(0, y, self.width(), y)
 
         if len(self._trail) > 1:
-            painter.setPen(QPen(QColor(70, 123, 109, 110), 2))
+            painter.setPen(QPen(QColor(215, 242, 73, 90), 2))
             points = list(self._trail)
             for first, second in zip(points, points[1:]):
                 painter.drawLine(first, second)
 
         if self._active:
-            painter.setPen(QPen(QColor("#70e1ba"), 2))
-            painter.setBrush(QColor(112, 225, 186, 30))
+            painter.setPen(QPen(QColor(STAGE["stage_accent"]), 2))
+            painter.setBrush(QColor(215, 242, 73, 34))
             outer = QRectF(
                 self._target.x() - self._target_radius,
                 self._target.y() - self._target_radius,
@@ -174,11 +176,11 @@ class CalibrationCanvas(QWidget):
                 self._target_radius * 2,
             )
             painter.drawEllipse(outer)
-            painter.setBrush(QColor("#70e1ba"))
+            painter.setBrush(QColor(STAGE["stage_accent"]))
             painter.setPen(Qt.PenStyle.NoPen)
             painter.drawEllipse(self._target, 4.0, 4.0)
         else:
-            painter.setPen(QColor("#718095"))
+            painter.setPen(QColor(STAGE["stage_text"]))
             painter.drawText(
                 self.rect(),
                 Qt.AlignmentFlag.AlignCenter,
