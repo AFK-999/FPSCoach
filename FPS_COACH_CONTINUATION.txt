@@ -1000,6 +1000,8 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
                     Runs only when ui/tts_enabled is on.
                   Crosshair: reads and writes the original CrosshairConfig schema
                     under "crosshair/config". Previously it wrote a different schema.
+                  Sidebar: native core status label (core_label, green/amber), restored
+                    from HEAD. Hidden when the sidebar is collapsed.
                   closeEvent: stops voice and TTS, waits for chat threads, then
                     backend.close().
               - Settings and QSettings: _settings() returns QSettings() (the app-level

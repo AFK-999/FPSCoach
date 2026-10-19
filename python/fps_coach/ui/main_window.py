@@ -1939,6 +1939,11 @@ class MainWindow(QMainWindow):
         self._apply_voice_commands()
         self._select_page("dashboard")
 
+    @property
+    def backend(self) -> CoreBackend:
+        """The CoreBackend this window was built with (same object as _backend)."""
+        return self._backend
+
     # ------------------------------------------------------------------
     def _build_sidebar(self):
         sidebar = QFrame()
@@ -1989,6 +1994,16 @@ class MainWindow(QMainWindow):
             lay.addWidget(divider)
 
         lay.addStretch(1)
+
+        # Native core status (restored from the original): tells the user whether
+        # capture is the real native core or the Python preview mode.
+        self.core_status = _label(
+            self._backend.core_label,
+            "statusGood" if self._backend.native_available else "statusWarn",
+            wrap=True,
+        )
+        self.core_status.setContentsMargins(20, 0, 20, 8)
+        lay.addWidget(self.core_status)
 
         self.collapse_btn = QPushButton()
         self.collapse_btn.setObjectName("collapseButton")
@@ -2051,6 +2066,7 @@ class MainWindow(QMainWindow):
         width = 64 if self._collapsed else 220
         self.sidebar.setFixedWidth(width)
         self.collapse_btn.setIcon(icon("chevron_right" if self._collapsed else "chevron_left"))
+        self.core_status.setVisible(not self._collapsed)
         flat_labels = dict(item for _, items in NAV_SECTIONS for item in items)
         for key, btn in self._nav_buttons.items():
             btn.setText("" if self._collapsed else f"  {flat_labels[key]}")
