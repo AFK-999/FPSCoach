@@ -21,6 +21,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+import threading
 import zipfile
 from pathlib import Path
 from urllib.request import urlopen
@@ -199,6 +200,38 @@ def ensure_model(progress=None) -> Path:
     return model
 
 
+# One loaded Vosk model is kept for reuse. Loading a big model takes seconds and
+# several gigabytes, so it must not happen on every phrase. Only one model is held at a
+# time: switching to another path drops the old one first.
+_MODEL_LOCK = threading.Lock()
+_loaded_model: tuple[str, object] | None = None
+
+
+def load_model(model_path):
+    """Return the Vosk model at ``model_path``, loading it only on first use.
+
+    Raises whatever ``vosk.Model`` raises. Callers wrap it in their own error handling.
+    """
+    global _loaded_model
+    import vosk
+
+    key = str(Path(model_path).resolve())
+    with _MODEL_LOCK:
+        if _loaded_model is not None and _loaded_model[0] == key:
+            return _loaded_model[1]
+        _loaded_model = None  # free the previous model before loading the next one
+        model = vosk.Model(key)
+        _loaded_model = (key, model)
+        return model
+
+
+def release_model() -> None:
+    """Drop the cached model so its memory can be reclaimed (for example, voice turned off)."""
+    global _loaded_model
+    with _MODEL_LOCK:
+        _loaded_model = None
+
+
 def recognize_once(phrase_limit: float = 6.0, progress=None) -> tuple[bool, str, str]:
     """One-shot offline recognition with Vosk -> (ok, text, message).
 
@@ -219,7 +252,7 @@ def recognize_once(phrase_limit: float = 6.0, progress=None) -> tuple[bool, str,
         import sounddevice as sd
         import vosk
 
-        model = vosk.Model(str(model_path))
+        model = load_model(model_path)
         recognizer = vosk.KaldiRecognizer(model, SAMPLE_RATE)
         audio_q: queue.Queue[bytes] = queue.Queue()
 
@@ -265,7 +298,7 @@ def listen(model_path, on_text, should_stop, on_status=None) -> None:
         raise VoskUnavailable(f"Vosk/sounddevice import failed: {exc}") from exc
 
     try:
-        model = vosk.Model(str(model_path))
+        model = load_model(model_path)
         recognizer = vosk.KaldiRecognizer(model, SAMPLE_RATE)
     except Exception as exc:  # noqa: BLE001
         raise VoskUnavailable(f"Could not load the Vosk model: {exc}") from exc

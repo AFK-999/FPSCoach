@@ -145,6 +145,11 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     /home/user/workspace/FPSCoach   (clone of https://github.com/AFK-999/FPSCoach.git)
     Remote origin/main = e9e69a2   (the visual REDESIGN; based on 04e6b0f)
     Working branch     = fix/redesign-backend-wiring (from e9e69a2), NOT pushed.
+    REV53 STATUS: rev52 plus (1) the Vosk model is loaded once and reused, and one
+    model is held at a time (vosk_service.load_model / release_model; released when voice
+    is turned off); (2) spoken replies are cleaned before speech (tts_service.speakable_text;
+    the transcript keeps the original text). Not run here: real Vosk models and real
+    audio. Still NOT pushed.
     REV52 STATUS: rev51 plus no code change. Answered a question on Vosk model size,
     memory, and punctuation (see the rev52 changelog entry). Still NOT pushed.
     REV51 STATUS: rev50 plus (1) a "Read replies aloud" switch in AI Coach, sharing the
@@ -1160,6 +1165,23 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
               slider and the new capture arguments); app.py quit run exit 0, no traceback.
               NOT verified: real display, Win32 window list, native capture, real Ollama,
               real game curve files, Windows build.
+
+  2026-10-19 (rev53)  VOSK MODEL CACHE AND SPOKEN-TEXT CLEANING.
+              - vosk_service.load_model(path): loads the Vosk model once and reuses it. Used by
+                recognize_once() and listen(), which previously each loaded a fresh model.
+                Only one model is held; a different path drops the previous one first.
+              - vosk_service.release_model(): called when voice commands are turned off in
+                main_window._apply_voice_commands, so the memory is returned.
+              - tts_service.speakable_text(): strips markdown, replaces fenced code with
+                "(code example omitted)", speaks % as "percent", and drops other symbols and
+                markup. Applied in _TtsService.enqueue, so the engine never receives them.
+                The transcript keeps the original reply.
+              - Tests: tests/test_speakable_text.py (25), tests/test_vosk_model_cache.py (5).
+                Full suite 174 passed. ruff F clean. compileall OK. Wiring 32/32.
+              - NOT verified: a real Vosk model loaded and run (none downloaded here); real
+                speech output; whether Vosk allows one model to be shared by a listener
+                thread and a one-shot call at the same time (the code does this; check on
+                hardware); the peak RAM saving on a real machine.
 
   2026-10-19 (rev52)  NO CODE CHANGE. VOSK MODEL AND PUNCTUATION QUESTION.
               - Vosk recognition outputs lowercase words with no punctuation. Punctuation

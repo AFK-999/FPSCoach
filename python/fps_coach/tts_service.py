@@ -19,9 +19,11 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import os
+import re
 import shutil
 import subprocess
 import sys
+import unicodedata
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -314,6 +316,81 @@ def init_engine(platform: str | None = None, progress: Progress = None) -> InitR
             if progress and index + 1 < len(attempts):
                 progress(f"{label} failed; trying the next option...")
     return result
+
+
+# --- text cleaning ----------------------------------------------------------
+
+# Symbols with a spoken form. Other symbols are dropped rather than read out.
+_SPOKEN_SYMBOLS = {
+    "%": " percent ",
+    "&": " and ",
+    "+": " plus ",
+    "\u00d7": " times ",
+    "\u00f7": " divided by ",
+    "=": " equals ",
+    "/": " ",
+    "_": " ",
+}
+# Punctuation that helps the speech engine pause and intonate. Everything else is dropped.
+_KEPT_PUNCTUATION = set(".,;:!?'\"()-\u2013\u2014\u2026")
+
+
+def speakable_text(text: str | None) -> str:
+    """Turn an AI reply into text a speech engine can read aloud cleanly.
+
+    Removes markdown (headings, bold, bullets, links, inline code), replaces fenced code
+    with a short note, speaks a few symbols as words (% becomes "percent"), and drops
+    other symbols such as emoji, arrows, and stray markup characters, which speech
+    engines otherwise read out by name. The text shown in the transcript is not changed.
+    Returns "" when nothing speakable is left.
+    """
+    if not text:
+        return ""
+    out = text.replace("\r\n", "\n").replace("\r", "\n")
+    out = re.sub(r"```.*?```", " (code example omitted) ", out, flags=re.DOTALL)
+    out = re.sub(r"`([^`\n]*)`", r"\1", out)
+    out = re.sub(r"!\[([^\]]*)\]\([^)]*\)", r"\1", out)
+    out = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", out)
+    out = re.sub(r"https?://\S+", "link", out)
+    out = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", out)
+    out = re.sub(r"(?m)^\s*(?:[-*+\u2022]|\u25e6)\s+", "", out)
+    out = re.sub(r"(\*\*|__)(.+?)\1", r"\2", out)
+    out = re.sub(r"(?m)^\s*[-=_*|]{3,}\s*$", "", out)
+    out = re.sub(r"\s+-\s+", ", ", out)
+    out = out.replace("|", ", ")
+
+    # One sentence per line: a line break becomes a full stop so the engine pauses.
+    lines = []
+    for raw in out.split("\n"):
+        line = raw.strip()
+        if not line:
+            continue
+        if line[-1] not in ".!?:;,":
+            line += "."
+        lines.append(line)
+    out = " ".join(lines)
+
+    for symbol, spoken in _SPOKEN_SYMBOLS.items():
+        out = out.replace(symbol, spoken)
+
+    # Allow-list: letters, digits, spaces, combining accents, and the pause punctuation.
+    # Every other character (markup such as * # { } [ ] < > ^ \ ~, symbols, emoji,
+    # control characters) becomes a space, so no engine reads it out by name.
+    kept = []
+    for ch in out:
+        if ch.isalnum() or ch.isspace() or ch in _KEPT_PUNCTUATION:
+            kept.append(ch)
+        elif unicodedata.category(ch).startswith("M"):
+            kept.append(ch)
+        else:
+            kept.append(" ")
+    out = "".join(kept)
+    out = re.sub(r"\s+([.,;:!?])", r"\1", out)
+    out = re.sub(r"([.,;:!?])(?:\s*[.,;:!?])+", r"\1", out)
+    out = re.sub(r"\s+", " ", out).strip()
+    if not any(ch.isalnum() for ch in out):
+        return ""
+    return out
 
 
 def format_unavailable(result: InitResult, platform: str | None = None) -> str:

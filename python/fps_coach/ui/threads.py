@@ -6,6 +6,7 @@ from __future__ import annotations
 from PySide6.QtCore import QThread, Signal
 
 from fps_coach.ai_chat import AIChatClient, ChatProviderError, ChatSettings, check_ollama, pull_model
+from fps_coach.tts_service import speakable_text
 
 
 class _OllamaStatusCheck(QThread):
@@ -75,8 +76,10 @@ class _TtsService(QThread):
         self._stop = False
 
     def enqueue(self, text: str) -> None:
-        if text and text.strip():
-            self._queue.put(text.strip())
+        # Clean markdown and symbols here, so the engine never reads them out.
+        spoken = speakable_text(text)
+        if spoken:
+            self._queue.put(spoken)
 
     def stop(self) -> None:
         self._stop = True

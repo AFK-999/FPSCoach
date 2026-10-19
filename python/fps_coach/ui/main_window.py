@@ -508,6 +508,11 @@ class MainWindow(QMainWindow):
             self._voice_service.stop()
             self._voice_service.wait(1500)
             self._voice_service = None
+            # Voice is off: free the Vosk model (it can be gigabytes). A running listener
+            # keeps its own reference until it exits, so this is safe either way.
+            from fps_coach import vosk_service
+
+            vosk_service.release_model()
 
     # ------------------------------------------------------------------
     def _on_calibration_result(self, summary: dict, recommendation: dict):
