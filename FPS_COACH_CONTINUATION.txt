@@ -1,7 +1,7 @@
 ================================================================================
 FPS COACH — CONTINUATION / HANDOFF DOCUMENT
 Copy-paste this whole file into a new agent chat to resume with zero context loss.
-Last updated: 2026-10-19 (rev 33)  (update after EVERY response)
+Last updated: 2026-10-19 (rev 34)  (update after EVERY response)
 
 *** IMPORTANT (rev4): The REAL repo was provided and differs a lot from the
 *** earlier scaffold. Work on the REAL repo at /home/user/workspace/FPSCoach
@@ -914,3 +914,24 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
   [ ] Where should AI preconfig live (file path / format: json/yaml/toml)?
   [ ] Preferred naming for the two installers.
 ================================================================================
+  2026-10-19 (rev34)  TTS HARDENING (tts_service.py + _TtsService worker). Local
+              commit (NOT pushed).
+                - Engine fallback chain: pyttsx3 default driver -> other pyttsx3 drivers
+                  for this OS (macOS: avspeech) -> Windows only: PowerShell System.Speech
+                  (no pip packages). pyttsx3 ships only SAPI5 on Windows, so the
+                  PowerShell backend is the only real alternative there.
+                - init_engine() never raises; returns InitResult(speaker, attempts).
+                  format_unavailable() builds a clear chat message listing every failed
+                  attempt plus a per-OS fix hint. create_engine() removed.
+                - Platform deps: PLATFORM_PACKAGES (win32: pywin32 [pythoncom],
+                  comtypes) checked and pip-installed when missing; a failed platform
+                  install no longer blocks the fallbacks.
+                - com_apartment(): CoInitialize/CoUninitialize on the worker thread
+                  (Windows); no-op elsewhere.
+                - Worker: speaks via Speaker.say(); a bad utterance is skipped;
+                  3 consecutive failures emit failed (turns the toggle off, message in chat).
+              VERIFIED: 92/92 tests (+19 test_tts_service.py); ruff clean on changed
+                files; worker logic exercised with stub Qt classes (fail msg / speak +
+                close / auto-off); real pyttsx3 in sandbox (no eSpeak) -> clear message.
+              NOT VERIFIED: real SAPI5 / PowerShell speech on Windows (needs a Windows
+                machine with a voice installed).

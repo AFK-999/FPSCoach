@@ -1,61 +1,329 @@
-"""Text-to-speech for AI responses via pyttsx3 (offline, cross-platform).
+"""Text-to-speech for AI responses.
 
-``pyttsx3`` is an optional dependency that is auto-installed on demand (like the
-voice-input stack), so the user never has to install it by hand. This module is
-the dependency/engine layer; the UI owns a small worker thread that consumes a
-queue of texts and speaks them.
+Engines are tried in this order until one initializes:
 
-Degrades gracefully (clear message / False) where the package or an audio output
-device is unavailable, and stays importable/unit-testable headless.
+1. pyttsx3 with the platform's default driver (SAPI5 on Windows, NSSS on macOS,
+   eSpeak on Linux).
+2. pyttsx3 with any other driver that exists for this OS (macOS: AVSpeech).
+3. Windows only: PowerShell's ``System.Speech`` synthesizer, which needs no pip
+   packages. pyttsx3 ships only the SAPI5 driver on Windows, so this is the only
+   real alternative there.
+
+Every failed attempt is recorded in :class:`InitResult` so the UI can say exactly
+what was tried. Nothing in this module raises on a missing or broken speech
+stack; it degrades to a clear message instead.
 """
 
 from __future__ import annotations
 
 import importlib
 import importlib.util
+import os
+import shutil
 import subprocess
 import sys
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from typing import Protocol
 
 REQUIRED_PACKAGE = "pyttsx3"
+
+# Platform-specific packages pyttsx3 needs at runtime: (pip name, importable module).
+# On Windows pyttsx3 normally pulls these in, but they can be missing if pyttsx3
+# was installed with --no-deps or a pywin32 install failed. We check and repair.
+PLATFORM_PACKAGES: dict[str, tuple[tuple[str, str], ...]] = {
+    "win32": (("pywin32", "pythoncom"), ("comtypes", "comtypes")),
+}
+
+# pyttsx3 drivers per platform. The first entry is pyttsx3's own default there.
+PYTTSX3_DRIVERS: dict[str, tuple[str, ...]] = {
+    "win32": ("sapi5",),
+    "darwin": ("nsss", "avspeech"),
+    "linux": ("espeak",),
+}
+
+POWERSHELL_TEXT_ENV = "FPSCOACH_TTS_TEXT"
+# Exit code 3 means "System.Speech works but no voices are installed".
+POWERSHELL_PROBE = (
+    "Add-Type -AssemblyName System.Speech; "
+    "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+    "$n = $s.GetInstalledVoices().Count; $s.Dispose(); "
+    "if ($n -eq 0) { exit 3 }"
+)
+POWERSHELL_SPEAK = (
+    "Add-Type -AssemblyName System.Speech; "
+    "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+    f"$s.Speak($env:{POWERSHELL_TEXT_ENV}); $s.Dispose()"
+)
+
+_HINTS = {
+    "win32": (
+        "Fix: check that Windows has a speech voice installed, then turn the option "
+        "back on. If pywin32 or comtypes keep failing, run: "
+        "python -m pip install pywin32 comtypes"
+    ),
+    "darwin": "Fix: check System Settings > Accessibility > Spoken Content for an installed voice.",
+    "linux": "Fix: install eSpeak NG (for example: sudo apt install espeak-ng), then turn the option back on.",
+}
+
+Progress = Callable[[str], None] | None
+
+
+class Speaker(Protocol):
+    name: str
+
+    def say(self, text: str) -> None: ...
+
+    def close(self) -> None: ...
+
+
+@dataclass
+class InitResult:
+    speaker: Speaker | None = None
+    # One line per failed attempt, in the order they were tried.
+    attempts: list[str] = field(default_factory=list)
+
+
+class _Pyttsx3Speaker:
+    def __init__(self, engine, driver: str | None) -> None:
+        self._engine = engine
+        self.name = f"pyttsx3 {driver or 'default'} driver"
+
+    def say(self, text: str) -> None:
+        self._engine.say(text)
+        self._engine.runAndWait()
+
+    def close(self) -> None:
+        try:
+            self._engine.stop()
+        except Exception:  # noqa: BLE001 - shutdown must never raise
+            pass
+
+
+class _PowerShellSpeaker:
+    name = "PowerShell System.Speech"
+
+    def __init__(self, exe: str) -> None:
+        self._exe = exe
+
+    def say(self, text: str) -> None:
+        # Text goes through an environment variable, so quotes or '$' in the
+        # reply cannot break or inject into the PowerShell command.
+        env = {**os.environ, POWERSHELL_TEXT_ENV: text}
+        subprocess.run(
+            [self._exe, "-NoProfile", "-NonInteractive", "-Command", POWERSHELL_SPEAK],
+            env=env,
+            check=True,
+            capture_output=True,
+            timeout=300,
+        )
+
+    def close(self) -> None:
+        pass
+
+
+def _last_line(text: str | None) -> str:
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    return lines[-1] if lines else ""
+
+
+def _describe(exc: BaseException) -> str:
+    detail = str(exc).strip()
+    return f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
+
+
+# --- dependencies -----------------------------------------------------------
 
 
 def dependency_available() -> bool:
     return importlib.util.find_spec(REQUIRED_PACKAGE) is not None
 
 
-def ensure_dependency(progress=None, timeout: float = 600.0) -> bool:
-    """Ensure pyttsx3 is installed, pip-installing it if missing. Returns True
-    when it is importable. Best-effort, non-raising."""
-    if dependency_available():
+def _module_missing(module: str) -> bool:
+    try:
+        return importlib.util.find_spec(module) is None
+    except (ImportError, ValueError):
         return True
-    if progress:
-        progress("Installing text-to-speech (pyttsx3)... this runs once.")
+
+
+def missing_platform_packages(platform: str | None = None) -> list[str]:
+    """Pip names of this platform's required packages that cannot be imported."""
+    plat = platform or sys.platform
+    return [pip for pip, module in PLATFORM_PACKAGES.get(plat, ()) if _module_missing(module)]
+
+
+def _pip_install(packages: list[str], progress: Progress, timeout: float) -> bool:
     try:
         subprocess.run(
-            [sys.executable, "-m", "pip", "install", REQUIRED_PACKAGE],
+            [sys.executable, "-m", "pip", "install", *packages],
             check=True,
             capture_output=True,
             text=True,
             timeout=timeout,
         )
-    except Exception as exc:  # noqa: BLE001
+    except subprocess.CalledProcessError as exc:
         if progress:
-            progress(f"Text-to-speech install failed: {exc}")
+            detail = _last_line(exc.stderr) or f"pip exited with code {exc.returncode}"
+            progress(f"Installing {', '.join(packages)} failed: {detail}")
         return False
-    importlib.invalidate_caches()
-    ok = dependency_available()
+    except Exception as exc:  # noqa: BLE001 - install is best-effort
+        if progress:
+            progress(f"Installing {', '.join(packages)} failed: {_describe(exc)}")
+        return False
+    return True
+
+
+def ensure_platform_dependencies(
+    progress: Progress = None, timeout: float = 600.0, platform: str | None = None
+) -> list[str]:
+    """Install any missing platform packages. Returns the ones still missing."""
+    missing = missing_platform_packages(platform)
+    if not missing:
+        return []
     if progress:
-        progress("Text-to-speech ready." if ok else "Text-to-speech still unavailable.")
-    return ok
+        progress(f"Installing speech support ({', '.join(missing)})... this runs once.")
+    _pip_install(missing, progress, timeout)
+    importlib.invalidate_caches()
+    return missing_platform_packages(platform)
 
 
-def create_engine():
-    """Create and return a pyttsx3 engine, or None if it cannot be initialized."""
+def ensure_dependency(progress: Progress = None, timeout: float = 600.0) -> bool:
+    """Make pyttsx3 and the platform packages importable, installing what's missing.
+
+    Returns True only when everything is present. Best-effort and non-raising. The
+    worker does not stop on False: :func:`init_engine` still tries the fallbacks.
+    """
+    ok = True
     if not dependency_available():
-        return None
-    try:
-        import pyttsx3
+        if progress:
+            progress("Installing text-to-speech (pyttsx3)... this runs once.")
+        ok = _pip_install([REQUIRED_PACKAGE], progress, timeout)
+        importlib.invalidate_caches()
+        ok = ok and dependency_available()
+    still_missing = ensure_platform_dependencies(progress, timeout)
+    ready = ok and not still_missing
+    if progress:
+        progress(
+            "Text-to-speech packages ready."
+            if ready
+            else "Some text-to-speech packages are missing; trying fallbacks."
+        )
+    return ready
 
-        return pyttsx3.init()
-    except Exception:
-        return None
+
+# --- COM (Windows) ----------------------------------------------------------
+
+
+@contextmanager
+def com_apartment() -> Iterator[None]:
+    """Initialize COM on the calling thread for the duration of the block.
+
+    SAPI5 needs COM on the thread that uses it. Qt worker threads don't get that
+    automatically. No-op on non-Windows platforms or when pywin32 is missing.
+    """
+    initialized = False
+    pythoncom = None
+    if sys.platform == "win32":
+        try:
+            import pythoncom as _pythoncom
+
+            _pythoncom.CoInitialize()
+            pythoncom = _pythoncom
+            initialized = True
+        except Exception:  # noqa: BLE001 - fall through; SAPI5 may still work
+            initialized = False
+    try:
+        yield
+    finally:
+        if initialized and pythoncom is not None:
+            try:
+                pythoncom.CoUninitialize()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+# --- engine selection -------------------------------------------------------
+
+
+def _pyttsx3_driver_chain(platform: str) -> list[str | None]:
+    """None means pyttsx3's default driver; then any other driver for this OS."""
+    names = PYTTSX3_DRIVERS.get(platform, ())
+    return [None, *names[1:]]
+
+
+def _speaker_from_pyttsx3(driver: str | None) -> Speaker:
+    import pyttsx3  # lazy: keeps the module importable without the package
+
+    engine = pyttsx3.init(driverName=driver)
+    voices = engine.getProperty("voices")
+    if not voices:
+        raise RuntimeError("no voices are installed for this driver")
+    return _Pyttsx3Speaker(engine, driver)
+
+
+def _init_powershell() -> Speaker:
+    exe = shutil.which("powershell") or shutil.which("pwsh")
+    if exe is None:
+        raise RuntimeError("powershell was not found on PATH")
+    probe = subprocess.run(
+        [exe, "-NoProfile", "-NonInteractive", "-Command", POWERSHELL_PROBE],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if probe.returncode == 3:
+        raise RuntimeError("no speech voices are installed in Windows")
+    if probe.returncode != 0:
+        raise RuntimeError(
+            _last_line(probe.stderr) or f"System.Speech probe exited with code {probe.returncode}"
+        )
+    return _PowerShellSpeaker(exe)
+
+
+def init_engine(platform: str | None = None, progress: Progress = None) -> InitResult:
+    """Try each engine in order and return the first that initializes.
+
+    Call this on the thread that will speak (inside :func:`com_apartment` on
+    Windows). It never raises. When every option fails, ``speaker`` is None and
+    ``attempts`` says why each one failed.
+    """
+    plat = platform or sys.platform
+    result = InitResult()
+
+    attempts: list[tuple[str, Callable[[], Speaker]]] = []
+    if dependency_available():
+        for driver in _pyttsx3_driver_chain(plat):
+            attempts.append(
+                (
+                    f"pyttsx3 {driver or 'default'} driver",
+                    lambda d=driver: _speaker_from_pyttsx3(d),
+                )
+            )
+    else:
+        result.attempts.append("pyttsx3 is not installed")
+    if plat == "win32":
+        attempts.append(("PowerShell System.Speech", _init_powershell))
+
+    for index, (label, make) in enumerate(attempts):
+        try:
+            result.speaker = make()
+            return result
+        except Exception as exc:  # noqa: BLE001 - every failure becomes a message
+            result.attempts.append(f"{label}: {_describe(exc)}")
+            if progress and index + 1 < len(attempts):
+                progress(f"{label} failed; trying the next option...")
+    return result
+
+
+def format_unavailable(result: InitResult, platform: str | None = None) -> str:
+    """Human-readable explanation for the chat when no speech engine works."""
+    plat = platform or sys.platform
+    lines = ["Text-to-speech is unavailable on this system, so replies will show as text only."]
+    if result.attempts:
+        lines.append("What was tried:")
+        lines.extend(f"  - {attempt}" for attempt in result.attempts)
+    hint = _HINTS.get(plat)
+    if hint:
+        lines.append(hint)
+    return "\n".join(lines)
