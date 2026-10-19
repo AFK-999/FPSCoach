@@ -14,7 +14,14 @@ calibration, comfort, practice plan, and manually configured response curve. Be 
 honest about uncertainty. Never provide target detection, recoil automation, synthetic input,
 anti-cheat bypasses, process injection, or other gameplay automation. Do not claim that a curve
 will guarantee better performance. Recommend small reversible changes and breaks if discomfort
-is mentioned. Calibration data is local and should not be requested unless needed."""
+is mentioned. Calibration data is local and should not be requested unless needed.
+
+Answer the specific question asked. Base recommendations on the calibration summary and curve
+data supplied in this conversation, and name the values you used (for example the sensitivity
+multiplier or a measured percentage). If that data does not answer the question, say what is
+missing instead of guessing. Do not give generic tips when specific data is available. You
+cannot see the user's screen or game; say so when a question depends on something you were not
+given. Do not invent results, scores, trends, or past sessions."""
 
 
 class ChatProviderError(RuntimeError):

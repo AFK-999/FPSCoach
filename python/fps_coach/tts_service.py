@@ -46,6 +46,9 @@ PYTTSX3_DRIVERS: dict[str, tuple[str, ...]] = {
 }
 
 POWERSHELL_TEXT_ENV = "FPSCOACH_TTS_TEXT"
+POWERSHELL_RATE_ENV = "FPSCOACH_TTS_RATE"
+POWERSHELL_VOLUME_ENV = "FPSCOACH_TTS_VOLUME"
+POWERSHELL_VOICE_ENV = "FPSCOACH_TTS_VOICE"
 # Exit code 3 means "System.Speech works but no voices are installed".
 POWERSHELL_PROBE = (
     "Add-Type -AssemblyName System.Speech; "
@@ -56,8 +59,49 @@ POWERSHELL_PROBE = (
 POWERSHELL_SPEAK = (
     "Add-Type -AssemblyName System.Speech; "
     "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+    f"$s.Rate = [int]$env:{POWERSHELL_RATE_ENV}; "
+    f"$s.Volume = [int]$env:{POWERSHELL_VOLUME_ENV}; "
+    f"if ($env:{POWERSHELL_VOICE_ENV}) {{ try {{ $s.SelectVoice($env:{POWERSHELL_VOICE_ENV}) }} catch {{ }} }}; "
     f"$s.Speak($env:{POWERSHELL_TEXT_ENV}); $s.Dispose()"
 )
+POWERSHELL_VOICES = (
+    "Add-Type -AssemblyName System.Speech; "
+    "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+    "$s.GetInstalledVoices() | ForEach-Object { $_.VoiceInfo.Name }; $s.Dispose()"
+)
+
+# --- speech options (rate, volume, voice) -----------------------------------
+# Pitch is not offered: neither pyttsx3 nor System.Speech exposes a pitch setting.
+
+SPEED_MIN, SPEED_MAX = 0.5, 2.0  # multiples of normal speaking rate
+VOLUME_MIN, VOLUME_MAX = 0, 100  # percent
+PYTTSX3_BASE_RATE = 200  # words per minute at 1.0x
+
+
+@dataclass(frozen=True)
+class SpeechOptions:
+    """What the speech engine should sound like. Applied before each utterance."""
+
+    speed: float = 1.0
+    volume: int = 100
+    voice: str = ""  # a voice name from the engine; "" means the engine's default
+
+    def clamped(self) -> "SpeechOptions":
+        return SpeechOptions(
+            speed=min(SPEED_MAX, max(SPEED_MIN, float(self.speed))),
+            volume=int(min(VOLUME_MAX, max(VOLUME_MIN, round(float(self.volume))))),
+            voice=str(self.voice or ""),
+        )
+
+
+def pyttsx3_rate(speed: float) -> int:
+    """pyttsx3 rate is words per minute."""
+    return int(round(PYTTSX3_BASE_RATE * speed))
+
+
+def powershell_rate(speed: float) -> int:
+    """System.Speech rate runs from -10 (slowest) to 10. 1.0x is 0. The mapping is approximate."""
+    return int(max(-10, min(10, round((speed - 1.0) * 10))))
 
 _HINTS = {
     "win32": (
@@ -75,6 +119,10 @@ Progress = Callable[[str], None] | None
 class Speaker(Protocol):
     name: str
 
+    def voices(self) -> list[str]: ...
+
+    def apply(self, options: SpeechOptions) -> None: ...
+
     def say(self, text: str) -> None: ...
 
     def close(self) -> None: ...
@@ -91,6 +139,39 @@ class _Pyttsx3Speaker:
     def __init__(self, engine, driver: str | None) -> None:
         self._engine = engine
         self.name = f"pyttsx3 {driver or 'default'} driver"
+        self._voice_ids: dict[str, str] = {}
+        self._default_voice_id = None
+        self._applied: SpeechOptions | None = None
+
+    def voices(self) -> list[str]:
+        """Voice names this engine can use. Also remembers the engine's default voice."""
+        names: list[str] = []
+        self._voice_ids = {}
+        try:
+            self._default_voice_id = self._engine.getProperty("voice")
+        except Exception:  # noqa: BLE001 - not every driver reports a default
+            self._default_voice_id = None
+        for voice in self._engine.getProperty("voices") or []:
+            voice_id = str(getattr(voice, "id", "") or "")
+            name = str(getattr(voice, "name", "") or voice_id)
+            if name and voice_id:
+                names.append(name)
+                self._voice_ids[name] = voice_id
+        return names
+
+    def apply(self, options: SpeechOptions) -> None:
+        """Set rate, volume, and voice on this thread, before the next utterance."""
+        if options == self._applied:
+            return
+        self._engine.setProperty("rate", pyttsx3_rate(options.speed))
+        self._engine.setProperty("volume", options.volume / 100.0)
+        if options.voice:
+            voice_id = self._voice_ids.get(options.voice)
+            if voice_id is not None:
+                self._engine.setProperty("voice", voice_id)
+        elif self._default_voice_id is not None:
+            self._engine.setProperty("voice", self._default_voice_id)
+        self._applied = options
 
     def say(self, text: str) -> None:
         self._engine.say(text)
@@ -108,11 +189,34 @@ class _PowerShellSpeaker:
 
     def __init__(self, exe: str) -> None:
         self._exe = exe
+        self._options = SpeechOptions()
+
+    def voices(self) -> list[str]:
+        try:
+            probe = subprocess.run(
+                [self._exe, "-NoProfile", "-NonInteractive", "-Command", POWERSHELL_VOICES],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+        except Exception:  # noqa: BLE001 - voice list is optional
+            return []
+        return [line.strip() for line in probe.stdout.splitlines() if line.strip()]
+
+    def apply(self, options: SpeechOptions) -> None:
+        self._options = options.clamped()
 
     def say(self, text: str) -> None:
         # Text goes through an environment variable, so quotes or '$' in the
         # reply cannot break or inject into the PowerShell command.
-        env = {**os.environ, POWERSHELL_TEXT_ENV: text}
+        opts = self._options
+        env = {
+            **os.environ,
+            POWERSHELL_TEXT_ENV: text,
+            POWERSHELL_RATE_ENV: str(powershell_rate(opts.speed)),
+            POWERSHELL_VOLUME_ENV: str(opts.volume),
+            POWERSHELL_VOICE_ENV: opts.voice,
+        }
         subprocess.run(
             [self._exe, "-NoProfile", "-NonInteractive", "-Command", POWERSHELL_SPEAK],
             env=env,

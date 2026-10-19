@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from fps_coach.ai_chat import ChatSettings, curve_context
+from fps_coach.tts_service import SPEED_MAX, SPEED_MIN, VOLUME_MAX, VOLUME_MIN, SpeechOptions
 from fps_coach.ai_curve_actions import apply_adjustment, parse_adjustment
 from fps_coach.analytics import AnalyticsStore
 from fps_coach.chat_suggestions import suggest
@@ -136,6 +137,8 @@ class AIChatPage(QWidget):
     curve_adjusted = Signal(object, object, str)  # (previous, current, note)
     read_aloud_changed = Signal(bool)  # the chat's "Read replies aloud" switch was flipped
     stop_speaking_requested = Signal()
+    speech_options_changed = Signal(object)  # SpeechOptions, sent on every slider or voice change
+    voice_test_requested = Signal()
 
     _THINKING_STRIP = 44  # px reserved under the transcript text while a request runs
     TEXT_MIN, TEXT_DEFAULT, TEXT_MAX = 12, 14, 24  # transcript font size range, in px
@@ -167,6 +170,7 @@ class AIChatPage(QWidget):
 
         card, lay = _card()
         lay.addLayout(self._build_speech_bar())
+        lay.addLayout(self._build_voice_bar())
         lay.addLayout(self._build_text_size_bar())
         self.transcript = QTextEdit()
         self.transcript.setObjectName("transcript")
@@ -175,6 +179,7 @@ class AIChatPage(QWidget):
         lay.addWidget(self.transcript, 1)
         # Visible while a request is running, so the transcript is never blank-looking.
         self._pending_requests = 0
+        self._voice_name = ""  # the chosen voice; kept even before the engine's voice list arrives
         self._thinking = ThinkingIndicator(
             self.transcript,
             animate=fx_enabled(str(self._settings.value("ui/mode", "luxurious"))),
@@ -449,6 +454,80 @@ class AIChatPage(QWidget):
         row.addWidget(self.speech_status, 1)
         return row
 
+    def _build_voice_bar(self) -> QVBoxLayout:
+        box = QVBoxLayout()
+        box.setSpacing(8)
+        sliders = QHBoxLayout()
+        sliders.setSpacing(10)
+        sliders.addWidget(_label("Speed", "formLabel"))
+        self.speed_slider = ValueSlider(
+            round(SPEED_MIN * 100), round(SPEED_MAX * 100), fmt=lambda v: f"{v / 100:.2f}x"
+        )
+        self.speed_slider.setToolTip("Speaking speed. Changes apply to the next sentence spoken.")
+        self.speed_slider.valueChanged.connect(lambda _v: self._emit_speech_options())
+        sliders.addWidget(self.speed_slider, 1)
+        sliders.addWidget(_label("Volume", "formLabel"))
+        self.volume_slider = ValueSlider(VOLUME_MIN, VOLUME_MAX, fmt=lambda v: f"{v}%")
+        self.volume_slider.setToolTip("Speech volume. Changes apply to the next sentence spoken.")
+        self.volume_slider.valueChanged.connect(lambda _v: self._emit_speech_options())
+        sliders.addWidget(self.volume_slider, 1)
+        box.addLayout(sliders)
+
+        voice_row = QHBoxLayout()
+        voice_row.setSpacing(10)
+        voice_row.addWidget(_label("Voice", "formLabel"))
+        self.voice_combo = QComboBox()
+        self.voice_combo.setToolTip("Voices this system's speech engine offers.")
+        self.voice_combo.addItem("Engine default", "")
+        self.voice_combo.currentIndexChanged.connect(lambda _i: self._on_voice_chosen())
+        voice_row.addWidget(self.voice_combo, 1)
+        self.test_voice_btn = QPushButton(" Test voice")
+        self.test_voice_btn.setObjectName("secondary")
+        set_glyph(self.test_voice_btn, "speaker")
+        self.test_voice_btn.clicked.connect(self._on_test_voice)
+        voice_row.addWidget(self.test_voice_btn)
+        box.addLayout(voice_row)
+
+        box.addWidget(_label(
+            "Pitch is not available: the speech engines this app uses do not expose a pitch setting."
+        ))
+        return box
+
+    def speech_options(self) -> SpeechOptions:
+        return SpeechOptions(
+            speed=self.speed_slider.value() / 100,
+            volume=self.volume_slider.value(),
+            voice=self._voice_name,
+        ).clamped()
+
+    def set_voices(self, names: list[str]) -> None:
+        """Fill the voice list from the speech engine, selecting the saved voice if present."""
+        self.voice_combo.blockSignals(True)
+        self.voice_combo.clear()
+        self.voice_combo.addItem("Engine default", "")
+        for name in names:
+            self.voice_combo.addItem(name, name)
+        index = self.voice_combo.findData(self._voice_name) if self._voice_name else -1
+        self.voice_combo.setCurrentIndex(index if index >= 0 else 0)
+        self.voice_combo.blockSignals(False)
+
+    def _emit_speech_options(self) -> None:
+        options = self.speech_options()
+        self._settings.setValue("tts/speed", options.speed)
+        self._settings.setValue("tts/volume", options.volume)
+        self.speech_options_changed.emit(options)
+
+    def _on_voice_chosen(self) -> None:
+        self._voice_name = str(self.voice_combo.currentData() or "")
+        self._settings.setValue("tts/voice", self._voice_name)
+        self._emit_speech_options()
+
+    def _on_test_voice(self) -> None:
+        if not self.read_aloud.isChecked():
+            self.speech_status.setText("Turn on Read replies aloud to hear the voice test.")
+            return
+        self.voice_test_requested.emit()
+
     def _build_text_size_bar(self) -> QHBoxLayout:
         row = QHBoxLayout()
         row.setSpacing(10)
@@ -475,6 +554,19 @@ class AIChatPage(QWidget):
         self.font_slider.blockSignals(True)
         self.font_slider.setValue(px)
         self.font_slider.blockSignals(False)
+        # Speech controls: saved values, shown without emitting.
+        saved = SpeechOptions(
+            speed=self._settings.value("tts/speed", 1.0, type=float),
+            volume=self._settings.value("tts/volume", 100, type=int),
+            voice=str(self._settings.value("tts/voice", "") or ""),
+        ).clamped()
+        self._voice_name = saved.voice
+        self.speed_slider.blockSignals(True)
+        self.speed_slider.setValue(round(saved.speed * 100))
+        self.speed_slider.blockSignals(False)
+        self.volume_slider.blockSignals(True)
+        self.volume_slider.setValue(saved.volume)
+        self.volume_slider.blockSignals(False)
         self._apply_text_size(px)
         self._show_default_speech_text()
 

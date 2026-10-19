@@ -145,6 +145,11 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     /home/user/workspace/FPSCoach   (clone of https://github.com/AFK-999/FPSCoach.git)
     Remote origin/main = e9e69a2   (the visual REDESIGN; based on 04e6b0f)
     Working branch     = fix/redesign-backend-wiring (from e9e69a2), NOT pushed.
+    REV54 STATUS: rev53 plus (1) live speech controls: speed (0.5x-2.0x), volume, and voice,
+    applied before the next sentence; (2) the coach prompt asks for answers specific to the
+    app's own calibration and curve data. NOT BUILT: pitch (no engine here exposes it) and
+    gameplay analysis from screen capture (declined category; see the rev54 changelog).
+    Still NOT pushed.
     REV53 STATUS: rev52 plus (1) the Vosk model is loaded once and reused, and one
     model is held at a time (vosk_service.load_model / release_model; released when voice
     is turned off); (2) spoken replies are cleaned before speech (tts_service.speakable_text;
@@ -1165,6 +1170,30 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
               slider and the new capture arguments); app.py quit run exit 0, no traceback.
               NOT verified: real display, Win32 window list, native capture, real Ollama,
               real game curve files, Windows build.
+
+  2026-10-19 (rev54)  TTS SPEED, VOLUME, VOICE CONTROLS. COACH PROMPT. DECLINED PART.
+              - AI Coach: Speed slider (0.5x-2.0x), Volume slider (0-100%), Voice list from the
+                installed engine, and a Test voice button. Changes apply to the next sentence
+                spoken, without restarting the speaker. Saved as tts/speed, tts/volume, tts/voice.
+              - Engine mapping: pyttsx3 rate = 200 wpm x speed; volume 0.0-1.0. Windows
+                System.Speech (fallback) Rate = round((speed-1) x 10), clamped to -10..10
+                (approximate); volume 0-100; voice by name (ignored if missing).
+              - NOT BUILT: pitch. Neither pyttsx3 nor System.Speech exposes a pitch setting.
+                The chat page says so. Options for later: SAPI5 SSML <pitch> (Windows, untested
+                here) or a second engine (espeak-ng command line on Linux).
+              - Coach prompt (ai_chat.SYSTEM_PROMPT): answers must address the specific question
+                using the calibration summary and curve data in the conversation, name the values
+                used, say what is missing rather than guess, and state that it cannot see the
+                user's screen or game. Safety rules unchanged.
+              - DECLINED (part 3): screen capture that continuously analyses gameplay, gives
+                voice feedback on aim at set intervals, and recommends aim adjustments. This is
+                the declined category of rev49 part 2 (gameplay-derived feedback, target and
+                shooting detection from game capture). NOT built. Offered alternatives: post-
+                session analytics from the app's own drills, the coach panel, in-app calibration.
+              - Tests: tests/test_tts_controls.py (20). Full suite 194 passed. ruff F clean.
+                compileall OK. Wiring 32/32. Offscreen screenshot of the AI Coach page checked.
+              - NOT verified: real audio on any engine; Windows SAPI5 or System.Speech voices;
+                how the rate mapping sounds to a listener.
 
   2026-10-19 (rev53)  VOSK MODEL CACHE AND SPOKEN-TEXT CLEANING.
               - vosk_service.load_model(path): loads the Vosk model once and reuses it. Used by

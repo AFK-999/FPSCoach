@@ -304,6 +304,8 @@ class MainWindow(QMainWindow):
         self.chat_page.assistant_said.connect(self._speak_response)
         self.chat_page.read_aloud_changed.connect(self._on_read_aloud_changed)
         self.chat_page.stop_speaking_requested.connect(self._on_stop_speaking)
+        self.chat_page.speech_options_changed.connect(self._on_speech_options_changed)
+        self.chat_page.voice_test_requested.connect(self._on_voice_test)
         self.settings_page.settings_changed.connect(self._on_settings_changed)
         self.training_page.session_recorded.connect(self._on_session_recorded)
         self.crosshair_page.edited.connect(self._on_crosshair_edited)
@@ -464,7 +466,8 @@ class MainWindow(QMainWindow):
     def _sync_tts(self):
         enabled = self.s.value("ui/tts_enabled", False, type=bool)
         if enabled and self._tts_service is None:
-            self._tts_service = _TtsService(self)
+            self._tts_service = _TtsService(self, options=self.chat_page.speech_options())
+            self._tts_service.voices_ready.connect(self.chat_page.set_voices)
             self._tts_service.failed.connect(self._on_tts_failed)
             self._tts_service.start()
         elif not enabled and self._tts_service is not None:
@@ -486,6 +489,15 @@ class MainWindow(QMainWindow):
         self.settings_page.tts_enabled.blockSignals(True)
         self.settings_page.tts_enabled.setChecked(bool(enabled))
         self.settings_page.tts_enabled.blockSignals(False)
+
+    def _on_speech_options_changed(self, options):
+        """Speed, volume, or voice changed. A running speaker picks it up on the next sentence."""
+        if self._tts_service is not None:
+            self._tts_service.set_options(options)
+
+    def _on_voice_test(self):
+        if self._tts_service is not None:
+            self._tts_service.enqueue("This is the coach voice. Aim a little higher on the second target.")
 
     def _on_stop_speaking(self):
         if self._tts_service is None:
