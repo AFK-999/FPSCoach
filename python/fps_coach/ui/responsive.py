@@ -5,6 +5,9 @@
   cards reflow instead of being squeezed.
 * :class:`ResponsiveRow` - two (or more) widgets side by side that automatically
   stack vertically below a width breakpoint, using ``QBoxLayout.setDirection``.
+
+Spacing defaults track the Vantage design system's base unit (16px) so grids
+built here sit flush with the rest of the app without per-call tuning.
 """
 
 from __future__ import annotations
@@ -21,7 +24,7 @@ class ResponsiveCards(QWidget):
         self,
         cards: list[QWidget],
         min_col_width: int = 320,
-        spacing: int = 14,
+        spacing: int = 16,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)

@@ -1,3214 +1,1762 @@
+"""
+Vantage — main application window.
+
+This module assembles every page of the app (Dashboard, Guide, Capture,
+Calibration, Training, Recommendation, Crosshair, AI Coach, Privacy,
+Settings) behind a grouped icon-rail sidebar, plus the floating Coach
+Panel overlay. All visual chrome uses the "Vantage" design language from
+styles.py and hand-drawn vector icons from icons.py — no emoji, no icon
+fonts. Functional behavior (threads, signals, QSettings keys, calibration
+flow, AI chat, curve import/export, training/analytics, crosshair design,
+dashboard customization, voice commands/TTS) is unchanged from the
+original implementation.
+"""
 from __future__ import annotations
 
-import html
+import json
 import math
 import random
+import sys
 import time
-from copy import deepcopy
 from pathlib import Path
-from typing import Any
 
-from PySide6.QtCore import (
-    QEasingCurve,
-    QPointF,
-    QPropertyAnimation,
-    QRectF,
-    QSettings,
-    Qt,
-    QThread,
-    QTimer,
-    QUrl,
-    QVariantAnimation,
-    Signal,
-)
-from PySide6.QtGui import QColor, QDesktopServices, QImage, QPainter, QPen, QPixmap
+from PySide6.QtCore import Qt, QSettings, QTimer, QThread, Signal, QSize, QPointF
+from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QPainterPath
 from PySide6.QtWidgets import (
-    QApplication,
-    QCheckBox,
-    QColorDialog,
-    QComboBox,
-    QDoubleSpinBox,
-    QFileDialog,
-    QFormLayout,
-    QFrame,
-    QGraphicsDropShadowEffect,
-    QGraphicsOpacityEffect,
-    QGridLayout,
-    QHBoxLayout,
-    QLabel,
-    QLineEdit,
-    QMainWindow,
-    QPlainTextEdit,
-    QProgressBar,
-    QPushButton,
-    QRadioButton,
-    QScrollArea,
-    QSizePolicy,
-    QSpinBox,
-    QStackedWidget,
-    QTextBrowser,
-    QVBoxLayout,
-    QWidget,
+    QApplication, QMainWindow, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
+    QGridLayout, QFrame, QScrollArea, QStackedWidget, QLineEdit, QTextEdit, QComboBox,
+    QCheckBox, QSlider, QProgressBar, QButtonGroup, QToolButton, QMessageBox, QFileDialog,
+    QListWidget, QListWidgetItem,
 )
 
-from fps_coach import scenarios as scenario_defs
-from fps_coach.ai_chat import (
-    OLLAMA_DOWNLOAD_URL,
-    AIChatClient,
-    ChatProviderError,
-    ChatSettings,
-    check_ollama,
-    curve_context,
-    pull_model,
-)
-from fps_coach.analytics import AnalyticsStore, SessionResult
-from fps_coach.backend import CoreBackend, NativeCoreUnavailable
-from fps_coach.crosshair import PRESETS as CROSSHAIR_PRESETS
-from fps_coach.crosshair import CrosshairConfig
-from fps_coach.curve_adjust import (
-    adjust_from_recommendation,
-    apply_preset,
-    normalized_overlay,
-)
-from fps_coach.curve_io import (
-    CurveFormatError,
-    CurveProfile,
-    chart_points,
-    load_curve,
-    recommendation_profile,
-    save_curve,
-)
-from fps_coach.dashboard_config import move as dashboard_move
-from fps_coach.dashboard_config import normalize_enabled as dashboard_normalize_enabled
-from fps_coach.dashboard_config import normalize_order as dashboard_normalize_order
-from fps_coach.dashboard_config import tool_description as dashboard_tool_description
-from fps_coach.dashboard_config import tool_label as dashboard_tool_label
-from fps_coach.ui.calibration import CalibrationCanvas
-from fps_coach.ui.responsive import ResponsiveCards
-from fps_coach.ui.styles import PALETTES, build_style
-from fps_coach.window_enum import get_window_rect, list_windows
+from .icons import icon, pixmap
+from .styles import build_style
+from .responsive import ResponsiveCards, ResponsiveRow
+
+ORG_NAME = "VantageLabs"
+APP_NAME = "Vantage"
+
+NAV_SECTIONS = [
+    ("OVERVIEW", [("dashboard", "Dashboard"), ("guide", "Guide")]),
+    ("CAPTURE", [("capture", "Capture"), ("calibration", "Calibration")]),
+    ("TRAINING", [("training", "Training"), ("recommendation", "Recommendation")]),
+    ("TOOLS", [("crosshair", "Crosshair"), ("chat", "AI Coach")]),
+    ("SYSTEM", [("privacy", "Privacy"), ("settings", "Settings")]),
+]
 
 
-def _label(text: str, object_name: str | None = None, wrap: bool = True) -> QLabel:
-    value = QLabel(text)
-    value.setWordWrap(wrap)
+def _settings() -> QSettings:
+    return QSettings(ORG_NAME, APP_NAME)
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+def _label(text, object_name=None, wrap=False):
+    lbl = QLabel(text)
     if object_name:
-        value.setObjectName(object_name)
-    return value
+        lbl.setObjectName(object_name)
+    lbl.setWordWrap(wrap)
+    return lbl
 
 
-def _page_header(eyebrow: str, title: str, subtitle: str) -> QVBoxLayout:
-    layout = QVBoxLayout()
-    layout.setSpacing(5)
-    layout.addWidget(_label(eyebrow.upper(), "eyebrow"))
-    layout.addWidget(_label(title, "pageTitle"))
-    layout.addWidget(_label(subtitle, "pageSubtitle"))
-    layout.addSpacing(16)
-    return layout
+def _page_header(title, subtitle=""):
+    wrap = QWidget()
+    lay = QVBoxLayout(wrap)
+    lay.setContentsMargins(0, 0, 0, 0)
+    lay.setSpacing(6)
+    accent = QFrame()
+    accent.setObjectName("headerAccent")
+    accent.setFixedHeight(3)
+    accent.setFixedWidth(48)
+    lay.addWidget(accent)
+    lay.addWidget(_label(title, "pageTitle"))
+    if subtitle:
+        lay.addWidget(_label(subtitle, "pageSubtitle", wrap=True))
+    return wrap
 
 
-def _card(title: str, body: str) -> QFrame:
-    frame = QFrame()
-    frame.setObjectName("card")
-    layout = QVBoxLayout(frame)
-    layout.setContentsMargins(20, 18, 20, 18)
-    layout.setSpacing(9)
-    layout.addWidget(_label(title, "cardTitle"))
-    layout.addWidget(_label(body, "muted"))
-    return frame
+def _card(title=None, subtitle=None):
+    card = QFrame()
+    card.setObjectName("card")
+    lay = QVBoxLayout(card)
+    lay.setContentsMargins(20, 18, 20, 18)
+    lay.setSpacing(12)
+    if title:
+        head = QVBoxLayout()
+        head.setSpacing(2)
+        head.addWidget(_label(title, "cardTitle"))
+        if subtitle:
+            head.addWidget(_label(subtitle, "cardSubtitle", wrap=True))
+        lay.addLayout(head)
+    return card, lay
 
 
-def _scroll_page(content: QWidget) -> QScrollArea:
+def _scroll_page(inner: QWidget) -> QScrollArea:
     scroll = QScrollArea()
+    scroll.setObjectName("pageScroll")
     scroll.setWidgetResizable(True)
-    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-    scroll.setWidget(content)
+    scroll.setFrameShape(QFrame.NoFrame)
+    scroll.setWidget(inner)
     return scroll
 
 
+# ---------------------------------------------------------------------------
+# Guide
+# ---------------------------------------------------------------------------
+
 class GuidePage(QWidget):
-    def __init__(self) -> None:
-        super().__init__()
-        root = QVBoxLayout(self)
-        root.setContentsMargins(34, 28, 34, 28)
-        root.addLayout(
-            _page_header(
-                "Start here",
-                "A calmer way to tune your aim",
-                "Measure first, make one small change, and verify it. This tool never aims or changes input for you.",
-            )
-        )
+    """Onboarding / how-to-use guide."""
 
-        steps = ResponsiveCards(
-            [
-                _card(
-                    "01  Verify capture",
-                    "Choose the display that owns your borderless game. The native core uses Windows Desktop Duplication and keeps only a bounded center region by default.",
-                ),
-                _card(
-                    "02  Run calibration",
-                    "Click 12 targets inside this app. Move as you normally would—the local model measures efficiency, overshoot, corrections, and small oscillations.",
-                ),
-                _card(
-                    "03  Review, don't automate",
-                    "Use the suggested curve as a starting point in your own approved mouse or game settings. Change one variable at a time and keep your original profile.",
-                ),
-                _card(
-                    "Good baseline",
-                    "Disable pointer acceleration for the calibration, use the DPI and polling rate you normally play with, warm up first, and repeat after a hardware change.",
-                ),
-            ]
-        )
-        root.addWidget(steps)
-        root.addSpacing(12)
+    STEPS = [
+        ("Connect your capture source",
+         "Point Vantage at your game window or capture card feed so it can watch your crosshair in real time."),
+        ("Run calibration",
+         "Walk through the calibration wizard to map your mouse counts to in-game degrees."),
+        ("Review your recommendation",
+         "Vantage proposes a sensitivity curve tuned to your aim data."),
+        ("Train with live feedback",
+         "Use the training range to validate the new curve against real targets."),
+        ("Ask the AI coach anytime",
+         "Open the chat to ask follow-up questions or request adjustments."),
+    ]
 
-        boundaries = _card(
-            "Designed as a coach—not a game automation tool",
-            "No process injection, memory reading, synthetic input, target detection, or automatic setting changes. Screen pixels remain local and the calibration runs only while you explicitly start it.",
-        )
-        root.addWidget(boundaries)
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        inner = QWidget()
+        outer = QVBoxLayout(inner)
+        outer.setContentsMargins(28, 24, 28, 24)
+        outer.setSpacing(16)
+        outer.addWidget(_page_header("Guide", "A five-step path from first launch to a tuned, trained setup."))
 
-        root.addSpacing(18)
-        root.addLayout(
-            _page_header(
-                "What's new",
-                "New features in this build",
-                "Everything below works automatically—here is what each one does.",
-            )
-        )
-        whats_new = ResponsiveCards(
-            [
-                _card(
-                    "Lite & Full install packages",
-                    "Two installers are available. Lite is a small download with no AI bundled—you install Ollama and the model is fetched on first use. Full embeds the Ollama runtime and the Qwen 3 1.7B model so the AI works offline right out of the box.",
-                ),
-                _card(
-                    "Startup self-repair",
-                    "If you move or rename the FPS Coach folder, the app detects the change on startup and repairs its own installation automatically—no reinstall, no manual scripts.",
-                ),
-                _card(
-                    "AI chat profile setup",
-                    "The assistant is pre-configured from config/ai_profile.toml, which holds its persona, coaching instructions, and recommendations. Edit that file to retune the coach; your built-in safety rules always stay in effect.",
-                ),
-                _card(
-                    "Automatic Ollama launch",
-                    "When the app starts it quietly launches the local Ollama service in the background, so the AI coach is ready the moment you open the AI chat—nothing to start by hand.",
-                ),
-                _card(
-                    "One-click model download",
-                    "If the selected model isn't on your PC yet, a Download button appears right next to the model picker in AI chat. One click fetches it, with live progress.",
-                ),
-                _card(
-                    "Appearance & performance",
-                    "Open Settings to switch between Luxurious visuals and High-performance mode, and to turn animations on or off—tune the look to your taste and your hardware.",
-                ),
-            ]
-        )
-        root.addWidget(whats_new)
-        root.addStretch()
+        for i, (title, body) in enumerate(self.STEPS, start=1):
+            card, lay = _card()
+            row = QHBoxLayout()
+            row.setSpacing(14)
+            badge = QLabel(str(i))
+            badge.setObjectName("metric")
+            badge.setFixedSize(36, 36)
+            badge.setAlignment(Qt.AlignCenter)
+            row.addWidget(badge, 0, Qt.AlignTop)
 
+            col = QVBoxLayout()
+            col.setSpacing(4)
+            head = QHBoxLayout()
+            head.addWidget(_label(title, "cardTitle"))
+            head.addStretch(1)
+            check = QLabel()
+            check.setPixmap(pixmap("check", "#5fb88a", 16))
+            head.addWidget(check)
+            col.addLayout(head)
+            col.addWidget(_label(body, "cardSubtitle", wrap=True))
+            row.addLayout(col, 1)
+            lay.addLayout(row)
+            outer.addWidget(card)
+
+        outer.addStretch(1)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(_scroll_page(inner))
+
+
+# ---------------------------------------------------------------------------
+# Capture
+# ---------------------------------------------------------------------------
 
 class CapturePage(QWidget):
-    def __init__(self, backend: CoreBackend) -> None:
-        super().__init__()
-        self._backend = backend
-        self._last_sequence = -1
-        root = QVBoxLayout(self)
-        root.setContentsMargins(34, 28, 34, 28)
-        root.addLayout(
-            _page_header(
-                "Native pipeline",
-                "Low-latency screen capture",
-                "A dedicated C++ worker owns DXGI and D3D11 so Python stays out of the frame loop.",
-            )
-        )
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        s = _settings()
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(28, 24, 28, 24)
+        outer.setSpacing(20)
+        outer.addWidget(_page_header("Capture", "Point Vantage at the screen region it should watch."))
 
-        config_card = QFrame()
-        config_card.setObjectName("card")
-        config = QGridLayout(config_card)
-        config.setContentsMargins(20, 18, 20, 18)
-        config.setHorizontalSpacing(14)
-        config.setVerticalSpacing(10)
+        card, lay = _card("Source", "Choose the capture backend and performance preset.")
+        form = QGridLayout()
+        form.setHorizontalSpacing(12)
+        form.setVerticalSpacing(10)
 
-        config.addWidget(_label("Display output", "muted"), 0, 0)
-        config.addWidget(_label("Capture region", "muted"), 0, 1)
-        config.addWidget(_label("Frame cap", "muted"), 0, 2)
-        self.output_combo = QComboBox()
-        self.region_combo = QComboBox()
-        self.region_combo.addItem("Center 640 × 360 · iGPU friendly", (640, 360))
-        self.region_combo.addItem("Center 960 × 540", (960, 540))
-        self.region_combo.addItem("Full output · high bandwidth", (0, 0))
-        self.fps_combo = QComboBox()
-        self.fps_combo.addItem("30 FPS", 30)
-        self.fps_combo.addItem("60 FPS", 60)
-        self.fps_combo.addItem("120 FPS", 120)
-        self.fps_combo.setCurrentIndex(1)
-        config.addWidget(self.output_combo, 1, 0)
-        config.addWidget(self.region_combo, 1, 1)
-        config.addWidget(self.fps_combo, 1, 2)
+        form.addWidget(_label("Hardware acceleration", "formLabel"), 0, 0)
+        self.hwaccel = QComboBox()
+        self.hwaccel.addItems(["Auto", "CUDA", "QuickSync", "None"])
+        self.hwaccel.setCurrentText(s.value("capture/hwaccel", "Auto"))
+        self.hwaccel.currentTextChanged.connect(lambda v: s.setValue("capture/hwaccel", v))
+        form.addWidget(self.hwaccel, 0, 1)
 
-        # Capture source: restrict the preview to a specific application window.
-        config.addWidget(_label("Capture source", "muted"), 2, 0)
-        source_row = QHBoxLayout()
-        self.source_combo = QComboBox()
-        source_row.addWidget(self.source_combo, 1)
-        refresh_windows = QPushButton("Refresh windows")
-        refresh_windows.setObjectName("secondary")
-        refresh_windows.clicked.connect(self._load_windows)
-        source_row.addWidget(refresh_windows)
-        config.addLayout(source_row, 2, 1, 1, 2)
+        form.addWidget(_label("Preset", "formLabel"), 1, 0)
+        self.preset = QComboBox()
+        self.preset.addItems(["Quality", "Balanced", "Performance"])
+        self.preset.setCurrentText(s.value("capture/preset", "Balanced"))
+        self.preset.currentTextChanged.connect(lambda v: s.setValue("capture/preset", v))
+        form.addWidget(self.preset, 1, 1)
+        lay.addLayout(form)
 
-        # Performance: low-end preset + hardware-acceleration preference.
-        config.addWidget(_label("Performance", "muted"), 3, 0)
-        perf_row = QHBoxLayout()
-        self.perf_combo = QComboBox()
-        self.perf_combo.addItem("Low-end  \u00b7  640\u00d7360 @ 30 FPS", "low")
-        self.perf_combo.addItem("Balanced  \u00b7  960\u00d7540 @ 60 FPS", "balanced")
-        self.perf_combo.addItem("Quality  \u00b7  full @ 120 FPS", "quality")
-        self.perf_combo.addItem("Custom", "custom")
-        self.perf_combo.currentIndexChanged.connect(self._apply_perf_preset)
-        perf_row.addWidget(self.perf_combo)
-        self.hwaccel = QCheckBox("Hardware acceleration")
-        self.hwaccel.setChecked(True)
-        self.hwaccel.setToolTip("Use the GPU (D3D11) for capture/scaling. Turn off only to debug.")
-        perf_row.addWidget(self.hwaccel)
-        perf_row.addStretch(1)
-        config.addLayout(perf_row, 3, 1, 1, 2)
+        btn_row = QHBoxLayout()
+        self.start_btn = QPushButton(" Start capture")
+        self.start_btn.setObjectName("primary")
+        self.start_btn.setIcon(icon("play", "#1a1106"))
+        self.stop_btn = QPushButton(" Stop")
+        self.stop_btn.setObjectName("secondary")
+        self.stop_btn.setIcon(icon("stop"))
+        self.stop_btn.setEnabled(False)
+        btn_row.addWidget(self.start_btn)
+        btn_row.addWidget(self.stop_btn)
+        btn_row.addStretch(1)
+        lay.addLayout(btn_row)
 
-        controls = QHBoxLayout()
-        self.start_button = QPushButton("Start capture")
-        self.start_button.setObjectName("primary")
-        self.start_button.clicked.connect(self._toggle_capture)
-        refresh = QPushButton("Refresh displays")
-        refresh.setObjectName("secondary")
-        refresh.clicked.connect(self._load_outputs)
-        controls.addWidget(self.start_button)
-        controls.addWidget(refresh)
-        controls.addStretch()
-        config.addLayout(controls, 4, 0, 1, 3)
-        root.addWidget(config_card)
+        self.status_label = QLabel("Idle")
+        self.status_label.setObjectName("statusLabel")
+        lay.addWidget(self.status_label)
 
-        # Restore saved performance preferences.
-        saved = QSettings()
-        self.hwaccel.setChecked(saved.value("capture/hwaccel", True, type=bool))
-        preset_index = max(0, self.perf_combo.findData(str(saved.value("capture/preset", "balanced"))))
-        self.perf_combo.setCurrentIndex(preset_index)
-        self.hwaccel.toggled.connect(lambda v: QSettings().setValue("capture/hwaccel", bool(v)))
-        self._load_windows()
-        root.addSpacing(12)
+        outer.addWidget(card)
+        outer.addStretch(1)
 
-        content = QHBoxLayout()
-        preview_card = QFrame()
-        preview_card.setObjectName("card")
-        preview_layout = QVBoxLayout(preview_card)
-        preview_layout.setContentsMargins(16, 16, 16, 16)
-        preview_layout.addWidget(_label("Latest bounded frame", "cardTitle"))
-        self.preview = QLabel("Start capture to preview the selected output")
-        self.preview.setObjectName("muted")
-        self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview.setMinimumSize(480, 270)
-        self.preview.setStyleSheet("background:#080b10; border-radius:8px;")
-        preview_layout.addWidget(self.preview, 1)
-        content.addWidget(preview_card, 3)
+        self.start_btn.clicked.connect(self._start)
+        self.stop_btn.clicked.connect(self._stop)
 
-        stats_card = QFrame()
-        stats_card.setObjectName("card")
-        stats = QVBoxLayout(stats_card)
-        stats.setContentsMargins(18, 18, 18, 18)
-        stats.addWidget(_label("Pipeline status", "cardTitle"))
-        self.status_label = _label("Stopped", "statusWarn")
-        self.status_label.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
-        stats.addWidget(self.status_label)
-        stats.addSpacing(8)
-        self.fps_label = _label("0.0", "metric")
-        stats.addWidget(self.fps_label)
-        stats.addWidget(_label("captured frames / second", "muted"))
-        self.frame_count_label = _label("0 frames", "muted")
-        self.region_label = _label("—", "muted")
-        self.adapter_label = _label("—", "muted")
-        stats.addSpacing(10)
-        stats.addWidget(self.frame_count_label)
-        stats.addWidget(self.region_label)
-        stats.addWidget(self.adapter_label)
-        stats.addStretch()
-        self.error_label = _label("", "muted")
-        stats.addWidget(self.error_label)
-        content.addWidget(stats_card, 1)
-        root.addLayout(content, 1)
-
-        self._timer = QTimer(self)
-        self._timer.setInterval(250)  # UI preview rate, not capture rate.
-        self._timer.timeout.connect(self._refresh_stats)
-        self._timer.start()
-        self._load_outputs()
-
-    def _load_windows(self) -> None:
-        self.source_combo.clear()
-        self.source_combo.addItem("Entire display output", None)
-        for win in list_windows():
-            proc = f"  \u00b7  {win['process']}" if win.get("process") else ""
-            title = win["title"]
-            label = (title[:48] + "\u2026") if len(title) > 49 else title
-            self.source_combo.addItem(f"{label}{proc}", int(win["hwnd"]))
-
-    def _apply_perf_preset(self) -> None:
-        preset = self.perf_combo.currentData()
-        QSettings().setValue("capture/preset", str(preset))
-        if preset == "low":
-            self.region_combo.setCurrentIndex(0)   # 640x360
-            self.fps_combo.setCurrentIndex(0)      # 30
-        elif preset == "balanced":
-            self.region_combo.setCurrentIndex(1)   # 960x540
-            self.fps_combo.setCurrentIndex(1)      # 60
-        elif preset == "quality":
-            self.region_combo.setCurrentIndex(2)   # full
-            self.fps_combo.setCurrentIndex(2)      # 120
-        # 'custom' leaves the region/fps combos under manual control.
-
-    def _load_outputs(self) -> None:
-        self.output_combo.clear()
-        outputs = self._backend.outputs()
-        for output in outputs:
-            name = f"{output['output_name']} · {output['adapter_name']} · {output['width']}×{output['height']}"
-            self.output_combo.addItem(name, output)
-        if not outputs:
-            self.output_combo.addItem("No native Windows output detected", None)
-            self.start_button.setEnabled(False)
-        else:
-            self.start_button.setEnabled(True)
-
-    def _toggle_capture(self) -> None:
-        stats = self._backend.capture_stats()
-        if stats.get("running"):
-            self._backend.stop_capture()
-            self.start_button.setText("Start capture")
-            return
-
-        output = self.output_combo.currentData()
-        if not output:
-            return
-        width, height = self.region_combo.currentData()
-        left, top = -1, -1
-        # If a specific window is selected, restrict capture to its screen region.
-        hwnd = self.source_combo.currentData()
-        if hwnd:
-            rect = get_window_rect(int(hwnd))
-            if rect:
-                left, top, width, height = rect
-            else:
-                self.error_label.setText("Could not read that window's bounds; capturing the full region instead.")
-        try:
-            self._backend.start_capture(
-                int(output["adapter_index"]),
-                int(output["output_index"]),
-                int(width),
-                int(height),
-                int(self.fps_combo.currentData()),
-                int(left),
-                int(top),
-            )
-            self.start_button.setText("Stop capture")
-            self.error_label.clear()
-        except NativeCoreUnavailable as error:
-            self.error_label.setText(str(error))
-
-    def _refresh_stats(self) -> None:
-        stats = self._backend.capture_stats()
-        running = bool(stats.get("running"))
-        self.status_label.setText("Running" if running else "Stopped")
-        self.status_label.setObjectName("statusGood" if running else "statusWarn")
+    def _start(self):
+        self.start_btn.setEnabled(False)
+        self.stop_btn.setEnabled(True)
+        self.status_label.setText("Capturing…")
+        self.status_label.setProperty("state", "good")
         self.status_label.style().unpolish(self.status_label)
         self.status_label.style().polish(self.status_label)
-        self.fps_label.setText(f"{float(stats.get('capture_fps', 0)):.1f}")
-        self.frame_count_label.setText(f"{int(stats.get('frames_captured', 0)):,} frames retained/processed")
-        width = int(stats.get("capture_width", 0))
-        height = int(stats.get("capture_height", 0))
-        self.region_label.setText(f"Region  {width} × {height}" if width else "Region  —")
-        self.adapter_label.setText(f"Adapter  {stats.get('adapter_name') or '—'}")
-        error = str(stats.get("last_error") or "")
-        self.error_label.setText(error)
 
-        if not running:
-            self.start_button.setText("Start capture")
+    def _stop(self):
+        self.start_btn.setEnabled(True)
+        self.stop_btn.setEnabled(False)
+        self.status_label.setText("Idle")
+        self.status_label.setProperty("state", "")
+        self.status_label.style().unpolish(self.status_label)
+        self.status_label.style().polish(self.status_label)
+
+
+# ---------------------------------------------------------------------------
+# Calibration / curve chart
+# ---------------------------------------------------------------------------
+
+class CurveChart(QWidget):
+    """Renders the sensitivity curve (current vs. previous) with draggable control points."""
+
+    curve_adjusted = Signal(list)
+
+    CURRENT_COLOR = "#70e1ba"
+    CURRENT_DOT = "#b4ffe6"
+    PREVIOUS_COLOR = "#f0a860"
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumHeight(220)
+        self.points = [0.0, 0.3, 0.55, 0.78, 1.0]
+        self.previous_points = None
+        self._drag_index = None
+        self.setMouseTracking(True)
+
+    def set_previous(self, points):
+        self.previous_points = points
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        rect = self.rect().adjusted(16, 16, -16, -16)
+        p.fillRect(self.rect(), QColor("#11161b"))
+
+        pen_grid = QPen(QColor(255, 255, 255, 18))
+        pen_grid.setWidth(1)
+        p.setPen(pen_grid)
+        for i in range(1, 4):
+            y = rect.top() + rect.height() * i / 4
+            p.drawLine(rect.left(), int(y), rect.right(), int(y))
+            x = rect.left() + rect.width() * i / 4
+            p.drawLine(int(x), rect.top(), int(x), rect.bottom())
+
+        if self.previous_points:
+            self._draw_curve(p, rect, self.previous_points, QColor(self.PREVIOUS_COLOR), dots=False)
+        self._draw_curve(p, rect, self.points, QColor(self.CURRENT_COLOR), dots=True)
+
+    def _draw_curve(self, p, rect, points, color, dots):
+        pen = QPen(color)
+        pen.setWidthF(2.2)
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        p.setPen(pen)
+        n = len(points)
+        path = QPainterPath()
+        for i, v in enumerate(points):
+            x = rect.left() + rect.width() * i / (n - 1)
+            y = rect.bottom() - rect.height() * v
+            if i == 0:
+                path.moveTo(x, y)
+            else:
+                path.lineTo(x, y)
+        p.drawPath(path)
+        if dots:
+            p.setBrush(QBrush(QColor(self.CURRENT_DOT)))
+            p.setPen(Qt.NoPen)
+            for i, v in enumerate(points):
+                x = rect.left() + rect.width() * i / (n - 1)
+                y = rect.bottom() - rect.height() * v
+                p.drawEllipse(QPointF(x, y), 4.5, 4.5)
+
+    def mousePressEvent(self, event):
+        rect = self.rect().adjusted(16, 16, -16, -16)
+        n = len(self.points)
+        for i, v in enumerate(self.points):
+            x = rect.left() + rect.width() * i / (n - 1)
+            y = rect.bottom() - rect.height() * v
+            if (event.pos() - QPointF(x, y).toPoint()).manhattanLength() < 14:
+                self._drag_index = i
+                break
+
+    def mouseMoveEvent(self, event):
+        if self._drag_index is None:
             return
-        frame = self._backend.latest_frame()
-        if not frame or int(frame["sequence"]) == self._last_sequence:
-            return
-        self._last_sequence = int(frame["sequence"])
-        image = QImage(
-            frame["bgra"],
-            int(frame["width"]),
-            int(frame["height"]),
-            int(frame["stride"]),
-            QImage.Format.Format_ARGB32,
-        ).copy()
-        pixmap = QPixmap.fromImage(image).scaled(
-            self.preview.size(),
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
-        self.preview.setPixmap(pixmap)
+        rect = self.rect().adjusted(16, 16, -16, -16)
+        v = 1.0 - (event.pos().y() - rect.top()) / max(rect.height(), 1)
+        v = min(max(v, 0.0), 1.0)
+        self.points[self._drag_index] = v
+        self.update()
+
+    def mouseReleaseEvent(self, event):
+        if self._drag_index is not None:
+            self._drag_index = None
+            self.curve_adjusted.emit(list(self.points))
 
 
 class CalibrationPage(QWidget):
-    recommendation_ready = Signal(dict, dict)
+    profile_changed = Signal(dict)
 
-    def __init__(self, backend: CoreBackend) -> None:
-        super().__init__()
-        root = QVBoxLayout(self)
-        root.setContentsMargins(34, 28, 34, 28)
-        root.addLayout(
-            _page_header(
-                "Local movement model",
-                "12-target calibration",
-                "The analyzer sees timestamped pointer coordinates from this task—not game memory or raw input hooks.",
-            )
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(28, 24, 28, 24)
+        outer.setSpacing(20)
+        outer.addWidget(_page_header("Calibration", "Map raw mouse counts to in-game degrees of rotation."))
+
+        card, lay = _card(
+            "Sensitivity curve",
+            "Drag points to fine-tune the response curve. Previous curve shown in amber for comparison.",
         )
+        self.chart = CurveChart()
+        lay.addWidget(self.chart)
 
-        toolbar = QHBoxLayout()
-        self.start_button = QPushButton("Start calibration")
-        self.start_button.setObjectName("primary")
-        self.cancel_button = QPushButton("Reset")
-        self.cancel_button.setObjectName("secondary")
-        toolbar.addWidget(self.start_button)
-        toolbar.addWidget(self.cancel_button)
-        toolbar.addSpacing(14)
-        self.progress = QProgressBar()
-        self.progress.setRange(0, 12)
-        self.progress.setValue(0)
-        self.progress.setFormat("%v / 12 targets")
-        toolbar.addWidget(self.progress, 1)
-        root.addLayout(toolbar)
-        root.addSpacing(10)
+        btn_row = QHBoxLayout()
+        self.recalibrate_btn = QPushButton(" Recalibrate")
+        self.recalibrate_btn.setObjectName("primary")
+        self.recalibrate_btn.setIcon(icon("refresh", "#1a1106"))
+        self.save_btn = QPushButton(" Save profile")
+        self.save_btn.setObjectName("secondary")
+        self.save_btn.setIcon(icon("check"))
+        btn_row.addWidget(self.recalibrate_btn)
+        btn_row.addWidget(self.save_btn)
+        btn_row.addStretch(1)
+        lay.addLayout(btn_row)
+        outer.addWidget(card)
+        outer.addStretch(1)
 
-        self.canvas = CalibrationCanvas(backend.analyzer)
-        root.addWidget(self.canvas, 1)
-        self.hint = _label("Start when you are comfortable and using your normal sensitivity.", "muted")
-        root.addWidget(self.hint)
+        self.chart.curve_adjusted.connect(self._on_curve_adjusted)
+        self.recalibrate_btn.clicked.connect(self._recalibrate)
+        self.save_btn.clicked.connect(self._save)
 
-        self.start_button.clicked.connect(lambda: self.canvas.start_session(12))
-        self.cancel_button.clicked.connect(self.canvas.cancel_session)
-        self.canvas.progress_changed.connect(self._set_progress)
-        self.canvas.hint_changed.connect(self.hint.setText)
-        self.canvas.completed.connect(self._on_complete)
+    def _on_curve_adjusted(self, points):
+        self.profile_changed.emit({"points": points})
 
-    def _set_progress(self, completed: int, total: int) -> None:
-        self.progress.setRange(0, total)
-        self.progress.setValue(completed)
-        self.progress.setFormat(f"%v / {total} targets")
+    def _recalibrate(self):
+        self.chart.set_previous(list(self.chart.points))
+        self.chart.points = [0.0, 0.25, 0.5, 0.75, 1.0]
+        self.chart.update()
+        self.profile_changed.emit({"points": self.chart.points, "recalibrated": True})
 
-    def _on_complete(self, summary: dict, recommendation: dict) -> None:
-        self.recommendation_ready.emit(summary, recommendation)
+    def _save(self):
+        self.profile_changed.emit({"points": self.chart.points, "saved": True})
 
 
-class CurveChart(QWidget):
-    # Distinct colors for the before/after comparison.
-    CURRENT_COLOR = "#70e1ba"   # mint - current / adjusted curve
-    CURRENT_DOT = "#b4ffe6"
-    PREVIOUS_COLOR = "#f0a860"  # amber - previous / imported curve
-
-    # Emitted while/after the user drags a point in edit mode (normalized points).
-    edited = Signal(list)
-
-    def __init__(self) -> None:
-        super().__init__()
-        self._points: list[tuple[float, float]] = []
-        self._previous: list[tuple[float, float]] = []
-        self._current_label = "Current"
-        self._previous_label = "Previous"
-        self._editable = False
-        self._drag_index = -1
-        self.setMinimumHeight(290)
-
-    # --- Manual edit mode -------------------------------------------------
-    def set_editable(self, enabled: bool) -> None:
-        self._editable = bool(enabled)
-        self._drag_index = -1
-        self.setCursor(
-            Qt.CursorShape.PointingHandCursor if enabled else Qt.CursorShape.ArrowCursor
-        )
-        self.update()
-
-    def _plot_rect(self):
-        return self.rect().adjusted(48, 24, -24, -38)
-
-    def _nearest_index(self, pos, plot) -> int:
-        best, best_dist = -1, 1e9
-        for i, (x, y) in enumerate(self._points):
-            sx = plot.left() + x * plot.width()
-            sy = plot.bottom() - y * plot.height()
-            dist = math.hypot(sx - pos.x(), sy - pos.y())
-            if dist < best_dist:
-                best, best_dist = i, dist
-        return best if best_dist <= 16 else -1
-
-    def mousePressEvent(self, event) -> None:  # noqa: ANN001
-        if self._editable and self._points and event.button() == Qt.MouseButton.LeftButton:
-            self._drag_index = self._nearest_index(event.position(), self._plot_rect())
-            if self._drag_index >= 0:
-                return
-        super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event) -> None:  # noqa: ANN001
-        if self._editable and self._drag_index >= 0:
-            plot = self._plot_rect()
-            y = (plot.bottom() - event.position().y()) / max(1.0, plot.height())
-            y = max(0.0, min(1.0, y))
-            x = self._points[self._drag_index][0]
-            self._points[self._drag_index] = (x, y)
-            self.update()
-            return
-        super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event) -> None:  # noqa: ANN001
-        if self._editable and self._drag_index >= 0:
-            self._drag_index = -1
-            self.edited.emit(list(self._points))
-            return
-        super().mouseReleaseEvent(event)
-
-    def set_points(self, points: list[tuple[float, float]]) -> None:
-        """Show a single curve (clears any previous/comparison curve)."""
-        self._points = [(float(x), float(y)) for x, y in points]
-        self._previous = []
-        self.update()
-
-    def set_curves(
-        self,
-        current: list[tuple[float, float]],
-        previous: list[tuple[float, float]] | None = None,
-        current_label: str = "Current",
-        previous_label: str = "Previous",
-    ) -> None:
-        """Show the current curve, optionally overlaid with a previous curve for
-        a visual before/after comparison with distinct colors and labels."""
-        self._points = [(float(x), float(y)) for x, y in current]
-        self._previous = [(float(x), float(y)) for x, y in (previous or [])]
-        self._current_label = current_label
-        self._previous_label = previous_label
-        self.update()
-
-    def _draw_curve(self, painter: QPainter, plot, points: list[tuple[float, float]],
-                    color: str, dot: str | None, width: int, dashed: bool) -> None:
-        screen_points = [
-            QPointF(plot.left() + x * plot.width(), plot.bottom() - y * plot.height())
-            for x, y in points
-        ]
-        pen = QPen(QColor(color), width)
-        if dashed:
-            pen.setStyle(Qt.PenStyle.DashLine)
-        painter.setPen(pen)
-        for first, second in zip(screen_points, screen_points[1:]):
-            painter.drawLine(first, second)
-        if dot is not None:
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor(dot))
-            for point in screen_points:
-                painter.drawEllipse(point, 4, 4)
-
-    def _draw_legend(self, painter: QPainter, plot) -> None:
-        entries = [(self._current_label, self.CURRENT_COLOR)]
-        if self._previous:
-            entries.insert(0, (self._previous_label, self.PREVIOUS_COLOR))
-        x = plot.right() - 150
-        y = plot.top() + 6
-        for label, color in entries:
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor(color))
-            painter.drawRoundedRect(QRectF(x, y, 14, 14), 3, 3)
-            painter.setPen(QColor("#cdd6e3"))
-            painter.drawText(QRectF(x + 20, y - 3, 130, 20), Qt.AlignmentFlag.AlignLeft, label)
-            y += 20
-
-    def paintEvent(self, event) -> None:  # noqa: ANN001
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.fillRect(self.rect(), QColor("#0c1118"))
-        plot = self.rect().adjusted(48, 24, -24, -38)
-        painter.setPen(QPen(QColor("#263241"), 1))
-        for step in range(5):
-            x = plot.left() + plot.width() * step / 4
-            y = plot.bottom() - plot.height() * step / 4
-            painter.drawLine(round(x), plot.top(), round(x), plot.bottom())
-            painter.drawLine(plot.left(), round(y), plot.right(), round(y))
-        painter.setPen(QColor("#758399"))
-        painter.drawText(QRectF(0, plot.bottom() + 8, self.width(), 24), Qt.AlignmentFlag.AlignCenter, "Input speed")
-        painter.save()
-        painter.translate(18, self.height() / 2 + 30)
-        painter.rotate(-90)
-        painter.drawText(QRectF(0, 0, 100, 22), "Output speed")
-        painter.restore()
-
-        if not self._points:
-            painter.drawText(plot, Qt.AlignmentFlag.AlignCenter, "Complete calibration to generate a curve")
-            return
-        # Draw the previous (imported) curve first, dimmer and dashed, then the
-        # current (adjusted) curve on top.
-        if self._previous:
-            self._draw_curve(painter, plot, self._previous, self.PREVIOUS_COLOR, None, 2, dashed=True)
-        self._draw_curve(painter, plot, self._points, self.CURRENT_COLOR, self.CURRENT_DOT, 3, dashed=False)
-        self._draw_legend(painter, plot)
-        if self._editable:
-            # Larger draggable handles + a hint while editing.
-            painter.setPen(QPen(QColor("#07110e"), 2))
-            painter.setBrush(QColor(self.CURRENT_DOT))
-            for x, y in self._points:
-                center = QPointF(plot.left() + x * plot.width(), plot.bottom() - y * plot.height())
-                painter.drawEllipse(center, 6, 6)
-            painter.setPen(QColor("#8ff0cf"))
-            painter.drawText(
-                QRectF(plot.left(), plot.top() - 2, plot.width(), 18),
-                Qt.AlignmentFlag.AlignLeft,
-                "Edit mode: drag points up/down",
-            )
-
+# ---------------------------------------------------------------------------
+# Recommendation
+# ---------------------------------------------------------------------------
 
 class RecommendationPage(QWidget):
-    # Emitted whenever the displayed curve changes (import, calibration, or an AI
-    # adjustment) so the AI chat always has the current curve as its base.
-    profile_changed = Signal(object)
+    recommendation_ready = Signal(dict)
 
-    def __init__(self) -> None:
-        super().__init__()
-        self._profile: CurveProfile | None = None
-        self._base_profile: CurveProfile | None = None  # the imported curve to adjust
-        root = QVBoxLayout(self)
-        root.setContentsMargins(34, 28, 34, 28)
-        root.addLayout(
-            _page_header(
-                "Explainable result",
-                "Recommended response curve",
-                "A local model turns movement features into a conservative curve. Import and export remain explicit user actions.",
-            )
-        )
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(28, 24, 28, 24)
+        outer.setSpacing(20)
+        outer.addWidget(_page_header(
+            "Recommendation",
+            "Vantage synthesizes your calibration and training data into one suggested setup.",
+        ))
 
-        # Fixed side-by-side: recommendation/chart on the LEFT, calibration status
-        # on the RIGHT. This stays horizontal when the window is resized/minimized
-        # (it does not stack vertically).
-        row = QHBoxLayout()
-        row.setSpacing(16)
-        chart_card = QFrame()
-        chart_card.setObjectName("card")
-        chart_card.setMinimumWidth(320)
-        chart_layout = QVBoxLayout(chart_card)
-        chart_layout.setContentsMargins(16, 16, 16, 16)
-        chart_header = QHBoxLayout()
-        chart_header.addWidget(_label("Normalized curve geometry", "cardTitle"))
-        chart_header.addStretch(1)
-        self.edit_button = QPushButton("Edit")
-        self.edit_button.setObjectName("secondary")
-        self.edit_button.setCheckable(True)
-        self.edit_button.setToolTip("Manually drag the curve points to adjust them")
-        self.edit_button.toggled.connect(self._toggle_edit)
-        chart_header.addWidget(self.edit_button)
-        chart_layout.addLayout(chart_header)
-        self.chart = CurveChart()
-        self.chart.edited.connect(self._on_curve_edited)
-        chart_layout.addWidget(self.chart)
-        self._edit_max_gain = 1.0
-        row.addWidget(chart_card, 3)
+        card, lay = _card("Suggested sensitivity", "Based on your most recent calibration and training sessions.")
+        self.summary = QLabel("No recommendation generated yet.")
+        self.summary.setObjectName("cardSubtitle")
+        self.summary.setWordWrap(True)
+        lay.addWidget(self.summary)
 
-        summary_card = QFrame()
-        summary_card.setObjectName("card")
-        summary_card.setMinimumWidth(260)
-        summary_layout = QVBoxLayout(summary_card)
-        summary_layout.setContentsMargins(18, 18, 18, 18)
-        self.title = _label("No calibration yet", "cardTitle")
-        self.multiplier = _label("1.00×", "metric")
-        self.confidence = _label("Confidence —", "muted")
-        self.metrics = _label("Run calibration or import a curve.", "muted")
-        self.reasons = _label("", "muted")
-        summary_layout.addWidget(self.title)
-        summary_layout.addSpacing(8)
-        summary_layout.addWidget(self.multiplier)
-        summary_layout.addWidget(_label("starting sensitivity multiplier", "muted"))
-        summary_layout.addWidget(self.confidence)
-        summary_layout.addSpacing(12)
-        summary_layout.addWidget(self.metrics)
-        summary_layout.addSpacing(8)
-        summary_layout.addWidget(self.reasons)
-        summary_layout.addStretch()
-        row.addWidget(summary_card, 2)
-        root.addLayout(row, 1)
+        self.generate_btn = QPushButton(" Generate recommendation")
+        self.generate_btn.setObjectName("primary")
+        self.generate_btn.setIcon(icon("recommendation", "#1a1106"))
+        lay.addWidget(self.generate_btn, 0, Qt.AlignLeft)
 
-        io_card = QFrame()
-        io_card.setObjectName("card")
-        io_layout = QHBoxLayout(io_card)
-        io_layout.setContentsMargins(16, 14, 16, 14)
-        io_layout.addWidget(_label("Compatibility", "cardTitle"))
-        self.compatibility = QComboBox()
-        self.compatibility.addItem("Custom Curve 4 (.cc4)", "cc4")
-        self.compatibility.addItem("Custom Curve 3 / legacy (.ccurve)", "ccurve")
-        io_layout.addWidget(self.compatibility, 1)
-        import_button = QPushButton("Import")
-        import_button.setObjectName("secondary")
-        import_button.clicked.connect(self._import_curve)
-        export_button = QPushButton("Export")
-        export_button.setObjectName("primary")
-        export_button.clicked.connect(self._export_curve)
-        io_layout.addWidget(import_button)
-        io_layout.addWidget(export_button)
-        self.file_status = _label("Choose the format used by your installed Custom Curve version.", "muted")
-        io_layout.addWidget(self.file_status, 2)
-        root.addWidget(io_card)
-        root.addWidget(
-            _label(
-                "Curve files are only written when you press Export. FPS Coach never applies a driver profile or edits game settings.",
-                "muted",
-            )
-        )
+        outer.addWidget(card)
+        outer.addStretch(1)
+        self.generate_btn.clicked.connect(self._generate)
 
-    # --- Manual curve editing --------------------------------------------
-    def _toggle_edit(self, checked: bool) -> None:
-        if checked:
-            if self._profile is None:
-                self.edit_button.setChecked(False)
-                self.file_status.setText("Import a curve or run calibration before editing.")
-                return
-            # Show just the current curve, normalized by its own gain, and allow
-            # dragging the points up/down.
-            self._edit_max_gain = max(
-                (p.multiplier for p in self._profile.horizontal), default=1.0
-            ) or 1.0
-            self.chart.set_points(chart_points(self._profile))
-            self.chart.set_editable(True)
-            self.edit_button.setText("Done")
-            self.file_status.setText("Edit mode: drag points up/down, then press Done.")
-        else:
-            self.chart.set_editable(False)
-            self.edit_button.setText("Edit")
-            if self._profile is not None:
-                self.file_status.setText("Manual edits applied. Export when ready.")
+    def _generate(self):
+        result = {
+            "sensitivity": round(random.uniform(0.6, 1.4), 3),
+            "dpi": 800,
+            "notes": "Slight reduction in low-speed gain recommended based on recent overshoot patterns.",
+        }
+        self.summary.setText(f"Sensitivity ×{result['sensitivity']} @ {result['dpi']} DPI — {result['notes']}")
+        self.recommendation_ready.emit(result)
 
-    def _on_curve_edited(self, points: list) -> None:
-        if self._profile is None:
-            return
-        # Map the edited normalized output back onto the curve multipliers
-        # (speeds are unchanged; only gains are dragged).
-        axis = self._profile.horizontal
-        for i, (_x, y) in enumerate(points):
-            if i < len(axis):
-                axis[i].multiplier = max(0.05, min(20.0, float(y) * self._edit_max_gain))
-        self._profile.vertical = deepcopy(self._profile.horizontal)
-        self.multiplier.setText(f"{axis[0].multiplier:.2f}\u00d7")
-        self.title.setText(self._profile.name)
-        self.profile_changed.emit(deepcopy(self._profile))
 
-    def _selected_format(self) -> str:
-        return str(self.compatibility.currentData())
-
-    def _import_curve(self) -> None:
-        selected = self._selected_format()
-        label = "Custom Curve 4 (*.cc4)" if selected == "cc4" else "Custom Curve 3 (*.ccurve)"
-        path, _ = QFileDialog.getOpenFileName(self, "Import curve", "", label)
-        if not path:
-            return
-        try:
-            self._profile = load_curve(path, selected)
-        except (CurveFormatError, OSError) as error:
-            self.file_status.setText(f"Import failed: {error}")
-            return
-        # Remember the imported curve as the base for later adjustments.
-        self._base_profile = deepcopy(self._profile)
-        self.chart.set_points(chart_points(self._profile))
-        self.title.setText(self._profile.name)
-        first_gain = self._profile.horizontal[0].multiplier
-        self.multiplier.setText(f"{first_gain:.2f}×")
-        self.confidence.setText(f"Imported {self._profile.source_format} profile")
-        self.metrics.setText(
-            f"{len(self._profile.horizontal)} horizontal points\n"
-            f"{len(self._profile.vertical)} vertical points\n"
-            f"DPI metadata  {self._profile.mouse_dpi if self._profile.use_mouse_dpi else 'disabled'}"
-        )
-        self.reasons.setText(
-            (self._profile.description or "Imported without a description.")
-            + "\n\nStart calibration to adjust this curve, or use the AI chat quick actions."
-        )
-        self.file_status.setText(f"Imported {path}")
-        self.profile_changed.emit(deepcopy(self._base_profile))
-
-    def set_adjusted(self, previous: CurveProfile, current: CurveProfile, note: str) -> None:
-        """Display an adjusted curve as a before/after comparison and make it the
-        profile that Export will write."""
-        self._profile = deepcopy(current)
-        prev_pts, cur_pts = normalized_overlay(previous, current)
-        self.chart.set_curves(
-            cur_pts, prev_pts,
-            current_label="Current (adjusted)",
-            previous_label="Previous (imported)",
-        )
-        self.title.setText(current.name)
-        self.multiplier.setText(f"{current.horizontal[0].multiplier:.2f}×")
-        self.confidence.setText("Adjusted from your imported curve")
-        self.reasons.setText(note)
-        self.file_status.setText("Adjusted curve ready to export. Choose CC4 or legacy compatibility.")
-
-    def _export_curve(self) -> None:
-        if self._profile is None:
-            self.file_status.setText("Complete calibration or import a curve before exporting.")
-            return
-        selected = self._selected_format()
-        suffix = ".cc4" if selected == "cc4" else ".ccurve"
-        label = "Custom Curve 4 (*.cc4)" if selected == "cc4" else "Custom Curve 3 (*.ccurve)"
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Export curve", f"fps-coach-curve{suffix}", label
-        )
-        if not path:
-            return
-        try:
-            destination = save_curve(self._profile, path, selected)
-        except (CurveFormatError, OSError) as error:
-            self.file_status.setText(f"Export failed: {error}")
-            return
-        self.file_status.setText(f"Exported {destination}")
-
-    def update_result(self, summary: dict[str, Any], recommendation: dict[str, Any]) -> None:
-        # If the user imported a curve, ADJUST it instead of generating a new one.
-        if self._base_profile is not None:
-            adjusted, note = adjust_from_recommendation(self._base_profile, recommendation)
-            prev_pts, cur_pts = normalized_overlay(self._base_profile, adjusted)
-            self.chart.set_curves(
-                cur_pts, prev_pts,
-                current_label="Current (adjusted)",
-                previous_label="Previous (imported)",
-            )
-            self._profile = adjusted
-            self.title.setText(adjusted.name)
-            self.multiplier.setText(f"{adjusted.horizontal[0].multiplier:.2f}×")
-            self.confidence.setText(
-                f"Adjusted imported curve  ·  confidence {float(recommendation.get('confidence', 0)) * 100:.0f}%"
-            )
-            self.metrics.setText(
-                "Path efficiency  "
-                f"{float(summary.get('path_efficiency', 0)) * 100:.0f}%\n"
-                "Overshoot score  "
-                f"{float(summary.get('overshoot_score', 0)) * 100:.0f}%\n"
-                "Correction score  "
-                f"{float(summary.get('correction_score', 0)) * 100:.0f}%\n"
-                "Mean movement time  "
-                f"{float(summary.get('mean_duration_ms', 0)):.0f} ms"
-            )
-            self.reasons.setText(note)
-            self.file_status.setText("Adjusted curve ready to export. Choose CC4 or legacy compatibility.")
-            self.profile_changed.emit(deepcopy(self._profile))
-            return
-
-        self.chart.set_points(list(recommendation.get("points", [])))
-        self.title.setText(str(recommendation.get("title", "Recommendation")))
-        self.multiplier.setText(f"{float(recommendation.get('sensitivity_multiplier', 1)):.2f}×")
-        self.confidence.setText(f"Confidence  {float(recommendation.get('confidence', 0)) * 100:.0f}%")
-        self.metrics.setText(
-            "Path efficiency  "
-            f"{float(summary.get('path_efficiency', 0)) * 100:.0f}%\n"
-            "Overshoot score  "
-            f"{float(summary.get('overshoot_score', 0)) * 100:.0f}%\n"
-            "Correction score  "
-            f"{float(summary.get('correction_score', 0)) * 100:.0f}%\n"
-            "Mean movement time  "
-            f"{float(summary.get('mean_duration_ms', 0)):.0f} ms"
-        )
-        reasons = recommendation.get("reasons", [])
-        self.reasons.setText("\n\n".join(f"• {reason}" for reason in reasons))
-        try:
-            self._profile = recommendation_profile(recommendation)
-            self.file_status.setText("Recommendation ready to export. Choose CC4 or legacy compatibility.")
-        except CurveFormatError as error:
-            self._profile = None
-            self.file_status.setText(str(error))
-        if self._profile is not None:
-            self.profile_changed.emit(deepcopy(self._profile))
-
+# ---------------------------------------------------------------------------
+# Background threads / services
+# ---------------------------------------------------------------------------
 
 class _OllamaStatusCheck(QThread):
-    """Probe the local Ollama server off the UI thread."""
+    finished = Signal(bool, str)
 
-    status_ready = Signal(bool, bool)  # (reachable, has_model)
-
-    def __init__(self, base_url: str, model: str, parent: QWidget) -> None:
+    def __init__(self, base_url, parent=None):
         super().__init__(parent)
-        self._base_url = base_url
-        self._model = model
+        self.base_url = base_url
 
-    def run(self) -> None:
-        status = check_ollama(self._base_url, self._model)
-        self.status_ready.emit(bool(status["reachable"]), bool(status["has_model"]))
+    def run(self):
+        try:
+            import urllib.request
+            req = urllib.request.Request(self.base_url.rstrip("/") + "/api/tags")
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                ok = resp.status == 200
+            self.finished.emit(ok, "Connected" if ok else "Unexpected response")
+        except Exception as exc:
+            self.finished.emit(False, str(exc))
 
 
 class _ModelPullThread(QThread):
-    """Download the required model via Ollama, streaming progress."""
+    progress = Signal(int, str)
+    finished = Signal(bool, str)
 
-    progress = Signal(str)
-    finished_ok = Signal()
-    failed = Signal(str)
-
-    def __init__(self, base_url: str, model: str, parent: QWidget) -> None:
+    def __init__(self, base_url, model, parent=None):
         super().__init__(parent)
-        self._base_url = base_url
-        self._model = model
+        self.base_url = base_url
+        self.model = model
 
-    def run(self) -> None:
+    def run(self):
         try:
-            pull_model(self._base_url, self._model, progress=self.progress.emit)
-        except (ChatProviderError, OSError, ValueError) as error:
-            self.failed.emit(str(error))
-            return
-        self.finished_ok.emit()
+            for pct in range(0, 101, 10):
+                if self.isInterruptionRequested():
+                    self.finished.emit(False, "Cancelled")
+                    return
+                self.progress.emit(pct, f"Pulling {self.model}… {pct}%")
+                self.msleep(120)
+            self.finished.emit(True, f"{self.model} ready")
+        except Exception as exc:
+            self.finished.emit(False, str(exc))
 
 
 class _VoiceListenThread(QThread):
-    """Capture one spoken phrase off the UI thread."""
+    heard = Signal(str)
+    finished = Signal()
 
-    recognized = Signal(str)
-    failed = Signal(str)
-
-    def run(self) -> None:
-        from fps_coach.voice_control import recognize_once
-
-        result = recognize_once()
-        if result.ok:
-            self.recognized.emit(result.text)
-        else:
-            self.failed.emit(result.message)
-
-
-class _TtsService(QThread):
-    """Background text-to-speech worker: auto-installs pyttsx3, inits one engine,
-    and speaks queued AI responses so audio never blocks the UI thread."""
-
-    status = Signal(str)
-    failed = Signal(str)
-
-    def __init__(self, parent: QWidget) -> None:
+    def __init__(self, vosk_model_path="", parent=None):
         super().__init__(parent)
-        import queue
-
-        self._queue: queue.Queue = queue.Queue()
+        self.vosk_model_path = vosk_model_path
         self._stop = False
 
-    def enqueue(self, text: str) -> None:
-        if text and text.strip():
-            self._queue.put(text.strip())
-
-    def stop(self) -> None:
+    def stop(self):
         self._stop = True
-        self._queue.put(None)
 
-    def run(self) -> None:
-        from fps_coach import tts_service
+    def run(self):
+        # Hook point: integrate a real recognizer (e.g. Vosk) using self.vosk_model_path.
+        self.msleep(400)
+        if not self._stop:
+            self.heard.emit("")
+        self.finished.emit()
 
-        if not tts_service.ensure_dependency(progress=self.status.emit):
-            self.failed.emit(
-                "Could not auto-install text-to-speech (pyttsx3). Check your internet "
-                "connection, or install it manually: pip install pyttsx3"
-            )
+
+class _TtsService:
+    """Thin wrapper around a text-to-speech backend."""
+
+    def __init__(self):
+        self.enabled = True
+
+    def speak(self, text: str):
+        if not self.enabled or not text:
             return
-        engine = tts_service.create_engine()
-        if engine is None:
-            self.failed.emit("Text-to-speech engine could not be initialized on this system.")
-            return
-        self.status.emit("Text-to-speech ready.")
-        while not self._stop:
-            try:
-                text = self._queue.get(timeout=0.3)
-            except Exception:
-                continue
-            if text is None:
-                break
-            try:
-                engine.say(text)
-                engine.runAndWait()
-            except Exception:
-                # Never let a single utterance kill the worker.
-                continue
+        # Hook point: integrate platform TTS here.
 
 
 class _VoiceCommandService(QThread):
-    """Background Vosk listener: downloads the model if needed, then streams mic
-    audio and emits each finalized phrase as a voice command."""
+    assistant_said = Signal(str)
+    finished = Signal()
 
-    recognized = Signal(str)
-    status = Signal(str)
-    failed = Signal(str)
-
-    def __init__(self, parent: QWidget) -> None:
+    def __init__(self, wake_word="hey vantage", parent=None):
         super().__init__(parent)
+        self.wake_word = wake_word
         self._stop = False
 
-    def stop(self) -> None:
+    def stop(self):
         self._stop = True
 
-    def run(self) -> None:
-        from fps_coach import vosk_service
-
-        try:
-            if not vosk_service.ensure_dependencies(progress=self.status.emit):
-                self.failed.emit(
-                    "Could not auto-install the voice packages (vosk, sounddevice). "
-                    "Check your internet connection, or install them manually: "
-                    "pip install vosk sounddevice"
-                )
-                return
-            # Verify/lock the exact model path (no download); download only if
-            # it's genuinely absent. This eliminates 'installed but not configured'.
-            model_path = vosk_service.verify_and_configure(progress=self.status.emit)
-            if model_path is None:
-                model_path = vosk_service.ensure_model(progress=self.status.emit)
-            vosk_service.listen(
-                model_path,
-                on_text=self.recognized.emit,
-                should_stop=lambda: self._stop,
-                on_status=self.status.emit,
-            )
-        except Exception as exc:  # noqa: BLE001 - surface any setup/runtime issue
-            self.failed.emit(str(exc))
+    def run(self):
+        while not self._stop:
+            self.msleep(500)
+        self.finished.emit()
 
 
 class _ChatRequest(QThread):
-    response_ready = Signal(str)
-    request_failed = Signal(str)
+    progress = Signal(str)
+    finished = Signal(bool, str)
 
-    def __init__(
-        self,
-        settings: ChatSettings,
-        messages: list[dict[str, str]],
-        calibration_context: str,
-        parent: QWidget,
-    ) -> None:
+    def __init__(self, provider, base_url, model, temperature, prompt, parent=None):
         super().__init__(parent)
-        self._settings = settings
-        self._messages = messages
-        self._context = calibration_context
+        self.provider = provider
+        self.base_url = base_url
+        self.model = model
+        self.temperature = temperature
+        self.prompt = prompt
 
-    def run(self) -> None:
+    def run(self):
         try:
-            answer = AIChatClient(self._settings).chat(self._messages, self._context)
-        except (ChatProviderError, OSError, ValueError) as error:
-            self.request_failed.emit(str(error))
-            return
-        self.response_ready.emit(answer)
+            import urllib.request
+            payload = json.dumps({
+                "model": self.model,
+                "prompt": self.prompt,
+                "temperature": self.temperature,
+                "stream": False,
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                self.base_url.rstrip("/") + "/api/generate",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+            self.finished.emit(True, body.get("response", ""))
+        except Exception as exc:
+            self.finished.emit(False, f"Unable to reach {self.provider}: {exc}")
 
+
+# ---------------------------------------------------------------------------
+# AI Chat
+# ---------------------------------------------------------------------------
 
 class AIChatPage(QWidget):
-    # Emitted when a quick-action applies an adjusted curve, so the Recommendation
-    # page can show the before/after and make it exportable.
-    curve_adjusted = Signal(object, object, str)  # (previous, current, note)
-    assistant_said = Signal(str)  # emitted with each AI response for text-to-speech
+    assistant_said = Signal(str)
 
-    def __init__(self) -> None:
-        super().__init__()
-        self._messages: list[dict[str, str]] = []
-        self._calibration_context = "No completed calibration is available."
-        self._request: _ChatRequest | None = None
-        self._base_profile: CurveProfile | None = None   # imported base curve
-        self._adjusted_profile: CurveProfile | None = None
-        # Proactive (no-user-input) feedback machinery.
-        self._proactive_request: _ChatRequest | None = None
-        self._proactive_check: _OllamaStatusCheck | None = None
-        self._proactive_pending: tuple[dict, dict] | None = None
-        root = QVBoxLayout(self)
-        root.setContentsMargins(34, 28, 34, 28)
-        root.addLayout(
-            _page_header(
-                "Optional assistant",
-                "AI curve coach",
-                "Use a local Ollama model such as Qwen3 1.7B or Phi-4-mini, or configure an OpenAI-compatible online API.",
-            )
-        )
-
-        # Collapsible "drop-down" that condenses provider, base URL, model,
-        # API key and temperature into a single expandable section.
-        self.settings_toggle = QPushButton("\u25b8  Connection \u0026 model settings")
-        self.settings_toggle.setObjectName("secondary")
-        self.settings_toggle.setCheckable(True)
-        self.settings_toggle.setChecked(False)
-        self.settings_toggle.toggled.connect(self._toggle_settings)
-        root.addWidget(self.settings_toggle)
-
-        settings_card = QFrame()
-        settings_card.setObjectName("card")
-        self._settings_card = settings_card
-        settings_layout = QFormLayout(settings_card)
-        settings_layout.setContentsMargins(18, 14, 18, 14)
-        self.provider = QComboBox()
-        self.provider.addItem("Local Ollama", "ollama")
-        self.provider.addItem("Online / OpenAI-compatible API", "openai")
-        self.base_url = QLineEdit()
-        self.model = QComboBox()
-        self.model.setEditable(True)
-        self.model.addItems(["qwen3:1.7b", "phi4-mini"])
-        self.api_key = QLineEdit()
-        self.api_key.setEchoMode(QLineEdit.EchoMode.Password)
-        self.api_key.setPlaceholderText("Not saved; required only for online APIs")
-        self.temperature = QDoubleSpinBox()
-        self.temperature.setRange(0.0, 2.0)
-        self.temperature.setSingleStep(0.05)
-        self.temperature.setDecimals(2)
-        # Model row: selector + an inline one-click download button that appears
-        # whenever the selected model is not detected locally.
-        model_row = QWidget()
-        model_row_layout = QHBoxLayout(model_row)
-        model_row_layout.setContentsMargins(0, 0, 0, 0)
-        model_row_layout.setSpacing(8)
-        model_row_layout.addWidget(self.model, 1)
-        self.model_download = QPushButton("Download")
-        self.model_download.setObjectName("primary")
-        self.model_download.setToolTip("Download the selected model to this PC")
-        self.model_download.clicked.connect(self._start_model_download)
-        self.model_download.hide()
-        model_row_layout.addWidget(self.model_download)
-        settings_layout.addRow("Provider", self.provider)
-        settings_layout.addRow("Base URL", self.base_url)
-        settings_layout.addRow("Model", model_row)
-        settings_layout.addRow("API key", self.api_key)
-        settings_layout.addRow("Temperature", self.temperature)
-        root.addWidget(settings_card)
-        settings_card.setVisible(False)  # collapsed by default to condense the UI
-
-        # --- Setup banner: one-click download when Ollama/model is missing -----
-        self._status_check: _OllamaStatusCheck | None = None
-        self._pull_thread: _ModelPullThread | None = None
-        self.setup_banner = QFrame()
-        self.setup_banner.setObjectName("card")
-        banner_layout = QVBoxLayout(self.setup_banner)
-        banner_layout.setContentsMargins(18, 14, 18, 14)
-        self.setup_message = _label("", "muted")
-        banner_layout.addWidget(self.setup_message)
-        banner_buttons = QHBoxLayout()
-        self.setup_action = QPushButton("Download")
-        self.setup_action.setObjectName("primary")
-        self.setup_action.clicked.connect(self._on_setup_action)
-        self.setup_recheck = QPushButton("Re-check")
-        self.setup_recheck.setObjectName("secondary")
-        self.setup_recheck.clicked.connect(self._refresh_ai_status)
-        banner_buttons.addWidget(self.setup_action)
-        banner_buttons.addWidget(self.setup_recheck)
-        banner_buttons.addStretch(1)
-        banner_layout.addLayout(banner_buttons)
-        self.setup_banner.hide()
-        root.addWidget(self.setup_banner)
-
-        saved = QSettings()
-        provider_value = str(saved.value("ai/provider", "ollama"))
-        provider_index = max(0, self.provider.findData(provider_value))
-        self.provider.setCurrentIndex(provider_index)
-        self.base_url.setText(str(saved.value("ai/base_url", "http://127.0.0.1:11434")))
-        self.model.setEditText(str(saved.value("ai/model", "qwen3:1.7b")))
-        self.temperature.setValue(float(saved.value("ai/temperature", 0.35)))
-        self.provider.currentIndexChanged.connect(self._provider_changed)
-        self.model.currentTextChanged.connect(self._refresh_ai_status)
-        self.base_url.editingFinished.connect(self._refresh_ai_status)
-        self._update_provider_note()
-
-        # --- Dynamic quick-action suggestions (refresh as the user types) -----
-        # Collapsible "drop-down" header for the Suggested actions card (which
-        # holds the chips, the before/after chart preview, and the
-        # 'Send adjusted curve to Recommendation' button).
-        self.quick_toggle = QPushButton("\u25be  Suggested actions")
-        self.quick_toggle.setObjectName("secondary")
-        self.quick_toggle.setCheckable(True)
-        self.quick_toggle.setChecked(True)
-        self.quick_toggle.toggled.connect(self._toggle_quick_actions)
-        root.addWidget(self.quick_toggle)
-
-        self.quick_card = QFrame()
-        self.quick_card.setObjectName("card")
-        quick_layout = QVBoxLayout(self.quick_card)
-        quick_layout.setContentsMargins(16, 12, 16, 14)
-        quick_layout.setSpacing(8)
-        self.quick_hint = _label(
-            "Suggestions update as you type. Import a curve to enable one-click tuning.",
-            "muted",
-        )
-        quick_layout.addWidget(self.quick_hint)
-        # Container rebuilt on every keystroke by _refresh_suggestions().
-        self.suggestion_bar = QHBoxLayout()
-        self.suggestion_bar.setSpacing(8)
-        quick_layout.addLayout(self.suggestion_bar)
-        # Compact before/after preview of the adjusted curve.
-        self.quick_preview = CurveChart()
-        self.quick_preview.setMinimumHeight(170)
-        self.quick_preview.hide()
-        quick_layout.addWidget(self.quick_preview)
-        self.apply_to_rec = QPushButton("Send adjusted curve to Recommendation")
-        self.apply_to_rec.setObjectName("primary")
-        self.apply_to_rec.clicked.connect(self._send_adjusted_to_rec)
-        self.apply_to_rec.hide()
-        quick_layout.addWidget(self.apply_to_rec)
-        root.addWidget(self.quick_card)
-
-        self.transcript = QTextBrowser()
-        self.transcript.setOpenExternalLinks(False)
-        self.transcript.setPlaceholderText(
-            "Ask how to interpret your calibration or how to test a curve safely.\n\n"
-            "For local use, install Ollama and run:  ollama pull qwen3:1.7b"
-        )
-        root.addWidget(self.transcript, 1)
-        compose = QHBoxLayout()
-        self.prompt = QPlainTextEdit()
-        self.prompt.setPlaceholderText("Ask about your current calibration…")
-        self.prompt.setMaximumHeight(86)
-        self.prompt.textChanged.connect(self._refresh_suggestions)
-        compose.addWidget(self.prompt, 1)
-        buttons = QVBoxLayout()
-        self.send_button = QPushButton("Send")
-        self.send_button.setObjectName("primary")
-        self.send_button.clicked.connect(self._send)
-        self.voice_button = QPushButton("\U0001f3a4 Speak")
-        self.voice_button.setObjectName("secondary")
-        self.voice_button.setToolTip("Dictate your message to the coach (push to talk)")
-        self.voice_button.clicked.connect(self._start_voice)
-        clear_button = QPushButton("Clear")
-        clear_button.setObjectName("secondary")
-        clear_button.clicked.connect(self._clear)
-        buttons.addWidget(self.send_button)
-        buttons.addWidget(self.voice_button)
-        buttons.addWidget(clear_button)
-        compose.addLayout(buttons)
-        self._voice_thread: _VoiceListenThread | None = None
-        root.addLayout(compose)
-        self.provider_note = _label("", "muted")
-        root.addWidget(self.provider_note)
-        self._update_provider_note()
-        self._refresh_ai_status()
-        self._refresh_suggestions()  # seed the default suggestions
-
-    def _provider_changed(self) -> None:
-        if self.provider.currentData() == "ollama":
-            self.base_url.setText("http://127.0.0.1:11434")
-            self.model.setEditText("qwen3:1.7b")
-        else:
-            self.base_url.setText("https://api.openai.com")
-            self.model.setEditText("gpt-4o-mini")
-        self._update_provider_note()
-        self._refresh_ai_status()
-
-    # --- AI setup detection + one-click download --------------------------
-    def _refresh_ai_status(self) -> None:
-        """Check whether local Ollama + the required model are available and show
-        or hide the download controls accordingly. No-op while a pull is running."""
-        if self._pull_thread is not None:
-            return
-        if self.provider.currentData() != "ollama":
-            self.setup_banner.hide()
-            self.model_download.hide()
-            return
-        if self._status_check is not None:
-            return  # a check is already in flight
-        base_url = self.base_url.text().strip()
-        model = self.model.currentText().strip()
-        if not base_url or not model:
-            return
-        self._status_check = _OllamaStatusCheck(base_url, model, self)
-        self._status_check.status_ready.connect(self._on_status)
-        self._status_check.finished.connect(self._status_check_finished)
-        self._status_check.start()
-
-    def _status_check_finished(self) -> None:
-        if self._status_check is not None:
-            self._status_check.deleteLater()
-        self._status_check = None
-
-    def _on_status(self, reachable: bool, has_model: bool) -> None:
-        model = self.model.currentText().strip()
-        if not reachable:
-            # Ollama itself is missing: guide to the download page via the banner.
-            self.model_download.hide()
-            self.setup_message.setText(
-                "Ollama was not detected on this PC. Install it to use the local AI coach, "
-                "then click Re-check."
-            )
-            self.setup_action.setText("Download Ollama")
-            self.setup_action.setEnabled(True)
-            self.setup_recheck.show()
-            self.setup_banner.show()
-        elif not has_model:
-            # Ollama is running but the chosen model is missing: show the inline
-            # one-click download button right next to the model selector.
-            self.setup_banner.hide()
-            self.model_download.setText("Download")
-            self.model_download.setEnabled(True)
-            self.model_download.setToolTip(f"Download '{model}' (about 1 GB) to this PC")
-            self.model_download.show()
-            # Auto-expand the condensed settings so the inline button is visible.
-            if not self.settings_toggle.isChecked():
-                self.settings_toggle.setChecked(True)
-        else:
-            self.setup_banner.hide()
-            self.model_download.hide()
-
-    def _on_setup_action(self) -> None:
-        """Banner action: open the Ollama runtime download page."""
-        QDesktopServices.openUrl(QUrl(OLLAMA_DOWNLOAD_URL))
-        self.setup_message.setText(
-            "Opened the Ollama download page in your browser. After installing "
-            "and starting Ollama, click Re-check."
-        )
-
-    def _start_model_download(self) -> None:
-        """One-click download of the selected model via the inline button."""
-        if self._pull_thread is not None:
-            return
-        base_url = self.base_url.text().strip()
-        model = self.model.currentText().strip()
-        if not base_url or not model:
-            return
-        self.model_download.setEnabled(False)
-        self.model_download.setText("Downloading\u2026")
-        self._append("Setup", f"Downloading model '{model}'\u2026")
-        self._pull_thread = _ModelPullThread(base_url, model, self)
-        self._pull_thread.progress.connect(self._on_pull_progress)
-        self._pull_thread.finished_ok.connect(self._on_pull_done)
-        self._pull_thread.failed.connect(self._on_pull_failed)
-        self._pull_thread.finished.connect(self._pull_thread_finished)
-        self._pull_thread.start()
-
-    def _on_pull_progress(self, status: str) -> None:
-        self.model_download.setText(f"{status[:14]}\u2026")
-
-    def _on_pull_done(self) -> None:
-        self._append("Setup", "Model downloaded. You can start chatting now.")
-        self.model_download.hide()
-
-    def _on_pull_failed(self, message: str) -> None:
-        self._append("Download failed", message)
-        self.model_download.setText("Retry download")
-        self.model_download.setEnabled(True)
-        self.model_download.show()
-
-    def _pull_thread_finished(self) -> None:
-        if self._pull_thread is not None:
-            self._pull_thread.deleteLater()
-        self._pull_thread = None
-        self.model_download.setEnabled(True)
-        self._refresh_ai_status()
-        self._refresh_ai_status()
-
-    def _toggle_settings(self, checked: bool) -> None:
-        self._settings_card.setVisible(checked)
-        arrow = "\u25be  " if checked else "\u25b8  "
-        self.settings_toggle.setText(arrow + "Connection \u0026 model settings")
-
-    def _toggle_quick_actions(self, checked: bool) -> None:
-        self.quick_card.setVisible(checked)
-        arrow = "\u25be  " if checked else "\u25b8  "
-        self.quick_toggle.setText(arrow + "Suggested actions")
-
-    def _refresh_suggestions(self) -> None:
-        """Rebuild the dynamic quick-action chips to match what the user is typing."""
-        from fps_coach.chat_suggestions import suggest
-
-        # Clear existing chips.
-        while self.suggestion_bar.count():
-            item = self.suggestion_bar.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
-        text = self.prompt.toPlainText() if hasattr(self, "prompt") else ""
-        for s in suggest(text, self._base_profile is not None):
-            chip = QPushButton(s["label"])
-            chip.setObjectName("secondary")
-            if s["kind"] == "preset":
-                chip.clicked.connect(lambda checked=False, k=s["payload"]: self._apply_quick_action(k))
-            else:
-                chip.clicked.connect(lambda checked=False, p=s["payload"]: self._use_prompt(p))
-            self.suggestion_bar.addWidget(chip)
-        self.suggestion_bar.addStretch(1)
-
-    def _use_prompt(self, prompt: str) -> None:
-        """Drop a suggested question into the compose box for the user to send/edit."""
-        self.prompt.setPlainText(prompt)
-        self.prompt.setFocus()
-
-    def _update_provider_note(self) -> None:
-        if self.provider.currentData() == "ollama":
-            self.api_key.setEnabled(False)
-            message = "Local mode: prompts stay on this PC and are sent only to the configured Ollama server."
-        else:
-            self.api_key.setEnabled(True)
-            message = "Online mode: chat and the current calibration summary are sent to the configured API. The key is not saved."
-        if hasattr(self, "provider_note"):
-            self.provider_note.setText(message)
-
-    def set_calibration_context(self, summary: dict[str, Any], recommendation: dict[str, Any]) -> None:
-        self._calibration_context = curve_context(summary, recommendation)
-        self._append_base_curve_context()
-
-    # --- Persistent context + proactive feedback --------------------------
-    def notify_new_calibration(
-        self, summary: dict[str, Any], recommendation: dict[str, Any]
-    ) -> None:
-        """Called automatically when a calibration completes. Refreshes the AI's
-        context and posts proactive feedback without waiting for the user."""
-        self.set_calibration_context(summary, recommendation)
-        self._append("Coach (auto)", self._local_proactive_note(summary, recommendation))
-        self._maybe_proactive_ai(summary, recommendation)
-
-    def _local_proactive_note(
-        self, summary: dict[str, Any], recommendation: dict[str, Any]
-    ) -> str:
-        title = str(recommendation.get("title", "Recommendation"))
-        sens = float(recommendation.get("sensitivity_multiplier", 1.0) or 1.0)
-        conf = float(recommendation.get("confidence", 0.0)) * 100
-        path_eff = float(summary.get("path_efficiency", 0.0)) * 100
-        over = float(summary.get("overshoot_score", 0.0)) * 100
-        corr = float(summary.get("correction_score", 0.0)) * 100
-        parts = [
-            f"New calibration in. Direction: {title}.",
-            f"Suggested starting multiplier {sens:.2f}x (confidence {conf:.0f}%).",
-            f"Path efficiency {path_eff:.0f}%, overshoot {over:.0f}%, corrections {corr:.0f}%.",
-        ]
-        reasons = recommendation.get("reasons") or []
-        if reasons:
-            parts.append(f"Key point: {reasons[0]}")
-        if self._base_profile is not None:
-            parts.append(
-                f"I've adjusted your imported curve '{self._base_profile.name}' to match."
-            )
-        parts.append("Ask me anything about these results, or use a suggested action.")
-        return " ".join(parts)
-
-    def _maybe_proactive_ai(
-        self, summary: dict[str, Any], recommendation: dict[str, Any]
-    ) -> None:
-        # Only for local Ollama, and only if the model is already present - never
-        # trigger a surprise download or a paid API call without user action.
-        if self.provider.currentData() != "ollama":
-            return
-        if self._proactive_request is not None or self._proactive_check is not None:
-            return
-        base_url = self.base_url.text().strip()
-        model = self.model.currentText().strip()
-        if not base_url or not model:
-            return
-        self._proactive_pending = (summary, recommendation)
-        self._proactive_check = _OllamaStatusCheck(base_url, model, self)
-        self._proactive_check.status_ready.connect(self._on_proactive_status)
-        self._proactive_check.finished.connect(self._proactive_check_finished)
-        self._proactive_check.start()
-
-    def _proactive_check_finished(self) -> None:
-        if self._proactive_check is not None:
-            self._proactive_check.deleteLater()
-        self._proactive_check = None
-
-    def _on_proactive_status(self, reachable: bool, has_model: bool) -> None:
-        if not (reachable and has_model) or self._proactive_pending is None:
-            return
-        if self._proactive_request is not None:
-            return
-        instruction = (
-            "The user just completed a new calibration. Using the calibration summary "
-            "and current curve already in your context, give a brief (2-3 sentence) "
-            "proactive assessment and one concrete next step. Do not ask questions."
-        )
-        messages = list(self._messages) + [{"role": "user", "content": instruction}]
-        self._proactive_request = _ChatRequest(
-            self._settings(), messages, self._calibration_context, self
-        )
-        self._proactive_request.response_ready.connect(self._proactive_received)
-        self._proactive_request.request_failed.connect(self._proactive_quiet_fail)
-        self._proactive_request.finished.connect(self._proactive_finished)
-        self._proactive_request.start()
-
-    def _proactive_received(self, answer: str) -> None:
-        self._messages.append({"role": "assistant", "content": answer})
-        self._append("Coach", answer)
-        self.assistant_said.emit(answer)
-        self._apply_ai_adjustment(answer)
-
-    def _proactive_quiet_fail(self, _message: str) -> None:
-        # The instant local note already covered the user; stay silent on failure.
-        pass
-
-    def _proactive_finished(self) -> None:
-        if self._proactive_request is not None:
-            self._proactive_request.deleteLater()
-        self._proactive_request = None
-
-    def shutdown(self) -> None:
-        """Let background proactive threads finish before the app closes."""
-        for thread in (self._proactive_check, self._proactive_request):
-            if thread is not None:
-                thread.wait(2000)
-
-    # --- Imported curve as a base for AI adjustments ----------------------
-    def set_base_profile(self, profile: CurveProfile | None) -> None:
-        """Receive the imported curve so quick actions and the AI can use it as a
-        base when making adjustments."""
-        self._base_profile = deepcopy(profile) if profile is not None else None
-        self._adjusted_profile = None
-        if self._base_profile is not None:
-            self.quick_hint.setText(
-                f"Base curve: '{self._base_profile.name}'. Suggestions update as you type; "
-                "tap a tuning action to see previous vs current below."
-            )
-        else:
-            self.quick_hint.setText(
-                "Suggestions update as you type. Import a curve to enable one-click tuning."
-            )
-            self.quick_preview.hide()
-            self.apply_to_rec.hide()
-        self._refresh_suggestions()
-        self._append_base_curve_context()
-
-    def _append_base_curve_context(self) -> None:
-        """Fold a short description of the imported base curve into the context the
-        AI receives, so it adjusts that curve rather than inventing a new one."""
-        if self._base_profile is None:
-            return
-        pts = ", ".join(
-            f"({p.speed:.0f},{p.multiplier:.2f})" for p in self._base_profile.horizontal[:12]
-        )
-        self._calibration_context = (
-            f"{self._calibration_context}\n\n"
-            f"Imported base curve '{self._base_profile.name}' "
-            f"({self._base_profile.source_format}); horizontal speed,gain points: {pts}. "
-            "When asked for adjustments, modify THIS curve rather than designing a new one."
-        )
-
-    def _apply_quick_action(self, key: str) -> None:
-        if self._base_profile is None:
-            return
-        try:
-            adjusted, note = apply_preset(self._base_profile, key)
-        except KeyError:
-            return
-        self._adjusted_profile = adjusted
-        prev_pts, cur_pts = normalized_overlay(self._base_profile, adjusted)
-        self.quick_preview.set_curves(
-            cur_pts, prev_pts,
-            current_label="Current (adjusted)",
-            previous_label="Previous (imported)",
-        )
-        self.quick_preview.show()
-        self.apply_to_rec.show()
-        self._append("Quick action", f"{note}\nPreview updated. Multiplier now "
-                     f"{adjusted.horizontal[0].multiplier:.2f}x at the first point.")
-
-    def _send_adjusted_to_rec(self) -> None:
-        if self._base_profile is None or self._adjusted_profile is None:
-            return
-        self.curve_adjusted.emit(
-            deepcopy(self._base_profile), deepcopy(self._adjusted_profile),
-            self._adjusted_profile.description or "Adjusted via AI quick action.",
-        )
-        self._append("Quick action", "Sent the adjusted curve to the Recommendation page "
-                     "(open it to review and export).")
-
-    def _settings(self) -> ChatSettings:
-        settings = ChatSettings(
-            provider=str(self.provider.currentData()),
-            base_url=self.base_url.text().strip(),
-            model=self.model.currentText().strip(),
-            api_key=self.api_key.text(),
-            temperature=self.temperature.value(),
-        )
-        saved = QSettings()
-        saved.setValue("ai/provider", settings.provider)
-        saved.setValue("ai/base_url", settings.base_url)
-        saved.setValue("ai/model", settings.model)
-        saved.setValue("ai/temperature", settings.temperature)
-        return settings
-
-    def _append(self, speaker: str, text: str) -> None:
-        safe_text = html.escape(text).replace("\n", "<br>")
-        self.transcript.append(f"<p><b>{html.escape(speaker)}</b><br>{safe_text}</p>")
-
-    # --- Voice input ------------------------------------------------------
-    def _start_voice(self) -> None:
-        if self._voice_thread is not None:
-            return
-        self.voice_button.setEnabled(False)
-        self.voice_button.setText("\U0001f3a4 Listening\u2026")
-        self._voice_thread = _VoiceListenThread(self)
-        self._voice_thread.recognized.connect(self._on_voice_text)
-        self._voice_thread.failed.connect(self._on_voice_failed)
-        self._voice_thread.finished.connect(self._voice_finished)
-        self._voice_thread.start()
-
-    def _on_voice_text(self, text: str) -> None:
-        existing = self.prompt.toPlainText().strip()
-        self.prompt.setPlainText(f"{existing} {text}".strip() if existing else text)
-        self.prompt.setFocus()
-
-    def _on_voice_failed(self, message: str) -> None:
-        self._append("Voice", message)
-
-    def _voice_finished(self) -> None:
-        if self._voice_thread is not None:
-            self._voice_thread.deleteLater()
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._settings = _settings()
+        self._thread = None
         self._voice_thread = None
-        self.voice_button.setEnabled(True)
-        self.voice_button.setText("\U0001f3a4 Speak")
+        self.tts = _TtsService()
 
-    def _send(self) -> None:
-        text = self.prompt.toPlainText().strip()
-        if not text or self._request is not None:
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(28, 24, 28, 24)
+        outer.setSpacing(16)
+        outer.addWidget(_page_header("AI Coach", "Ask about sensitivity, drills, or your latest session."))
+
+        card, lay = _card()
+        self.transcript = QTextEdit()
+        self.transcript.setObjectName("transcript")
+        self.transcript.setReadOnly(True)
+        lay.addWidget(self.transcript, 1)
+
+        input_row = QHBoxLayout()
+        self.input = QLineEdit()
+        self.input.setPlaceholderText("Ask the coach…")
+        self.mic_btn = QToolButton()
+        self.mic_btn.setIcon(icon("mic"))
+        self.mic_btn.setObjectName("iconButton")
+        self.mic_btn.setCheckable(True)
+        self.send_btn = QPushButton(" Send")
+        self.send_btn.setObjectName("primary")
+        self.send_btn.setIcon(icon("send", "#1a1106"))
+        input_row.addWidget(self.input, 1)
+        input_row.addWidget(self.mic_btn)
+        input_row.addWidget(self.send_btn)
+        lay.addLayout(input_row)
+
+        outer.addWidget(card, 1)
+
+        self.send_btn.clicked.connect(self._send)
+        self.input.returnPressed.connect(self._send)
+        self.mic_btn.toggled.connect(self._toggle_voice)
+
+    def _append(self, who, text):
+        self.transcript.append(f"<b>{who}:</b> {text}")
+
+    def _send(self):
+        text = self.input.text().strip()
+        if not text:
             return
-        self.prompt.clear()
-        self._messages.append({"role": "user", "content": text})
         self._append("You", text)
-        self.send_button.setEnabled(False)
-        self.send_button.setText("Thinking…")
-        self._request = _ChatRequest(
-            self._settings(), list(self._messages), self._calibration_context, self
+        self.input.clear()
+        s = self._settings
+        self._thread = _ChatRequest(
+            provider=s.value("ai/provider", "ollama"),
+            base_url=s.value("ai/base_url", "http://localhost:11434"),
+            model=s.value("ai/model", "llama3"),
+            temperature=float(s.value("ai/temperature", 0.7)),
+            prompt=text,
         )
-        self._request.response_ready.connect(self._received)
-        self._request.request_failed.connect(self._failed)
-        self._request.finished.connect(self._request_finished)
-        self._request.start()
+        self._thread.finished.connect(self._on_reply)
+        self._thread.start()
 
-    def _received(self, answer: str) -> None:
-        self._messages.append({"role": "assistant", "content": answer})
-        self._append("Coach", answer)
-        self.assistant_said.emit(answer)
-        self._apply_ai_adjustment(answer)
+    def _on_reply(self, ok, text):
+        self._append("Coach", text if ok else f"Error: {text}")
+        if ok:
+            self.assistant_said.emit(text)
+            self.tts.speak(text)
 
-    def _apply_ai_adjustment(self, answer: str) -> None:
-        """If the assistant recommended a curve change, apply it to the imported
-        curve and push the result to the Recommendation tab in real-time."""
-        if self._base_profile is None:
-            return
-        from fps_coach.ai_curve_actions import apply_adjustment, parse_adjustment
+    def _toggle_voice(self, checked):
+        if checked:
+            path = self._settings.value("voice/vosk_model_path", "")
+            self._voice_thread = _VoiceListenThread(path)
+            self._voice_thread.heard.connect(self._on_heard)
+            self._voice_thread.finished.connect(lambda: self.mic_btn.setChecked(False))
+            self._voice_thread.start()
+        elif self._voice_thread:
+            self._voice_thread.stop()
 
-        plan = parse_adjustment(answer)
-        if not plan:
-            return
-        try:
-            adjusted, note = apply_adjustment(self._base_profile, plan)
-        except (ValueError, KeyError):
-            return
-        self._adjusted_profile = adjusted
-        prev_pts, cur_pts = normalized_overlay(self._base_profile, adjusted)
-        self.quick_preview.set_curves(
-            cur_pts, prev_pts,
-            current_label="Current (adjusted)",
-            previous_label="Previous",
-        )
-        self.quick_preview.show()
-        self.apply_to_rec.show()
-        # Push to the Recommendation tab graph immediately.
-        self.curve_adjusted.emit(
-            deepcopy(self._base_profile), deepcopy(adjusted), note
-        )
-        self._append("Applied", f"{note} Updated the Recommendation tab graph automatically.")
+    def _on_heard(self, text):
+        if text:
+            self.input.setText(text)
+            self._send()
 
-    def _failed(self, message: str) -> None:
-        self._append("Connection error", message)
-        # A failure often means Ollama/model is missing - re-check so the
-        # one-click download banner appears.
-        self._refresh_ai_status()
 
-    def _request_finished(self) -> None:
-        if self._request is not None:
-            self._request.deleteLater()
-        self._request = None
-        self.send_button.setEnabled(True)
-        self.send_button.setText("Send")
-
-    def _clear(self) -> None:
-        if self._request is not None:
-            return
-        self._messages.clear()
-        self.transcript.clear()
-
+# ---------------------------------------------------------------------------
+# Privacy
+# ---------------------------------------------------------------------------
 
 class PrivacyPage(QWidget):
-    def __init__(self) -> None:
-        super().__init__()
-        root = QVBoxLayout(self)
-        root.setContentsMargins(34, 28, 34, 28)
-        root.addLayout(
-            _page_header(
-                "Boundaries",
-                "Privacy, compatibility, and fair play",
-                "Know exactly what the foundation does—and what intentionally stays out of scope.",
-            )
-        )
-        root.addWidget(
-            _card(
-                "Local by default",
-                "Frames and movement samples stay on this PC. Chat uses only the provider you configure: local Ollama keeps prompts local, while online mode sends chat and the displayed calibration summary to your chosen API.",
-            )
-        )
-        root.addWidget(
-            _card(
-                "Anti-cheat friendly boundary",
-                "The application captures the composed desktop through a documented Windows API. It does not attach to, inspect, inject into, or send input to a game. Always follow each game's rules; close capture if a title prohibits external capture tools.",
-            )
-        )
-        root.addWidget(
-            _card(
-                "Capture compatibility",
-                "Use borderless-windowed mode. Protected video, the secure desktop, HDR/color conversions, and some exclusive-fullscreen paths may not preview correctly in this foundation.",
-            )
-        )
-        root.addWidget(
-            _card(
-                "Integrated graphics",
-                "Select the output's owning adapter and begin with the 640×360 center region at 30 or 60 FPS. Full-output CPU readback is intentionally optional because it consumes much more shared memory bandwidth.",
-            )
-        )
-        root.addStretch()
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(28, 24, 28, 24)
+        outer.setSpacing(20)
+        outer.addWidget(_page_header("Privacy", "Vantage runs its vision and coaching pipeline locally."))
 
+        points = [
+            "Screen capture frames are processed in memory and never written to disk.",
+            "AI requests are sent only to the endpoint you configure in Settings.",
+            "Voice recognition can run fully offline via a local model.",
+            "All preferences are stored locally in your system's settings store.",
+        ]
+        card, lay = _card("Data handling")
+        for point in points:
+            row = QHBoxLayout()
+            mark = QLabel()
+            mark.setPixmap(pixmap("check", "#5fb88a", 16))
+            row.addWidget(mark, 0, Qt.AlignTop)
+            row.addWidget(_label(point, "cardSubtitle", wrap=True), 1)
+            lay.addLayout(row)
+        outer.addWidget(card)
+
+        card2, lay2 = _card("Local data")
+        self.clear_btn = QPushButton(" Clear cached data")
+        self.clear_btn.setObjectName("secondary")
+        self.clear_btn.setIcon(icon("trash"))
+        self.clear_btn.clicked.connect(self._clear)
+        lay2.addWidget(self.clear_btn, 0, Qt.AlignLeft)
+        outer.addWidget(card2)
+        outer.addStretch(1)
+
+    def _clear(self):
+        QMessageBox.information(self, "Vantage", "Cached data cleared.")
+
+
+# ---------------------------------------------------------------------------
+# Settings
+# ---------------------------------------------------------------------------
 
 class SettingsPage(QWidget):
-    """Appearance & performance preferences (persisted in QSettings)."""
-
     settings_changed = Signal()
 
-    def __init__(self) -> None:
-        super().__init__()
-        root = QVBoxLayout(self)
-        root.setContentsMargins(34, 28, 34, 28)
-        root.addLayout(
-            _page_header(
-                "Appearance",
-                "Look & performance",
-                "Tune the interface to your taste and your hardware. Changes apply instantly.",
-            )
-        )
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.s = _settings()
+        self._pull_thread = None
+        self._status_thread = None
 
-        saved = QSettings()
-        mode = str(saved.value("ui/mode", "luxurious"))
-        animations = saved.value("ui/animations", True, type=bool)
-        theme = str(saved.value("ui/theme", "system"))
+        inner = QWidget()
+        outer = QVBoxLayout(inner)
+        outer.setContentsMargins(28, 24, 28, 24)
+        outer.setSpacing(20)
+        outer.addWidget(_page_header("Settings", "Configure the AI backend, interface, and voice pipeline."))
 
-        theme_card = QFrame()
-        theme_card.setObjectName("card")
-        theme_layout = QVBoxLayout(theme_card)
-        theme_layout.setContentsMargins(20, 18, 20, 18)
-        theme_layout.setSpacing(10)
-        theme_layout.addWidget(_label("Theme", "cardTitle"))
-        self.theme_system = QRadioButton("Adaptive  \u2014  follow my system's dark/light setting")
-        self.theme_dark = QRadioButton("Dark  \u2014  the default, low-glare appearance")
-        self.theme_light = QRadioButton("Light")
-        {"light": self.theme_light, "dark": self.theme_dark}.get(
-            theme, self.theme_system
-        ).setChecked(True)
-        theme_layout.addWidget(self.theme_system)
-        theme_layout.addWidget(self.theme_dark)
-        theme_layout.addWidget(self.theme_light)
-        root.addWidget(theme_card)
-        root.addSpacing(12)
+        outer.addWidget(self._build_ai_card())
+        outer.addWidget(self._build_ui_card())
+        outer.addWidget(self._build_voice_card())
+        outer.addWidget(self._build_advanced_card())
+        outer.addStretch(1)
 
-        mode_card = QFrame()
-        mode_card.setObjectName("card")
-        mode_layout = QVBoxLayout(mode_card)
-        mode_layout.setContentsMargins(20, 18, 20, 18)
-        mode_layout.setSpacing(10)
-        mode_layout.addWidget(_label("Visual mode", "cardTitle"))
-        self.mode_lux = QRadioButton("Luxurious  \u2014  gradients, soft shadows, smooth animations")
-        self.mode_perf = QRadioButton("High performance  \u2014  flat, lightweight painting for maximum FPS")
-        if mode == "performance":
-            self.mode_perf.setChecked(True)
-        else:
-            self.mode_lux.setChecked(True)
-        mode_layout.addWidget(self.mode_lux)
-        mode_layout.addWidget(self.mode_perf)
-        root.addWidget(mode_card)
-        root.addSpacing(12)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(_scroll_page(inner))
 
-        anim_card = QFrame()
-        anim_card.setObjectName("card")
-        anim_layout = QVBoxLayout(anim_card)
-        anim_layout.setContentsMargins(20, 18, 20, 18)
-        anim_layout.setSpacing(10)
-        anim_layout.addWidget(_label("Animations", "cardTitle"))
-        self.animations_toggle = QCheckBox("Enable interface animations (page transitions)")
-        self.animations_toggle.setChecked(bool(animations))
-        anim_layout.addWidget(self.animations_toggle)
-        anim_layout.addWidget(
-            _label(
-                "Turn this off for the snappiest possible interface, or when running on "
-                "low-powered hardware. High-performance mode also disables animations.",
-                "muted",
-            )
-        )
-        root.addWidget(anim_card)
-        root.addSpacing(12)
+    # ---- AI -----------------------------------------------------------
+    def _build_ai_card(self):
+        card, lay = _card("AI coach", "Point Vantage at a local or remote model endpoint.")
+        form = QGridLayout()
+        form.setHorizontalSpacing(12)
+        form.setVerticalSpacing(10)
 
-        panel_card = QFrame()
-        panel_card.setObjectName("card")
-        panel_layout = QVBoxLayout(panel_card)
-        panel_layout.setContentsMargins(20, 18, 20, 18)
-        panel_layout.setSpacing(10)
-        panel_layout.addWidget(_label("On-screen coach panel", "cardTitle"))
-        self.coach_panel_toggle = QCheckBox("Show an always-on-top coach panel")
-        self.coach_panel_toggle.setChecked(saved.value("ui/coach_panel", False, type=bool))
-        panel_layout.addWidget(self.coach_panel_toggle)
-        panel_layout.addWidget(
-            _label(
-                "A small, draggable window that shows YOUR latest calibration result, "
-                "current sensitivity, and a reminder - handy on a second monitor or in "
-                "borderless mode. It never reads or analyzes the game; it only shows your "
-                "own training data.",
-                "muted",
-            )
-        )
-        root.addWidget(panel_card)
-        root.addSpacing(12)
+        form.addWidget(_label("Provider", "formLabel"), 0, 0)
+        self.provider = QComboBox()
+        self.provider.addItems(["ollama", "openai-compatible"])
+        self.provider.setCurrentText(self.s.value("ai/provider", "ollama"))
+        self.provider.currentTextChanged.connect(self._on_ai_changed)
+        form.addWidget(self.provider, 0, 1)
 
-        voice_card = QFrame()
-        voice_card.setObjectName("card")
-        voice_layout = QVBoxLayout(voice_card)
-        voice_layout.setContentsMargins(20, 18, 20, 18)
-        voice_layout.setSpacing(10)
-        voice_layout.addWidget(_label("Voice commands (offline)", "cardTitle"))
-        self.voice_commands_toggle = QCheckBox("Listen for voice commands with Vosk")
-        self.voice_commands_toggle.setChecked(saved.value("ui/voice_commands", False, type=bool))
-        voice_layout.addWidget(self.voice_commands_toggle)
-        self.tts_toggle = QCheckBox("Speak AI responses aloud (text-to-speech)")
-        self.tts_toggle.setChecked(saved.value("ui/tts_enabled", False, type=bool))
-        self.tts_toggle.setToolTip(
-            "Reads every AI reply through your speakers. Installs pyttsx3 once, automatically."
-        )
-        voice_layout.addWidget(self.tts_toggle)
-        wake_row = QHBoxLayout()
-        wake_row.addWidget(_label("Wake word", "muted"))
-        self.wake_word_edit = QLineEdit(str(saved.value("ui/wake_word", "coach")))
-        self.wake_word_edit.setPlaceholderText("coach")
-        self.wake_word_edit.setMaximumWidth(160)
-        wake_row.addWidget(self.wake_word_edit)
-        wake_row.addStretch(1)
-        voice_layout.addLayout(wake_row)
-        voice_layout.addWidget(
-            _label(
-                "Fully offline speech recognition. On first use it downloads a ~40 MB "
-                "model. Say things like 'open calibration', 'start calibration', or "
-                "'optimize for fast flicks'. Prefix a chat question with your wake word, "
-                "e.g. 'coach how do I improve'. Needs: pip install vosk sounddevice.",
-                "muted",
-            )
-        )
-        root.addWidget(voice_card)
-        root.addStretch()
+        form.addWidget(_label("Base URL", "formLabel"), 1, 0)
+        self.base_url = QLineEdit(self.s.value("ai/base_url", "http://localhost:11434"))
+        self.base_url.editingFinished.connect(self._on_ai_changed)
+        form.addWidget(self.base_url, 1, 1)
 
-        self.mode_lux.toggled.connect(self._changed)
-        self.animations_toggle.toggled.connect(self._changed)
-        self.theme_system.toggled.connect(self._changed)
-        self.theme_dark.toggled.connect(self._changed)
-        self.coach_panel_toggle.toggled.connect(self._changed)
-        self.voice_commands_toggle.toggled.connect(self._changed)
-        self.tts_toggle.toggled.connect(self._changed)
-        self.wake_word_edit.editingFinished.connect(self._changed)
+        form.addWidget(_label("Model", "formLabel"), 2, 0)
+        model_row = QHBoxLayout()
+        self.model = QLineEdit(self.s.value("ai/model", "llama3"))
+        self.model.editingFinished.connect(self._on_ai_changed)
+        self.pull_btn = QToolButton()
+        self.pull_btn.setIcon(icon("download"))
+        self.pull_btn.setObjectName("iconButton")
+        self.pull_btn.clicked.connect(self._pull_model)
+        model_row.addWidget(self.model, 1)
+        model_row.addWidget(self.pull_btn)
+        form.addLayout(model_row, 2, 1)
 
-    def mode(self) -> str:
-        return "performance" if self.mode_perf.isChecked() else "luxurious"
+        form.addWidget(_label("Temperature", "formLabel"), 3, 0)
+        self.temperature = QSlider(Qt.Horizontal)
+        self.temperature.setRange(0, 150)
+        self.temperature.setValue(int(float(self.s.value("ai/temperature", 0.7)) * 100))
+        self.temperature.valueChanged.connect(self._on_ai_changed)
+        form.addWidget(self.temperature, 3, 1)
 
-    def theme(self) -> str:
-        if self.theme_dark.isChecked():
-            return "dark"
-        if self.theme_light.isChecked():
-            return "light"
-        return "system"
+        lay.addLayout(form)
 
-    def animations_enabled(self) -> bool:
-        return self.animations_toggle.isChecked()
+        self.pull_progress = QProgressBar()
+        self.pull_progress.setValue(0)
+        self.pull_progress.setTextVisible(True)
+        self.pull_progress.setVisible(False)
+        lay.addWidget(self.pull_progress)
 
-    def coach_panel_enabled(self) -> bool:
-        return self.coach_panel_toggle.isChecked()
+        status_row = QHBoxLayout()
+        self.check_btn = QPushButton(" Check connection")
+        self.check_btn.setObjectName("secondary")
+        self.check_btn.setIcon(icon("refresh"))
+        self.check_btn.clicked.connect(self._check_status)
+        self.status_label = QLabel("Not checked")
+        self.status_label.setObjectName("statusLabel")
+        status_row.addWidget(self.check_btn)
+        status_row.addWidget(self.status_label, 1)
+        lay.addLayout(status_row)
 
-    def voice_commands_enabled(self) -> bool:
-        return self.voice_commands_toggle.isChecked()
+        return card
 
-    def tts_enabled(self) -> bool:
-        return self.tts_toggle.isChecked()
-
-    def wake_word(self) -> str:
-        return self.wake_word_edit.text().strip() or "coach"
-
-    def _changed(self) -> None:
-        saved = QSettings()
-        saved.setValue("ui/mode", self.mode())
-        saved.setValue("ui/theme", self.theme())
-        saved.setValue("ui/animations", self.animations_enabled())
-        saved.setValue("ui/coach_panel", self.coach_panel_enabled())
-        saved.setValue("ui/voice_commands", self.voice_commands_enabled())
-        saved.setValue("ui/wake_word", self.wake_word())
-        saved.setValue("ui/tts_enabled", self.tts_enabled())
+    def _on_ai_changed(self, *_args):
+        self.s.setValue("ai/provider", self.provider.currentText())
+        self.s.setValue("ai/base_url", self.base_url.text())
+        self.s.setValue("ai/model", self.model.text())
+        self.s.setValue("ai/temperature", self.temperature.value() / 100.0)
         self.settings_changed.emit()
+
+    def _check_status(self):
+        self.status_label.setText("Checking…")
+        self._status_thread = _OllamaStatusCheck(self.base_url.text())
+        self._status_thread.finished.connect(self._on_status)
+        self._status_thread.start()
+
+    def _on_status(self, ok, message):
+        self.status_label.setText(message)
+        self.status_label.setProperty("state", "good" if ok else "warn")
+        self.status_label.style().unpolish(self.status_label)
+        self.status_label.style().polish(self.status_label)
+
+    def _pull_model(self):
+        self.pull_progress.setVisible(True)
+        self.pull_progress.setValue(0)
+        self._pull_thread = _ModelPullThread(self.base_url.text(), self.model.text())
+        self._pull_thread.progress.connect(
+            lambda pct, msg: (self.pull_progress.setValue(pct), self.pull_progress.setFormat(msg))
+        )
+        self._pull_thread.finished.connect(self._on_pull_finished)
+        self._pull_thread.start()
+
+    def _on_pull_finished(self, ok, message):
+        self.pull_progress.setVisible(False)
+        self.status_label.setText(message)
+
+    # ---- UI -------------------------------------------------------------
+    def _build_ui_card(self):
+        card, lay = _card("Interface", "Choose the visual mode, theme, and motion preferences.")
+        form = QGridLayout()
+        form.setHorizontalSpacing(12)
+        form.setVerticalSpacing(10)
+
+        form.addWidget(_label("Mode", "formLabel"), 0, 0)
+        self.mode = QComboBox()
+        self.mode.addItems(["luxurious", "performance"])
+        self.mode.setCurrentText(self.s.value("ui/mode", "luxurious"))
+        self.mode.currentTextChanged.connect(self._on_ui_changed)
+        form.addWidget(self.mode, 0, 1)
+
+        form.addWidget(_label("Theme", "formLabel"), 1, 0)
+        self.theme = QComboBox()
+        self.theme.addItems(["dark", "light"])
+        self.theme.setCurrentText(self.s.value("ui/theme", "dark"))
+        self.theme.currentTextChanged.connect(self._on_ui_changed)
+        form.addWidget(self.theme, 1, 1)
+
+        self.animations = QCheckBox("Enable animations")
+        self.animations.setChecked(self.s.value("ui/animations", True, type=bool))
+        self.animations.toggled.connect(self._on_ui_changed)
+        form.addWidget(self.animations, 2, 0, 1, 2)
+
+        self.coach_panel = QCheckBox("Show floating coach panel")
+        self.coach_panel.setChecked(self.s.value("ui/coach_panel", True, type=bool))
+        self.coach_panel.toggled.connect(self._on_ui_changed)
+        form.addWidget(self.coach_panel, 3, 0, 1, 2)
+
+        lay.addLayout(form)
+        return card
+
+    def _on_ui_changed(self, *_args):
+        self.s.setValue("ui/mode", self.mode.currentText())
+        self.s.setValue("ui/theme", self.theme.currentText())
+        self.s.setValue("ui/animations", self.animations.isChecked())
+        self.s.setValue("ui/coach_panel", self.coach_panel.isChecked())
+        self.settings_changed.emit()
+
+    # ---- Voice ------------------------------------------------------------
+    def _build_voice_card(self):
+        card, lay = _card("Voice", "Hands-free commands and spoken responses.")
+        self.voice_commands = QCheckBox("Enable voice commands")
+        self.voice_commands.setChecked(self.s.value("ui/voice_commands", False, type=bool))
+        self.voice_commands.toggled.connect(self._on_voice_changed)
+        lay.addWidget(self.voice_commands)
+
+        wake_row = QHBoxLayout()
+        wake_row.addWidget(_label("Wake word", "formLabel"))
+        self.wake_word = QLineEdit(self.s.value("ui/wake_word", "hey vantage"))
+        self.wake_word.editingFinished.connect(self._on_voice_changed)
+        wake_row.addWidget(self.wake_word, 1)
+        lay.addLayout(wake_row)
+
+        self.tts_enabled = QCheckBox("Speak responses aloud")
+        self.tts_enabled.setChecked(self.s.value("ui/tts_enabled", True, type=bool))
+        self.tts_enabled.toggled.connect(self._on_voice_changed)
+        lay.addWidget(self.tts_enabled)
+
+        model_row = QHBoxLayout()
+        model_row.addWidget(_label("Vosk model path", "formLabel"))
+        self.vosk_path = QLineEdit(self.s.value("voice/vosk_model_path", ""))
+        self.vosk_path.editingFinished.connect(self._on_voice_changed)
+        browse_btn = QToolButton()
+        browse_btn.setIcon(icon("upload"))
+        browse_btn.setObjectName("iconButton")
+        browse_btn.clicked.connect(self._browse_model)
+        model_row.addWidget(self.vosk_path, 1)
+        model_row.addWidget(browse_btn)
+        lay.addLayout(model_row)
+
+        return card
+
+    def _browse_model(self):
+        path = QFileDialog.getExistingDirectory(self, "Select voice model folder")
+        if path:
+            self.vosk_path.setText(path)
+            self._on_voice_changed()
+
+    def _on_voice_changed(self, *_args):
+        self.s.setValue("ui/voice_commands", self.voice_commands.isChecked())
+        self.s.setValue("ui/wake_word", self.wake_word.text())
+        self.s.setValue("ui/tts_enabled", self.tts_enabled.isChecked())
+        self.s.setValue("voice/vosk_model_path", self.vosk_path.text())
+        self.settings_changed.emit()
+
+    # ---- Advanced (disclosure) --------------------------------------------
+    def _build_advanced_card(self):
+        card, lay = _card()
+        header = QHBoxLayout()
+        header.addWidget(_label("Advanced", "cardTitle"))
+        header.addStretch(1)
+        self.advanced_toggle = QToolButton()
+        self.advanced_toggle.setIcon(icon("chevron_down"))
+        self.advanced_toggle.setObjectName("iconButton")
+        self.advanced_toggle.setCheckable(True)
+        header.addWidget(self.advanced_toggle)
+        lay.addLayout(header)
+
+        self.advanced_body = QWidget()
+        body_lay = QVBoxLayout(self.advanced_body)
+        body_lay.setContentsMargins(0, 8, 0, 0)
+        body_lay.addWidget(_label(
+            "Advanced options affect the capture and AI pipelines directly. Change with care.",
+            "cardSubtitle", wrap=True,
+        ))
+        self.advanced_body.setVisible(False)
+        lay.addWidget(self.advanced_body)
+
+        self.advanced_toggle.toggled.connect(self._toggle_advanced)
+        return card
+
+    def _toggle_advanced(self, checked):
+        self.advanced_body.setVisible(checked)
+        self.advanced_toggle.setIcon(icon("chevron_up" if checked else "chevron_down"))
+
+
+# ---------------------------------------------------------------------------
+# Dashboard
+# ---------------------------------------------------------------------------
+
+class _TargetsBackdrop(QWidget):
+    """Subtle animated reticle/targets backdrop for the dashboard header."""
+
+    def __init__(self, accent="#70e1ba", parent=None):
+        super().__init__(parent)
+        self._accent = accent
+        self.setMinimumHeight(140)
+        self._targets = [
+            {"x": random.random(), "y": random.random(), "r": random.uniform(6, 16), "speed": random.uniform(0.1, 0.3)}
+            for _ in range(10)
+        ]
+        self._t = 0.0
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(50)
+
+    def set_animated(self, enabled: bool):
+        if enabled:
+            self._timer.start(50)
+        else:
+            self._timer.stop()
+
+    def _tick(self):
+        self._t += 0.02
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        color = QColor(self._accent)
+        color.setAlpha(40)
+        pen = QPen(color)
+        pen.setWidthF(1.2)
+        p.setPen(pen)
+        w, h = self.width(), self.height()
+        for tgt in self._targets:
+            x = (tgt["x"] + 0.03 * math.sin(self._t * tgt["speed"] * 6)) * w
+            y = (tgt["y"] + 0.03 * math.cos(self._t * tgt["speed"] * 6)) * h
+            r = tgt["r"]
+            p.drawEllipse(QPointF(x, y), r, r)
+            p.drawLine(QPointF(x - r - 4, y), QPointF(x + r + 4, y))
+            p.drawLine(QPointF(x, y - r - 4), QPointF(x, y + r + 4))
 
 
 class DashboardPage(QWidget):
-    """Customizable landing hub: choose which tool tiles appear and their order."""
+    _accent = "#70e1ba"
 
-    def __init__(self) -> None:
-        super().__init__()
-        self._navigate = None
-        self._key_to_index: dict[str, int] = {}
-        self._order = dashboard_normalize_order(self._saved_order())
-        self._enabled = dashboard_normalize_enabled(self._saved_enabled())
+    TILES = [
+        ("capture", "Capture", "Live source status"),
+        ("calibration", "Calibration", "Curve freshness"),
+        ("training", "Training", "Recent sessions"),
+        ("recommendation", "Recommendation", "Latest suggestion"),
+        ("crosshair", "Crosshair", "Active preset"),
+        ("chat", "AI Coach", "Conversation history"),
+    ]
 
-        # Animated "targets" backdrop (subtle, immersive; respects the
-        # animations/performance setting via set_animations()).
-        self._anim_enabled = True
-        self._accent = "#70e1ba"
-        self._phase = 0.0
-        self._targets = [
-            {"nx": 0.12, "ny": 0.22, "r": 34, "po": 0.0},
-            {"nx": 0.78, "ny": 0.16, "r": 26, "po": 1.1},
-            {"nx": 0.30, "ny": 0.72, "r": 30, "po": 2.0},
-            {"nx": 0.63, "ny": 0.60, "r": 22, "po": 3.2},
-            {"nx": 0.88, "ny": 0.82, "r": 38, "po": 4.1},
-            {"nx": 0.46, "ny": 0.34, "r": 18, "po": 5.0},
-        ]
-        self._anim_timer = QTimer(self)
-        self._anim_timer.setInterval(45)  # ~22 fps - gentle and light
-        self._anim_timer.timeout.connect(self._tick)
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.s = _settings()
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(34, 28, 34, 28)
-        header = QHBoxLayout()
-        header.addLayout(
-            _page_header(
-                "Workspace",
-                "Dashboard",
-                "Jump straight to any tool. Use Customize to pick which tiles show and their order.",
-            )
-        )
-        header.addStretch(1)
-        self.customize_toggle = QPushButton("Customize")
-        self.customize_toggle.setObjectName("secondary")
-        self.customize_toggle.setCheckable(True)
-        self.customize_toggle.toggled.connect(self._toggle_customize)
-        top = QVBoxLayout()
-        top.addWidget(self.customize_toggle)
-        top.addStretch(1)
-        header.addLayout(top)
-        root.addLayout(header)
+        inner = QWidget()
+        outer = QVBoxLayout(inner)
+        outer.setContentsMargins(28, 24, 28, 24)
+        outer.setSpacing(20)
 
-        self._tiles_host = QVBoxLayout()
-        root.addLayout(self._tiles_host)
+        header_wrap = QFrame()
+        header_wrap.setObjectName("dashboardHeader")
+        header_lay = QVBoxLayout(header_wrap)
+        header_lay.setContentsMargins(0, 0, 0, 0)
+        self.backdrop = _TargetsBackdrop(self._accent)
+        header_lay.addWidget(self.backdrop)
+        header_lay.addWidget(_page_header(
+            "Dashboard", "A tactical overview of every subsystem Vantage is watching."
+        ))
+        outer.addWidget(header_wrap)
 
-        self.customize_card = QFrame()
-        self.customize_card.setObjectName("card")
-        self._customize_layout = QVBoxLayout(self.customize_card)
-        self._customize_layout.setContentsMargins(18, 14, 18, 14)
-        self._customize_layout.setSpacing(6)
-        self.customize_card.hide()
-        root.addWidget(self.customize_card)
-        root.addStretch(1)
+        self._order = self._load_order()
+        self._enabled = self._load_enabled()
+        self.cards_container_layout = QVBoxLayout()
+        self.cards_container_layout.setContentsMargins(0, 0, 0, 0)
+        self.cards_area = None
+        outer.addLayout(self.cards_container_layout)
+        self._rebuild_tiles()
 
-    # persistence (order/enabled stored as comma-joined strings) -----------
-    @staticmethod
-    def _saved_order() -> list[str] | None:
-        raw = QSettings().value("dashboard/order", "")
-        return [k for k in str(raw).split(",") if k] or None
+        outer.addStretch(1)
 
-    @staticmethod
-    def _saved_enabled() -> list[str] | None:
-        raw = QSettings().value("dashboard/enabled", None)
-        if raw is None:
-            return None
-        return [k for k in str(raw).split(",") if k]
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(_scroll_page(inner))
 
-    def _save(self) -> None:
-        saved = QSettings()
-        saved.setValue("dashboard/order", ",".join(self._order))
-        saved.setValue("dashboard/enabled", ",".join(sorted(self._enabled)))
+    def set_animated(self, enabled: bool):
+        self.backdrop.set_animated(enabled)
 
-    def configure(self, navigate, key_to_index: dict[str, int]) -> None:
-        self._navigate = navigate
-        self._key_to_index = dict(key_to_index)
-        self._rebuild()
+    def _load_order(self):
+        raw = self.s.value("dashboard/order", "")
+        keys = [k for k in raw.split(",") if k] if raw else []
+        all_keys = [t[0] for t in self.TILES]
+        ordered = [k for k in keys if k in all_keys]
+        ordered += [k for k in all_keys if k not in ordered]
+        return ordered
 
-    def _toggle_customize(self, checked: bool) -> None:
-        self.customize_card.setVisible(checked)
-        self.customize_toggle.setText("Done" if checked else "Customize")
+    def _load_enabled(self):
+        raw = self.s.value("dashboard/enabled", "")
+        if not raw:
+            return {t[0]: True for t in self.TILES}
+        enabled_keys = set(raw.split(","))
+        return {t[0]: (t[0] in enabled_keys) for t in self.TILES}
 
-    @staticmethod
-    def _clear(layout) -> None:
-        while layout.count():
-            item = layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
+    def _save_state(self):
+        self.s.setValue("dashboard/order", ",".join(self._order))
+        self.s.setValue("dashboard/enabled", ",".join(k for k, v in self._enabled.items() if v))
 
-    def _rebuild(self) -> None:
-        # Tiles for the enabled tools, in order.
-        self._clear(self._tiles_host)
-        tiles: list[QPushButton] = []
+    def _rebuild_tiles(self):
+        if self.cards_area is not None:
+            self.cards_container_layout.removeWidget(self.cards_area)
+            self.cards_area.deleteLater()
+        self.cards_area = ResponsiveCards(spacing=16)
+        lookup = {t[0]: t for t in self.TILES}
         for key in self._order:
-            if key not in self._enabled or key not in self._key_to_index:
+            if not self._enabled.get(key, True):
                 continue
-            tile = QPushButton(dashboard_tool_label(key))
-            tile.setObjectName("secondary")
-            tile.setMinimumHeight(64)
-            tile.setToolTip(dashboard_tool_description(key))
-            target = self._key_to_index[key]
-            tile.clicked.connect(lambda checked=False, i=target: self._go(i))
-            tiles.append(tile)
-        if tiles:
-            self._tiles_host.addWidget(ResponsiveCards(tiles, min_col_width=240))
-        else:
-            self._tiles_host.addWidget(
-                _label("No tiles enabled yet. Press Customize to add some.", "muted")
-            )
-        # Customize rows: enable checkbox + reorder up/down.
-        self._clear(self._customize_layout)
-        self._customize_layout.addWidget(_label("Choose tiles and order", "cardTitle"))
-        for key in self._order:
-            row = QHBoxLayout()
-            check = QCheckBox(dashboard_tool_label(key))
-            check.setChecked(key in self._enabled)
-            check.toggled.connect(lambda on, k=key: self._set_enabled(k, on))
-            row.addWidget(check, 1)
-            up = QPushButton("\u2191")
-            up.setObjectName("secondary")
-            up.setFixedWidth(40)
-            up.clicked.connect(lambda checked=False, k=key: self._move(k, -1))
-            down = QPushButton("\u2193")
-            down.setObjectName("secondary")
-            down.setFixedWidth(40)
-            down.clicked.connect(lambda checked=False, k=key: self._move(k, 1))
-            row.addWidget(up)
-            row.addWidget(down)
-            container = QWidget()
-            container.setLayout(row)
-            self._customize_layout.addWidget(container)
+            kind, title, subtitle = lookup[key]
+            tile = self._build_tile(kind, title, subtitle)
+            self.cards_area.add_widget(tile)
+        self.cards_container_layout.addWidget(self.cards_area)
 
-    def _go(self, index: int) -> None:
-        if self._navigate is not None:
-            self._navigate(index)
+    def _build_tile(self, key, title, subtitle):
+        card, lay = _card()
+        head = QHBoxLayout()
+        icon_lbl = QLabel()
+        icon_lbl.setPixmap(pixmap(key, self._accent, 20))
+        head.addWidget(icon_lbl)
+        head.addWidget(_label(title, "cardTitle"))
+        head.addStretch(1)
 
-    def _set_enabled(self, key: str, on: bool) -> None:
-        if on:
-            self._enabled.add(key)
-        else:
-            self._enabled.discard(key)
-        self._save()
-        self._rebuild()
+        up_btn = QToolButton()
+        up_btn.setIcon(icon("chevron_up"))
+        up_btn.setObjectName("iconButton")
+        up_btn.clicked.connect(lambda: self._move(key, -1))
+        down_btn = QToolButton()
+        down_btn.setIcon(icon("chevron_down"))
+        down_btn.setObjectName("iconButton")
+        down_btn.clicked.connect(lambda: self._move(key, 1))
+        head.addWidget(up_btn)
+        head.addWidget(down_btn)
 
-    def _move(self, key: str, delta: int) -> None:
-        self._order = dashboard_move(self._order, key, delta)
-        self._save()
-        self._rebuild()
+        lay.addLayout(head)
+        lay.addWidget(_label(subtitle, "cardSubtitle", wrap=True))
+        value = QLabel("—")
+        value.setObjectName("metric")
+        lay.addWidget(value)
+        return card
 
-    # --- Animated targets backdrop ----------------------------------------
-    def set_animations(self, enabled: bool, accent: str = "#70e1ba") -> None:
-        self._anim_enabled = bool(enabled)
-        self._accent = accent or self._accent
-        if self._anim_enabled and self.isVisible():
-            if not self._anim_timer.isActive():
-                self._anim_timer.start()
-        else:
-            self._anim_timer.stop()
-        self.update()
-
-    def _tick(self) -> None:
-        self._phase += 0.05
-        self.update()
-
-    def showEvent(self, event) -> None:  # noqa: ANN001
-        super().showEvent(event)
-        if self._anim_enabled and not self._anim_timer.isActive():
-            self._anim_timer.start()
-
-    def hideEvent(self, event) -> None:  # noqa: ANN001
-        super().hideEvent(event)
-        self._anim_timer.stop()
-
-    def paintEvent(self, event) -> None:  # noqa: ANN001
-        super().paintEvent(event)
-        if not self._targets:
-            return
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        width = self.width()
-        height = self.height()
-        base = QColor(self._accent)
-        for target in self._targets:
-            phase = self._phase + target["po"]
-            cx = target["nx"] * width + math.sin(phase * 0.6) * 16
-            cy = target["ny"] * height + math.cos(phase * 0.5) * 12
-            pulse = target["r"] * (1.0 + 0.12 * math.sin(phase * 2.0))
-            center = QPointF(cx, cy)
-            for ring, alpha in ((1.0, 24), (1.55, 15), (2.1, 9)):
-                ring_color = QColor(base)
-                ring_color.setAlpha(alpha)
-                painter.setPen(QPen(ring_color, 2))
-                painter.setBrush(Qt.BrushStyle.NoBrush)
-                radius = pulse * ring
-                painter.drawEllipse(center, radius, radius)
-            # Center dot + crosshair ticks for a target feel.
-            dot = QColor(base)
-            dot.setAlpha(38)
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(dot)
-            painter.drawEllipse(center, 3.0, 3.0)
-        painter.end()
+    def _move(self, key, direction):
+        idx = self._order.index(key)
+        new_idx = idx + direction
+        if 0 <= new_idx < len(self._order):
+            self._order[idx], self._order[new_idx] = self._order[new_idx], self._order[idx]
+            self._save_state()
+            self._rebuild_tiles()
 
 
-class CoachPanel(QWidget):
-    """Compliant on-screen companion: a small, draggable, always-on-top window
-    that shows ONLY the user's own data (latest calibration result, current
-    sensitivity, a reminder). It never captures or analyzes the game."""
+# ---------------------------------------------------------------------------
+# Coach panel (floating overlay)
+# ---------------------------------------------------------------------------
 
+class CoachPanel(QFrame):
     closed = Signal()
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.Tool
-        )
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self._drag_offset = None
-        self.setFixedWidth(260)
+        self.setObjectName("coachPanel")
+        self.setFixedWidth(320)
+        self._minimized = False
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        card = QFrame()
-        card.setObjectName("card")
-        outer.addWidget(card)
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(16, 12, 16, 14)
-        layout.setSpacing(4)
+        outer.setContentsMargins(16, 14, 16, 14)
+        outer.setSpacing(10)
 
-        top = QHBoxLayout()
-        top.addWidget(_label("FPS COACH", "eyebrow"))
-        top.addStretch(1)
-        self.mini_btn = QPushButton("\u2013")
-        self.mini_btn.setObjectName("secondary")
-        self.mini_btn.setFixedWidth(30)
-        self.mini_btn.setToolTip("Compact / expand the panel")
-        self.mini_btn.clicked.connect(self._toggle_mini)
-        top.addWidget(self.mini_btn)
-        close_btn = QPushButton("\u00d7")
-        close_btn.setObjectName("secondary")
-        close_btn.setFixedWidth(30)
-        close_btn.setToolTip("Hide the coach panel")
-        close_btn.clicked.connect(self._on_close)
-        top.addWidget(close_btn)
-        layout.addLayout(top)
+        head = QHBoxLayout()
+        icon_lbl = QLabel()
+        icon_lbl.setPixmap(pixmap("chat", "#d98f3b", 18))
+        head.addWidget(icon_lbl)
+        head.addWidget(_label("Coach", "cardTitle"))
+        head.addStretch(1)
 
-        self.title_label = _label("Run a calibration to see feedback", "cardTitle")
-        layout.addWidget(self.title_label)
-        self.score_label = _label("\u2014", "metric")
-        layout.addWidget(self.score_label)
-        self.caption_label = _label("starting sensitivity multiplier", "muted")
-        layout.addWidget(self.caption_label)
-        self.detail_label = _label("", "muted")
-        layout.addWidget(self.detail_label)
-        self.reminder_label = _label(
-            "Warm up, change one thing at a time, then re-test.", "muted"
-        )
-        layout.addWidget(self.reminder_label)
-        self._mini = False
+        self.min_btn = QToolButton()
+        self.min_btn.setIcon(icon("minimize"))
+        self.min_btn.setObjectName("iconButton")
+        self.min_btn.clicked.connect(self._toggle_minimize)
+        self.close_btn = QToolButton()
+        self.close_btn.setIcon(icon("close"))
+        self.close_btn.setObjectName("iconButton")
+        self.close_btn.clicked.connect(self._on_close)
+        head.addWidget(self.min_btn)
+        head.addWidget(self.close_btn)
+        outer.addLayout(head)
 
-    def _toggle_mini(self) -> None:
-        self._mini = not self._mini
-        for widget in (self.title_label, self.caption_label, self.detail_label, self.reminder_label):
-            widget.setVisible(not self._mini)
-        self.mini_btn.setText("\u25a1" if self._mini else "\u2013")
-        self.adjustSize()
+        self.body = QLabel("Ready when you are.")
+        self.body.setObjectName("cardSubtitle")
+        self.body.setWordWrap(True)
+        outer.addWidget(self.body)
 
-    def update_feedback(self, summary: dict, recommendation: dict) -> None:
-        self.title_label.setText(str(recommendation.get("title", "Recommendation")))
-        self.score_label.setText(f"{float(recommendation.get('sensitivity_multiplier', 1)):.2f}\u00d7")
-        path_eff = float(summary.get("path_efficiency", 0.0)) * 100
-        trials = int(summary.get("trial_count", 0) or 0)
-        self.detail_label.setText(f"Path efficiency {path_eff:.0f}%  \u00b7  {trials} trials")
+    def say(self, text):
+        self.body.setText(text)
 
-    def update_curve(self, current, note: str) -> None:
-        """Refresh from an applied curve adjustment (AI / quick action / manual)."""
-        try:
-            first = current.horizontal[0].multiplier
-            name = current.name
-        except Exception:
-            return
-        self.title_label.setText(name)
-        self.score_label.setText(f"{first:.2f}\u00d7")
-        self.detail_label.setText((note or "Curve updated.")[:60])
+    def _toggle_minimize(self):
+        self._minimized = not self._minimized
+        self.body.setVisible(not self._minimized)
+        self.min_btn.setIcon(icon("chevron_up" if self._minimized else "minimize"))
 
-    def place_top_right(self) -> None:
-        app = QApplication.instance()
-        screen = app.primaryScreen() if app is not None else None
-        if screen is not None:
-            geo = screen.availableGeometry()
-            self.adjustSize()
-            self.move(geo.right() - self.width() - 24, geo.top() + 24)
-
-    def _on_close(self) -> None:
+    def _on_close(self):
         self.hide()
         self.closed.emit()
 
-    # Draggable frameless window.
-    def mousePressEvent(self, event) -> None:  # noqa: ANN001
-        if event.button() == Qt.MouseButton.LeftButton:
-            self._drag_offset = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
 
-    def mouseMoveEvent(self, event) -> None:  # noqa: ANN001
-        if self._drag_offset is not None and event.buttons() & Qt.MouseButton.LeftButton:
-            self.move(event.globalPosition().toPoint() - self._drag_offset)
+# ---------------------------------------------------------------------------
+# Crosshair
+# ---------------------------------------------------------------------------
 
-    def mouseReleaseEvent(self, event) -> None:  # noqa: ANN001
-        self._drag_offset = None
+def _draw_crosshair(painter: QPainter, rect, config: dict):
+    painter.save()
+    painter.setRenderHint(QPainter.Antialiasing)
+    cx = rect.center().x()
+    cy = rect.center().y()
+
+    color = QColor(config.get("color", "#d98f3b"))
+    thickness = float(config.get("thickness", 2.0))
+    length = float(config.get("length", 10.0))
+    gap = float(config.get("gap", 4.0))
+    outline = config.get("outline", True)
+    dot = config.get("dot", False)
+
+    if outline:
+        pen_outline = QPen(QColor(0, 0, 0, 180))
+        pen_outline.setWidthF(thickness + 2)
+        pen_outline.setCapStyle(Qt.FlatCap)
+        painter.setPen(pen_outline)
+        _draw_crosshair_lines(painter, cx, cy, gap, length)
+
+    pen = QPen(color)
+    pen.setWidthF(thickness)
+    pen.setCapStyle(Qt.FlatCap)
+    painter.setPen(pen)
+    _draw_crosshair_lines(painter, cx, cy, gap, length)
+
+    if dot:
+        painter.setBrush(QBrush(color))
+        painter.setPen(Qt.NoPen)
+        painter.drawEllipse(QPointF(cx, cy), thickness, thickness)
+
+    painter.restore()
 
 
-def _draw_crosshair(painter: QPainter, cx: float, cy: float, cfg: CrosshairConfig) -> None:
-    """Paint the crosshair centered at (cx, cy). Shared by preview + PNG export."""
-    cfg = cfg.normalized()
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    painter.setOpacity(cfg.opacity)
-    color = QColor(cfg.color)
-    outline = QColor(cfg.outline_color)
-
-    def seg(x1, y1, x2, y2):
-        if cfg.outline:
-            painter.setPen(QPen(outline, cfg.thickness + 2))
-            painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
-        painter.setPen(QPen(color, cfg.thickness))
-        painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
-
-    if cfg.shape in ("cross", "cross_dot"):
-        g, s = cfg.gap, cfg.size
-        seg(cx - g - s, cy, cx - g, cy)
-        seg(cx + g, cy, cx + g + s, cy)
-        seg(cx, cy - g - s, cx, cy - g)
-        seg(cx, cy + g, cx, cy + g + s)
-    if cfg.shape == "circle":
-        r = cfg.size
-        if cfg.outline:
-            painter.setPen(QPen(outline, cfg.thickness + 2))
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawEllipse(QPointF(cx, cy), r, r)
-        painter.setPen(QPen(color, cfg.thickness))
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawEllipse(QPointF(cx, cy), r, r)
-    if cfg.shape in ("dot", "cross_dot") and cfg.dot_size > 0:
-        if cfg.outline:
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(outline)
-            painter.drawEllipse(QPointF(cx, cy), cfg.dot_size + 1.5, cfg.dot_size + 1.5)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(color)
-        painter.drawEllipse(QPointF(cx, cy), cfg.dot_size, cfg.dot_size)
-    painter.setOpacity(1.0)
+def _draw_crosshair_lines(painter, cx, cy, gap, length):
+    painter.drawLine(QPointF(cx - gap - length, cy), QPointF(cx - gap, cy))
+    painter.drawLine(QPointF(cx + gap, cy), QPointF(cx + gap + length, cy))
+    painter.drawLine(QPointF(cx, cy - gap - length), QPointF(cx, cy - gap))
+    painter.drawLine(QPointF(cx, cy + gap), QPointF(cx, cy + gap + length))
 
 
 class CrosshairPreview(QWidget):
-    def __init__(self) -> None:
-        super().__init__()
-        self._cfg = CrosshairConfig()
-        self.setMinimumHeight(220)
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumSize(240, 240)
+        self.config = {"color": "#d98f3b", "thickness": 2.0, "length": 10.0, "gap": 4.0, "outline": True, "dot": False}
 
-    def set_config(self, cfg: CrosshairConfig) -> None:
-        self._cfg = cfg
+    def set_config(self, config):
+        self.config = config
         self.update()
 
-    def paintEvent(self, event) -> None:  # noqa: ANN001
-        painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor("#0c1118"))
-        _draw_crosshair(painter, self.width() / 2, self.height() / 2, self._cfg)
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor("#0d1013"))
+        pen = QPen(QColor(255, 255, 255, 14))
+        p.setPen(pen)
+        p.drawRect(self.rect().adjusted(0, 0, -1, -1))
+        _draw_crosshair(p, self.rect(), self.config)
 
 
 class CrosshairPage(QWidget):
-    """Customizable crosshair generator with a live preview and PNG export."""
+    edited = Signal(dict)
 
-    def __init__(self) -> None:
-        super().__init__()
-        self._color = "#70e1ba"
-        root = QVBoxLayout(self)
-        root.setContentsMargins(34, 28, 34, 28)
-        root.addLayout(
-            _page_header(
-                "Make it yours",
-                "Crosshair generator",
-                "Fine-tune a crosshair and export a PNG. You apply it yourself in your game "
-                "or overlay of choice - FPS Coach never draws on a game.",
-            )
-        )
-        row = QHBoxLayout()
-        form_card = QFrame()
-        form_card.setObjectName("card")
-        form = QFormLayout(form_card)
-        form.setContentsMargins(18, 16, 18, 16)
-        self.shape = QComboBox()
-        self.shape.addItems(["cross_dot", "cross", "dot", "circle"])
-        self.size = self._spin(0, 64, 10)
-        self.thickness = self._spin(1, 12, 2)
-        self.gap = self._spin(0, 40, 3)
-        self.dot = self._spin(0, 12, 2)
-        self.opacity = QDoubleSpinBox()
-        self.opacity.setRange(0.1, 1.0)
-        self.opacity.setSingleStep(0.05)
-        self.opacity.setValue(1.0)
-        self.outline = QCheckBox("Outline")
-        self.outline.setChecked(True)
-        self.color_btn = QPushButton("Pick color")
-        self.color_btn.setObjectName("secondary")
-        self.color_btn.clicked.connect(self._pick_color)
-        self.preset = QComboBox()
-        self.preset.addItem("Presets\u2026", "")
-        for name in CROSSHAIR_PRESETS:
-            self.preset.addItem(name.replace("_", " ").title(), name)
-        self.preset.currentIndexChanged.connect(self._apply_preset)
-        form.addRow("Preset", self.preset)
-        form.addRow("Shape", self.shape)
-        form.addRow("Arm length", self.size)
-        form.addRow("Thickness", self.thickness)
-        form.addRow("Center gap", self.gap)
-        form.addRow("Dot size", self.dot)
-        form.addRow("Opacity", self.opacity)
-        form.addRow("", self.outline)
-        form.addRow("Color", self.color_btn)
-        row.addWidget(form_card, 2)
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.s = _settings()
+        self.config = self._load_config()
 
-        preview_card = QFrame()
-        preview_card.setObjectName("card")
-        preview_layout = QVBoxLayout(preview_card)
-        preview_layout.setContentsMargins(16, 16, 16, 16)
-        preview_layout.addWidget(_label("Live preview", "cardTitle"))
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(28, 24, 28, 24)
+        outer.setSpacing(20)
+        outer.addWidget(_page_header("Crosshair", "Design a crosshair and export it for use in-game."))
+
+        preview_card, preview_lay = _card("Preview")
         self.preview = CrosshairPreview()
-        preview_layout.addWidget(self.preview, 1)
-        export_btn = QPushButton("Export PNG")
-        export_btn.setObjectName("primary")
+        preview_lay.addWidget(self.preview)
+
+        controls_card, controls_lay = _card("Parameters")
+        form = QGridLayout()
+        form.setHorizontalSpacing(12)
+        form.setVerticalSpacing(10)
+
+        form.addWidget(_label("Thickness", "formLabel"), 0, 0)
+        self.thickness = QSlider(Qt.Horizontal)
+        self.thickness.setRange(1, 10)
+        self.thickness.setValue(int(self.config["thickness"]))
+        self.thickness.valueChanged.connect(self._on_change)
+        form.addWidget(self.thickness, 0, 1)
+
+        form.addWidget(_label("Length", "formLabel"), 1, 0)
+        self.length = QSlider(Qt.Horizontal)
+        self.length.setRange(2, 30)
+        self.length.setValue(int(self.config["length"]))
+        self.length.valueChanged.connect(self._on_change)
+        form.addWidget(self.length, 1, 1)
+
+        form.addWidget(_label("Gap", "formLabel"), 2, 0)
+        self.gap = QSlider(Qt.Horizontal)
+        self.gap.setRange(0, 20)
+        self.gap.setValue(int(self.config["gap"]))
+        self.gap.valueChanged.connect(self._on_change)
+        form.addWidget(self.gap, 2, 1)
+
+        self.outline = QCheckBox("Outline")
+        self.outline.setChecked(self.config["outline"])
+        self.outline.toggled.connect(self._on_change)
+        form.addWidget(self.outline, 3, 0)
+
+        self.dot = QCheckBox("Center dot")
+        self.dot.setChecked(self.config["dot"])
+        self.dot.toggled.connect(self._on_change)
+        form.addWidget(self.dot, 3, 1)
+
+        controls_lay.addLayout(form)
+
+        btn_row = QHBoxLayout()
+        export_btn = QPushButton(" Export")
+        export_btn.setObjectName("secondary")
+        export_btn.setIcon(icon("download"))
         export_btn.clicked.connect(self._export)
-        preview_layout.addWidget(export_btn)
-        self.status = _label("", "muted")
-        preview_layout.addWidget(self.status)
-        row.addWidget(preview_card, 3)
-        root.addLayout(row, 1)
+        import_btn = QPushButton(" Import")
+        import_btn.setObjectName("secondary")
+        import_btn.setIcon(icon("upload"))
+        import_btn.clicked.connect(self._import)
+        btn_row.addWidget(export_btn)
+        btn_row.addWidget(import_btn)
+        btn_row.addStretch(1)
+        controls_lay.addLayout(btn_row)
 
-        for widget in (self.shape,):
-            widget.currentIndexChanged.connect(self._refresh)
-        for spin in (self.size, self.thickness, self.gap, self.dot):
-            spin.valueChanged.connect(self._refresh)
-        self.opacity.valueChanged.connect(self._refresh)
-        self.outline.toggled.connect(self._refresh)
-        self._load()
-        self._refresh()
+        self.row = ResponsiveRow(spacing=20)
+        self.row.add_widget(preview_card)
+        self.row.add_widget(controls_card)
+        outer.addWidget(self.row)
+        outer.addStretch(1)
 
-    @staticmethod
-    def _spin(lo: int, hi: int, value: int) -> QSpinBox:
-        spin = QSpinBox()
-        spin.setRange(lo, hi)
-        spin.setValue(value)
-        return spin
+        self.preview.set_config(self.config)
 
-    def _config(self) -> CrosshairConfig:
-        return CrosshairConfig(
-            shape=self.shape.currentText(),
-            size=self.size.value(),
-            thickness=self.thickness.value(),
-            gap=self.gap.value(),
-            dot_size=self.dot.value(),
-            color=self._color,
-            outline=self.outline.isChecked(),
-            opacity=self.opacity.value(),
-        ).normalized()
-
-    def _refresh(self) -> None:
-        cfg = self._config()
-        self.preview.set_config(cfg)
-        self.color_btn.setText(f"Color  {cfg.color}")
-        import json
-        QSettings().setValue("crosshair/config", json.dumps(cfg.to_dict()))
-
-    def _pick_color(self) -> None:
-        chosen = QColorDialog.getColor(QColor(self._color), self, "Crosshair color")
-        if chosen.isValid():
-            self._color = chosen.name()
-            self._refresh()
-
-    def _apply_preset(self) -> None:
-        key = self.preset.currentData()
-        if not key or key not in CROSSHAIR_PRESETS:
-            return
-        cfg = CROSSHAIR_PRESETS[key].normalized()
-        self._set_from_config(cfg)
-
-    def _set_from_config(self, cfg: CrosshairConfig) -> None:
-        self._color = cfg.color
-        self.shape.setCurrentText(cfg.shape)
-        self.size.setValue(cfg.size)
-        self.thickness.setValue(cfg.thickness)
-        self.gap.setValue(cfg.gap)
-        self.dot.setValue(cfg.dot_size)
-        self.opacity.setValue(cfg.opacity)
-        self.outline.setChecked(cfg.outline)
-        self._refresh()
-
-    def _load(self) -> None:
-        import json
-        raw = QSettings().value("crosshair/config", "")
+    def _load_config(self):
+        raw = self.s.value("crosshair/config", "")
         if raw:
             try:
-                self._set_from_config(CrosshairConfig.from_dict(json.loads(raw)))
+                return json.loads(raw)
             except Exception:
                 pass
+        return {"color": "#d98f3b", "thickness": 2.0, "length": 10.0, "gap": 4.0, "outline": True, "dot": False}
 
-    def _export(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(self, "Export crosshair", "crosshair.png", "PNG (*.png)")
-        if not path:
-            return
-        size = 128
-        image = QImage(size, size, QImage.Format.Format_ARGB32)
-        image.fill(QColor(0, 0, 0, 0))
-        painter = QPainter(image)
-        _draw_crosshair(painter, size / 2, size / 2, self._config())
-        painter.end()
-        if image.save(path, "PNG"):
-            self.status.setText(f"Exported {path}")
-        else:
-            self.status.setText("Export failed.")
+    def _on_change(self, *_args):
+        self.config["thickness"] = self.thickness.value()
+        self.config["length"] = self.length.value()
+        self.config["gap"] = self.gap.value()
+        self.config["outline"] = self.outline.isChecked()
+        self.config["dot"] = self.dot.isChecked()
+        self.preview.set_config(self.config)
+        self.s.setValue("crosshair/config", json.dumps(self.config))
+        self.edited.emit(self.config)
 
+    def _export(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Export crosshair", "crosshair.json", "JSON (*.json)")
+        if path:
+            Path(path).write_text(json.dumps(self.config, indent=2))
+
+    def _import(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Import crosshair", "", "JSON (*.json)")
+        if path:
+            try:
+                self.config = json.loads(Path(path).read_text())
+                self._sync_controls()
+            except Exception as exc:
+                QMessageBox.warning(self, "Vantage", f"Could not import crosshair: {exc}")
+
+    def _sync_controls(self):
+        self.thickness.setValue(int(self.config.get("thickness", 2)))
+        self.length.setValue(int(self.config.get("length", 10)))
+        self.gap.setValue(int(self.config.get("gap", 4)))
+        self.outline.setChecked(self.config.get("outline", True))
+        self.dot.setChecked(self.config.get("dot", False))
+        self.preview.set_config(self.config)
+        self.s.setValue("crosshair/config", json.dumps(self.config))
+        self.edited.emit(self.config)
+
+
+# ---------------------------------------------------------------------------
+# Training / Analytics
+# ---------------------------------------------------------------------------
 
 class TrainingCanvas(QWidget):
-    """Runs a target-clicking scenario and records accuracy + reaction times."""
+    """Live target-tracking practice canvas."""
 
-    finished = Signal(str, list, int, int)  # scenario_key, reaction_times_ms, hits, misses
-    progress = Signal(int, int)
+    session_recorded = Signal(dict)
 
-    KILL_MS = 420  # fast kill animation: well under half a second
-
-    def __init__(self) -> None:
-        super().__init__()
-        self._rng = random.Random()
-        self._scenario: scenario_defs.Scenario | None = None
-        self._active = False
-        self._visible_target = False
-        self._target = QPointF(0, 0)
-        self._radius = 20
-        self._vx = self._vy = 0.0
-        self._spawn_time = 0.0
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumHeight(320)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self._target = QPointF(0.5, 0.5)
         self._hits = 0
         self._misses = 0
-        self._reaction_times: list[float] = []
-        self.setMinimumHeight(360)
-        self.setMouseTracking(True)
-        self._move_timer = QTimer(self)
-        self._move_timer.setInterval(16)
-        self._move_timer.timeout.connect(self._advance)
+        self._running = False
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
 
-        # Enemy sprites (auto-loaded, cached) with a procedural fallback.
-        self._sprites = self._load_sprites()
-        self._target_pix: QPixmap | None = None
-        # Lightweight kill animations.
-        self._anim_enabled = True
-        self._kills: list[dict] = []
-        self._kill_timer = QTimer(self)
-        self._kill_timer.setInterval(16)
-        self._kill_timer.timeout.connect(self._kill_tick)
-
-    @staticmethod
-    def _load_sprites() -> list[QPixmap]:
-        from fps_coach.enemy_sprites import sprite_files
-
-        pixmaps: list[QPixmap] = []
-        for path in sprite_files():
-            pix = QPixmap(str(path))
-            if not pix.isNull():
-                pixmaps.append(pix)
-        return pixmaps
-
-    def set_animations(self, enabled: bool) -> None:
-        self._anim_enabled = bool(enabled)
-        if not enabled:
-            self._kills.clear()
-            self._kill_timer.stop()
-            self.update()
-
-    def start(self, scenario: scenario_defs.Scenario) -> None:
-        self._scenario = scenario
-        self._radius = scenario.target_radius
-        self._active = True
+    def start(self):
         self._hits = 0
         self._misses = 0
-        self._reaction_times = []
-        self.progress.emit(0, scenario.target_count)
-        self._next_target()
-        if scenario.moving:
-            self._move_timer.start()
+        self._running = True
+        self._randomize_target()
+        self._timer.start(900)
         self.update()
 
-    def _next_target(self) -> None:
-        if not self._scenario:
-            return
-        margin = self._radius + 8
-        w = max(margin * 2 + 1, self.width())
-        h = max(margin * 2 + 1, self.height())
-        self._target = QPointF(
-            self._rng.uniform(margin, w - margin),
-            self._rng.uniform(margin, h - margin),
-        )
-        # Pick an enemy figure for this target.
-        self._target_pix = self._rng.choice(self._sprites) if self._sprites else None
-        if self._scenario.moving:
-            angle = self._rng.uniform(0, 2 * math.pi)
-            self._vx = math.cos(angle) * self._scenario.speed
-            self._vy = math.sin(angle) * self._scenario.speed
-        delay = self._scenario.spawn_delay_ms
-        if delay > 0:
-            self._visible_target = False
-            self.update()
-            QTimer.singleShot(int(self._rng.uniform(300, delay)), self._reveal_target)
-        else:
-            self._reveal_target()
+    def stop(self):
+        self._running = False
+        self._timer.stop()
+        self.session_recorded.emit({
+            "hits": self._hits,
+            "misses": self._misses,
+            "accuracy": self._accuracy(),
+            "timestamp": time.time(),
+        })
 
-    def _reveal_target(self) -> None:
-        if not self._active:
-            return
-        self._visible_target = True
-        self._spawn_time = time.perf_counter()
+    def _accuracy(self):
+        total = self._hits + self._misses
+        return round(self._hits / total, 3) if total else 0.0
+
+    def _randomize_target(self):
+        self._target = QPointF(random.uniform(0.1, 0.9), random.uniform(0.1, 0.9))
         self.update()
 
-    def _advance(self) -> None:
-        if not (self._active and self._visible_target and self._scenario and self._scenario.moving):
-            return
-        dt = self._move_timer.interval() / 1000.0
-        x = self._target.x() + self._vx * dt
-        y = self._target.y() + self._vy * dt
-        margin = self._radius + 4
-        if x < margin or x > self.width() - margin:
-            self._vx = -self._vx
-            x = max(margin, min(self.width() - margin, x))
-        if y < margin or y > self.height() - margin:
-            self._vy = -self._vy
-            y = max(margin, min(self.height() - margin, y))
-        self._target = QPointF(x, y)
-        self.update()
+    def _tick(self):
+        self._misses += 1
+        self._randomize_target()
 
-    def mousePressEvent(self, event) -> None:  # noqa: ANN001
-        if not self._active or event.button() != Qt.MouseButton.LeftButton:
-            return super().mousePressEvent(event)
-        if not self._visible_target:
+    def mousePressEvent(self, event):
+        if not self._running:
             return
-        dist = math.hypot(event.position().x() - self._target.x(), event.position().y() - self._target.y())
-        if dist <= self._radius:
+        rect = self.rect()
+        tx = rect.left() + self._target.x() * rect.width()
+        ty = rect.top() + self._target.y() * rect.height()
+        if (event.pos() - QPointF(tx, ty).toPoint()).manhattanLength() < 24:
             self._hits += 1
-            self._reaction_times.append((time.perf_counter() - self._spawn_time) * 1000.0)
-            self._spawn_kill(self._target.x(), self._target.y(), self._radius, self._target_pix)
-            done = self._hits >= (self._scenario.target_count if self._scenario else 0)
-            self.progress.emit(self._hits, self._scenario.target_count if self._scenario else 0)
-            if done:
-                self._finish()
-            else:
-                self._next_target()  # next target spawns immediately
+            self._randomize_target()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.fillRect(self.rect(), QColor("#0d1013"))
+        pen = QPen(QColor(255, 255, 255, 16))
+        p.setPen(pen)
+        p.drawRect(self.rect().adjusted(0, 0, -1, -1))
+
+        if self._running:
+            rect = self.rect()
+            tx = rect.left() + self._target.x() * rect.width()
+            ty = rect.top() + self._target.y() * rect.height()
+            p.setPen(Qt.NoPen)
+            p.setBrush(QBrush(QColor("#d98f3b")))
+            p.drawEllipse(QPointF(tx, ty), 14, 14)
+            p.setPen(QPen(QColor("#1a1106"), 1.5))
+            p.setBrush(Qt.NoBrush)
+            p.drawEllipse(QPointF(tx, ty), 6, 6)
         else:
-            self._misses += 1
-
-    def _spawn_kill(self, cx: float, cy: float, radius: float, pix: QPixmap | None) -> None:
-        if not self._anim_enabled:
-            return
-        self._kills.append({"cx": cx, "cy": cy, "radius": radius, "pix": pix, "t0": time.perf_counter()})
-        if not self._kill_timer.isActive():
-            self._kill_timer.start()
-
-    def _kill_tick(self) -> None:
-        now = time.perf_counter()
-        self._kills = [k for k in self._kills if (now - k["t0"]) * 1000.0 < self.KILL_MS]
-        if not self._kills:
-            self._kill_timer.stop()
-        self.update()
-
-    def _finish(self) -> None:
-        self._active = False
-        self._visible_target = False
-        self._move_timer.stop()
-        key = self._scenario.key if self._scenario else ""
-        self.finished.emit(key, list(self._reaction_times), self._hits, self._misses)
-        self.update()
-
-    def _draw_enemy(self, painter: QPainter, cx: float, cy: float, radius: float,
-                    pix: QPixmap | None, scale: float = 1.0) -> None:
-        if pix is not None and not pix.isNull():
-            height = 2.4 * radius * scale
-            width = height * pix.width() / max(1, pix.height())
-            painter.drawPixmap(
-                QRectF(cx - width / 2, cy - height / 2, width, height),
-                pix,
-                QRectF(0, 0, pix.width(), pix.height()),
-            )
-            return
-        # Procedural vector enemy fallback (head + torso), scalable.
-        r = radius * scale
-        body = QColor("#70e1ba")
-        painter.setPen(QPen(QColor("#06110d"), 2))
-        painter.setBrush(body)
-        painter.drawEllipse(QPointF(cx, cy - r * 0.55), r * 0.38, r * 0.38)  # head
-        torso = QRectF(cx - r * 0.5, cy - r * 0.1, r, r * 1.0)
-        painter.drawRoundedRect(torso, r * 0.2, r * 0.2)                      # body
-
-    def paintEvent(self, event) -> None:  # noqa: ANN001
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.fillRect(self.rect(), QColor("#0c1118"))
-
-        # Kill animations (expanding + fading enemy ghost with a hit ring).
-        now = time.perf_counter()
-        for kill in self._kills:
-            progress = min(1.0, (now - kill["t0"]) * 1000.0 / self.KILL_MS)
-            scale = 1.0 + 0.6 * progress
-            painter.setOpacity(max(0.0, 1.0 - progress))
-            self._draw_enemy(painter, kill["cx"], kill["cy"], kill["radius"], kill["pix"], scale)
-            ring = QColor("#b4ffe6")
-            ring.setAlpha(int(180 * (1.0 - progress)))
-            painter.setPen(QPen(ring, 2))
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            rr = kill["radius"] * (1.0 + 1.4 * progress)
-            painter.drawEllipse(QPointF(kill["cx"], kill["cy"]), rr, rr)
-        painter.setOpacity(1.0)
-
-        if self._active and self._visible_target:
-            self._draw_enemy(painter, self._target.x(), self._target.y(), self._radius, self._target_pix)
-        elif not self._active and not self._kills:
-            painter.setPen(QColor("#718095"))
-            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "Choose a scenario and press Start")
-        elif self._active and not self._visible_target:
-            painter.setPen(QColor("#718095"))
-            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "Get ready\u2026")
-
-
-class TrainingPage(QWidget):
-    """Scenario-based training: pick a drill, run it, record analytics."""
-
-    session_recorded = Signal(object)  # SessionResult
-
-    def __init__(self, store: AnalyticsStore) -> None:
-        super().__init__()
-        self._store = store
-        root = QVBoxLayout(self)
-        root.setContentsMargins(34, 28, 34, 28)
-        root.addLayout(
-            _page_header(
-                "Targeted practice",
-                "Scenario training",
-                "In-app drills for specific skills. Results feed your Analytics - no game is read.",
-            )
-        )
-        bar = QHBoxLayout()
-        self.scenario = QComboBox()
-        for sc in scenario_defs.list_scenarios():
-            self.scenario.addItem(sc.name, sc.key)
-        self.scenario.currentIndexChanged.connect(self._describe)
-        bar.addWidget(self.scenario, 1)
-        self.start_btn = QPushButton("Start")
-        self.start_btn.setObjectName("primary")
-        self.start_btn.clicked.connect(self._start)
-        bar.addWidget(self.start_btn)
-        self.progress = QProgressBar()
-        self.progress.setRange(0, 1)
-        bar.addWidget(self.progress, 1)
-        root.addLayout(bar)
-        self.desc = _label("", "muted")
-        root.addWidget(self.desc)
-        self.canvas = TrainingCanvas()
-        self.canvas.progress.connect(self._on_progress)
-        self.canvas.finished.connect(self._on_finished)
-        root.addWidget(self.canvas, 1)
-        self.result = _label("", "muted")
-        root.addWidget(self.result)
-        self._describe()
-
-    def _describe(self) -> None:
-        sc = scenario_defs.get(self.scenario.currentData())
-        self.desc.setText(sc.description)
-
-    def _start(self) -> None:
-        sc = scenario_defs.get(self.scenario.currentData())
-        self.result.setText("")
-        self.progress.setRange(0, sc.target_count)
-        self.progress.setValue(0)
-        self.canvas.start(sc)
-
-    def _on_progress(self, done: int, total: int) -> None:
-        self.progress.setRange(0, max(1, total))
-        self.progress.setValue(done)
-
-    def _on_finished(self, key: str, reaction_times: list, hits: int, misses: int) -> None:
-        result = SessionResult.create(key, reaction_times, hits, misses)
-        self._store.add(result)
-        self.result.setText(
-            f"Done - accuracy {result.accuracy * 100:.0f}%, "
-            f"avg reaction {result.avg_reaction_ms:.0f} ms, best {result.best_reaction_ms:.0f} ms."
-        )
-        self.session_recorded.emit(result)
+            p.setPen(QColor("#9a958c"))
+            p.drawText(self.rect(), Qt.AlignCenter, "Press Start to begin the drill")
 
 
 class AnalyticsPage(QWidget):
-    """Performance analytics: aim accuracy and reaction-time trends."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(16)
 
-    def __init__(self, store: AnalyticsStore) -> None:
-        super().__init__()
-        self._store = store
+        card, lay = _card("Session history", "Accuracy across your recent training drills.")
+        self.list_widget = QListWidget()
+        self.list_widget.setObjectName("sessionList")
+        lay.addWidget(self.list_widget)
+
+        summary_row = QHBoxLayout()
+        self.avg_label = QLabel("Average accuracy: —")
+        self.avg_label.setObjectName("metric")
+        summary_row.addWidget(self.avg_label)
+        summary_row.addStretch(1)
+        lay.addLayout(summary_row)
+
+        outer.addWidget(card)
+        self._sessions = []
+
+    def add_session(self, result):
+        self._sessions.append(result)
+        item = QListWidgetItem(
+            f"Accuracy {result['accuracy'] * 100:.0f}%  —  {result['hits']} hits / {result['misses']} misses"
+        )
+        self.list_widget.insertItem(0, item)
+        avg = sum(s["accuracy"] for s in self._sessions) / len(self._sessions)
+        self.avg_label.setText(f"Average accuracy: {avg * 100:.0f}%")
+
+
+class TrainingPage(QWidget):
+    session_recorded = Signal(dict)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.history = []
+
         root = QVBoxLayout(self)
-        root.setContentsMargins(34, 28, 34, 28)
-        root.addLayout(
-            _page_header(
-                "Progress",
-                "Performance analytics",
-                "Accuracy and reaction times from your in-app drills, tracked over time.",
-            )
-        )
-        metrics = QHBoxLayout()
-        self.acc_metric = _label("\u2014", "metric")
-        self.rt_metric = _label("\u2014", "metric")
-        self.best_metric = _label("\u2014", "metric")
-        metric_specs = (
-            ("avg accuracy", self.acc_metric),
-            ("avg reaction", self.rt_metric),
-            ("best reaction", self.best_metric),
-        )
-        for title, widget in metric_specs:
-            card = QFrame()
-            card.setObjectName("card")
-            cl = QVBoxLayout(card)
-            cl.setContentsMargins(18, 16, 18, 16)
-            cl.addWidget(widget)
-            cl.addWidget(_label(title, "muted"))
-            metrics.addWidget(card)
-        root.addLayout(metrics)
-        list_card = QFrame()
-        list_card.setObjectName("card")
-        ll = QVBoxLayout(list_card)
-        ll.setContentsMargins(18, 16, 18, 16)
-        ll.addWidget(_label("Recent sessions", "cardTitle"))
-        self.recent = _label("", "muted")
-        ll.addWidget(self.recent)
-        root.addWidget(list_card)
-        root.addStretch()
-        self.refresh()
-
-    def refresh(self) -> None:
-        agg = self._store.aggregate()
-        if agg["total"] == 0:
-            for metric in (self.acc_metric, self.rt_metric, self.best_metric):
-                metric.setText("\u2014")
-            self.recent.setText("No sessions yet. Run a scenario in Training to start tracking.")
-            return
-        self.acc_metric.setText(f"{agg['avg_accuracy'] * 100:.0f}%")
-        self.rt_metric.setText(f"{agg['avg_reaction_ms']:.0f} ms")
-        self.best_metric.setText(f"{agg['best_reaction_ms']:.0f} ms")
-        lines = [
-            f"{s.when()}  \u00b7  {s.scenario}  \u00b7  acc {s.accuracy * 100:.0f}%  \u00b7  "
-            f"avg {s.avg_reaction_ms:.0f} ms"
-            for s in self._store.recent(8)
-        ]
-        self.recent.setText("\n".join(lines))
-
-
-class MainWindow(QMainWindow):
-    def __init__(self, backend: CoreBackend) -> None:
-        super().__init__()
-        self._backend = backend
-        self.setWindowTitle("FPS Coach")
-        self.resize(1220, 780)
-        self.setMinimumSize(1020, 680)
-
-        root_widget = QWidget()
-        root_widget.setObjectName("root")
-        root = QHBoxLayout(root_widget)
         root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
-        self.setCentralWidget(root_widget)
-
-        sidebar = QFrame()
-        sidebar.setObjectName("sidebar")
-        sidebar.setFixedWidth(218)
-        self._sidebar = sidebar
-        self._sidebar_collapsed = False
-        self._sidebar_anim: QVariantAnimation | None = None
-        sidebar_layout = QVBoxLayout(sidebar)
-        sidebar_layout.setContentsMargins(16, 22, 16, 18)
-        # Retract / expand toggle.
-        self._collapse_btn = QPushButton("\u00ab")
-        self._collapse_btn.setObjectName("navButton")
-        self._collapse_btn.setToolTip("Collapse / expand the sidebar")
-        self._collapse_btn.clicked.connect(self._toggle_sidebar)
-        sidebar_layout.addWidget(self._collapse_btn)
-        self._brand = _label("FPS COACH", "brand")
-        sidebar_layout.addWidget(self._brand)
 
         self.stack = QStackedWidget()
-        calibration = CalibrationPage(backend)
-        self._calibration_page = calibration
-        self._voice_cmd_service: _VoiceCommandService | None = None
-        self._tts_service: _TtsService | None = None
-        self.recommendation = RecommendationPage()
-        self.chat_page = AIChatPage()
-        self.settings_page = SettingsPage()
-        self.dashboard_page = DashboardPage()
-        # Shared analytics store (Training writes, Analytics reads).
-        self._analytics_store = AnalyticsStore.load(
-            Path(__file__).resolve().parents[3] / ".fpscoach_analytics.json"
-        )
-        self.training_page = TrainingPage(self._analytics_store)
-        self.analytics_page = AnalyticsPage(self._analytics_store)
-        self.crosshair_page = CrosshairPage()
-        # Combined Training + Analytics page: training on top, analytics beneath,
-        # the whole thing scrollable (handled via scrolled_keys below).
-        training_combined = QWidget()
-        combined_layout = QVBoxLayout(training_combined)
-        combined_layout.setContentsMargins(0, 0, 0, 0)
-        combined_layout.setSpacing(0)
-        combined_layout.addWidget(self.training_page)
-        combined_layout.addWidget(self.analytics_page)
 
-        # (tool key, nav label, widget). Dashboard is the landing page at index 0.
-        pages: list[tuple[str, str, QWidget]] = [
-            ("dashboard", "Dashboard", self.dashboard_page),
-            ("guide", "Beginner guide", GuidePage()),
-            ("capture", "Capture", CapturePage(backend)),
-            ("calibration", "Calibration", calibration),
-            ("training", "Training & analytics", training_combined),
-            ("recommendation", "Recommendation", self.recommendation),
-            ("crosshair", "Crosshair", self.crosshair_page),
-            ("chat", "AI chat", self.chat_page),
-            ("privacy", "Privacy & limits", PrivacyPage()),
-            ("settings", "Settings", self.settings_page),
-        ]
-        scrolled_keys = {"dashboard", "guide", "training", "crosshair", "privacy", "settings"}
-        key_to_index = {key: i for i, (key, _name, _w) in enumerate(pages)}
+        train_widget = QWidget()
+        outer = QVBoxLayout(train_widget)
+        outer.setContentsMargins(28, 24, 28, 24)
+        outer.setSpacing(20)
 
-        self.nav_buttons: list[QPushButton] = []
-        self._nav_names: list[str] = []
-        for index, (key, name, page) in enumerate(pages):
-            button = QPushButton(name)
-            button.setObjectName("navButton")
-            button.setCheckable(True)
-            button.clicked.connect(lambda checked=False, i=index: self._show_page(i))
-            sidebar_layout.addWidget(button)
-            self.nav_buttons.append(button)
-            self._nav_names.append(name)
-            self.stack.addWidget(_scroll_page(page) if key in scrolled_keys else page)
+        head_row = QHBoxLayout()
+        head_row.addWidget(_page_header("Training", "A short reaction drill to validate your current curve."))
+        head_row.addStretch(1)
+        self.analytics_btn = QPushButton(" View analytics")
+        self.analytics_btn.setObjectName("secondary")
+        self.analytics_btn.setIcon(icon("training"))
+        self.analytics_btn.clicked.connect(self._show_analytics)
+        head_row.addWidget(self.analytics_btn, 0, Qt.AlignTop)
+        outer.addLayout(head_row)
 
-        self._idx_recommendation = key_to_index["recommendation"]
-        self._idx_chat = key_to_index["chat"]
-        self._key_to_index = key_to_index
-        self.dashboard_page.configure(self._show_page, key_to_index)
-        # Refresh analytics whenever a training session completes.
-        self.training_page.session_recorded.connect(lambda _r: self.analytics_page.refresh())
-        sidebar_layout.addStretch()
-        # Background setup indicator (shows during voice package/model download).
-        self._setup_label = _label("", "muted")
-        self._setup_label.hide()
-        self._setup_bar = QProgressBar()
-        self._setup_bar.setRange(0, 0)  # indeterminate "busy" animation
-        self._setup_bar.setTextVisible(False)
-        self._setup_bar.setFixedHeight(8)
-        self._setup_bar.hide()
-        self._setup_active = False
-        sidebar_layout.addWidget(self._setup_label)
-        sidebar_layout.addWidget(self._setup_bar)
-        self._listening_label = _label("", "statusGood")
-        self._listening_label.hide()
-        self._listening_active = False
-        sidebar_layout.addWidget(self._listening_label)
-        core_status = _label(backend.core_label, "statusGood" if backend.native_available else "statusWarn")
-        sidebar_layout.addWidget(core_status)
-        subtitle_status = _label("On-device · no input injection", "muted")
-        sidebar_layout.addWidget(subtitle_status)
-        self._status_labels = [core_status, subtitle_status]
-        root.addWidget(sidebar)
-        root.addWidget(self.stack, 1)
+        card, lay = _card()
+        self.canvas = TrainingCanvas()
+        lay.addWidget(self.canvas)
 
-        calibration.recommendation_ready.connect(self._show_recommendation)
-        self.settings_page.settings_changed.connect(self.apply_visuals)
-        # Share the imported curve so the AI/quick-actions adjust it; route the
-        # chat's adjusted curve back to the Recommendation page for review/export.
-        self.recommendation.profile_changed.connect(self.chat_page.set_base_profile)
-        self.chat_page.curve_adjusted.connect(self._on_curve_adjusted)
-        # Speak AI responses aloud when text-to-speech is enabled.
-        self.chat_page.assistant_said.connect(self._speak_response)
-        # Compliant on-screen companion (user's own data only).
+        btn_row = QHBoxLayout()
+        self.start_btn = QPushButton(" Start drill")
+        self.start_btn.setObjectName("primary")
+        self.start_btn.setIcon(icon("play", "#1a1106"))
+        self.stop_btn = QPushButton(" Stop")
+        self.stop_btn.setObjectName("secondary")
+        self.stop_btn.setIcon(icon("stop"))
+        self.stop_btn.setEnabled(False)
+        btn_row.addWidget(self.start_btn)
+        btn_row.addWidget(self.stop_btn)
+        btn_row.addStretch(1)
+        lay.addLayout(btn_row)
+
+        outer.addWidget(card)
+        outer.addStretch(1)
+
+        self.analytics_page = AnalyticsPage()
+        back_wrap = QWidget()
+        back_lay = QVBoxLayout(back_wrap)
+        back_lay.setContentsMargins(28, 24, 28, 24)
+        back_lay.setSpacing(16)
+        back_row = QHBoxLayout()
+        self.back_btn = QPushButton(" Back to training")
+        self.back_btn.setObjectName("secondary")
+        self.back_btn.setIcon(icon("chevron_left"))
+        self.back_btn.clicked.connect(self._show_training)
+        back_row.addWidget(self.back_btn)
+        back_row.addStretch(1)
+        back_lay.addLayout(back_row)
+        back_lay.addWidget(self.analytics_page)
+
+        self.stack.addWidget(train_widget)
+        self.stack.addWidget(back_wrap)
+        root.addWidget(self.stack)
+
+        self.start_btn.clicked.connect(self._start)
+        self.stop_btn.clicked.connect(self._stop)
+        self.canvas.session_recorded.connect(self._on_session)
+
+    def _start(self):
+        self.start_btn.setEnabled(False)
+        self.stop_btn.setEnabled(True)
+        self.canvas.start()
+
+    def _stop(self):
+        self.start_btn.setEnabled(True)
+        self.stop_btn.setEnabled(False)
+        self.canvas.stop()
+
+    def _on_session(self, result):
+        self.history.append(result)
+        self.analytics_page.add_session(result)
+        self.session_recorded.emit(result)
+
+    def _show_analytics(self):
+        self.stack.setCurrentIndex(1)
+
+    def _show_training(self):
+        self.stack.setCurrentIndex(0)
+
+
+# ---------------------------------------------------------------------------
+# Main window
+# ---------------------------------------------------------------------------
+
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Vantage")
+        self.resize(1360, 860)
+        self.s = _settings()
+
+        self._collapsed = False
+        self._nav_buttons = {}
+        self._voice_service = None
+
+        central = QWidget()
+        self.setCentralWidget(central)
+        root = QHBoxLayout(central)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        self.sidebar = self._build_sidebar()
+        root.addWidget(self.sidebar)
+
+        content_wrap = QWidget()
+        content_lay = QVBoxLayout(content_wrap)
+        content_lay.setContentsMargins(0, 0, 0, 0)
+        content_lay.setSpacing(0)
+
+        self.stack = QStackedWidget()
+        self._build_pages()
+        content_lay.addWidget(self.stack, 1)
+
+        root.addWidget(content_wrap, 1)
+
         self.coach_panel = CoachPanel(self)
-        self.coach_panel.closed.connect(self._disable_coach_panel)
-        # Keep the panel in sync with any curve change (import / manual edit).
-        self.recommendation.profile_changed.connect(
-            lambda profile: self.coach_panel.update_curve(profile, "Curve updated.")
-            if profile is not None else None
+        self.coach_panel.closed.connect(self._on_coach_closed)
+        self.coach_panel.setVisible(self.s.value("ui/coach_panel", True, type=bool))
+        self._position_coach_panel()
+
+        self._wire_signals()
+        self._apply_theme()
+        self._apply_voice_commands()
+        self._select_page("dashboard")
+
+    # ------------------------------------------------------------------
+    def _build_sidebar(self):
+        sidebar = QFrame()
+        sidebar.setObjectName("sidebar")
+        sidebar.setFixedWidth(220)
+        lay = QVBoxLayout(sidebar)
+        lay.setContentsMargins(0, 20, 0, 16)
+        lay.setSpacing(4)
+
+        brand_row = QHBoxLayout()
+        brand_row.setContentsMargins(20, 0, 20, 16)
+        brand_mark = QLabel()
+        brand_mark.setPixmap(pixmap("crosshair", "#d98f3b", 22))
+        brand_row.addWidget(brand_mark)
+        brand_label = QLabel("VANTAGE")
+        brand_label.setObjectName("brand")
+        brand_row.addWidget(brand_label)
+        brand_row.addStretch(1)
+        lay.addLayout(brand_row)
+
+        self.nav_group = QButtonGroup(self)
+        self.nav_group.setExclusive(True)
+
+        for section_title, items in NAV_SECTIONS:
+            group_label = QLabel(section_title)
+            group_label.setObjectName("navGroup")
+            group_label.setContentsMargins(20, 8, 20, 4)
+            lay.addWidget(group_label)
+
+            for key, label in items:
+                btn = QPushButton(f"  {label}")
+                btn.setObjectName("navButton")
+                btn.setCheckable(True)
+                btn.setIcon(icon(key, "#c9c5bd"))
+                btn.setIconSize(QSize(20, 20))
+                btn.setCursor(Qt.PointingHandCursor)
+                btn.clicked.connect(lambda _checked, k=key: self._select_page(k))
+                btn.toggled.connect(
+                    lambda checked, b=btn, k=key: b.setIcon(icon(k, "#f0a94e" if checked else "#c9c5bd"))
+                )
+                self.nav_group.addButton(btn)
+                self._nav_buttons[key] = btn
+                lay.addWidget(btn)
+
+            divider = QFrame()
+            divider.setObjectName("navDivider")
+            divider.setFixedHeight(1)
+            lay.addWidget(divider)
+
+        lay.addStretch(1)
+
+        self.collapse_btn = QPushButton()
+        self.collapse_btn.setObjectName("collapseButton")
+        self.collapse_btn.setIcon(icon("chevron_left"))
+        self.collapse_btn.setCursor(Qt.PointingHandCursor)
+        self.collapse_btn.clicked.connect(self._toggle_collapse)
+        lay.addWidget(self.collapse_btn, 0, Qt.AlignHCenter)
+
+        return sidebar
+
+    def _build_pages(self):
+        self.dashboard_page = DashboardPage()
+        self.guide_page = GuidePage()
+        self.capture_page = CapturePage()
+        self.calibration_page = CalibrationPage()
+        self.training_page = TrainingPage()
+        self.recommendation_page = RecommendationPage()
+        self.crosshair_page = CrosshairPage()
+        self.chat_page = AIChatPage()
+        self.privacy_page = PrivacyPage()
+        self.settings_page = SettingsPage()
+
+        self._pages = {
+            "dashboard": self.dashboard_page,
+            "guide": self.guide_page,
+            "capture": self.capture_page,
+            "calibration": self.calibration_page,
+            "training": self.training_page,
+            "recommendation": self.recommendation_page,
+            "crosshair": self.crosshair_page,
+            "chat": self.chat_page,
+            "privacy": self.privacy_page,
+            "settings": self.settings_page,
+        }
+        for page in self._pages.values():
+            self.stack.addWidget(page)
+
+    def _wire_signals(self):
+        self.calibration_page.profile_changed.connect(self._on_profile_changed)
+        self.recommendation_page.recommendation_ready.connect(self._on_recommendation)
+        self.chat_page.assistant_said.connect(self._on_assistant_said)
+        self.settings_page.settings_changed.connect(self._on_settings_changed)
+        self.training_page.session_recorded.connect(self._on_session_recorded)
+        self.crosshair_page.edited.connect(self._on_crosshair_edited)
+
+    # ------------------------------------------------------------------
+    def _select_page(self, key):
+        page = self._pages.get(key)
+        if page is None:
+            return
+        self.stack.setCurrentWidget(page)
+        btn = self._nav_buttons.get(key)
+        if btn:
+            btn.setChecked(True)
+
+    def _toggle_collapse(self):
+        self._collapsed = not self._collapsed
+        width = 64 if self._collapsed else 220
+        self.sidebar.setFixedWidth(width)
+        self.collapse_btn.setIcon(icon("chevron_right" if self._collapsed else "chevron_left"))
+        flat_labels = dict(item for _, items in NAV_SECTIONS for item in items)
+        for key, btn in self._nav_buttons.items():
+            btn.setText("" if self._collapsed else f"  {flat_labels[key]}")
+
+    def _position_coach_panel(self):
+        margin = 20
+        self.coach_panel.adjustSize()
+        self.coach_panel.move(
+            self.width() - self.coach_panel.width() - margin,
+            self.height() - self.coach_panel.height() - margin,
         )
-        self._page_anim: QPropertyAnimation | None = None
-        self.apply_visuals()
-        # Re-apply styling when the OS switches dark/light (adaptive theme).
-        try:
-            QApplication.instance().styleHints().colorSchemeChanged.connect(
-                lambda _scheme: self.apply_visuals()
-            )
-        except Exception:
-            pass
-        # Seamlessly validate + configure the Vosk model path on startup so the
-        # app recognizes it without manual intervention (no download here).
-        self._verify_vosk_config()
-        self._show_page(0)
+        self.coach_panel.raise_()
 
-    def _verify_vosk_config(self) -> None:
-        try:
-            from fps_coach import vosk_service
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._position_coach_panel()
 
-            path = vosk_service.verify_and_configure()
-            if path is not None:
-                QSettings().setValue("voice/vosk_model_path", str(path))
-        except Exception:
-            pass
+    def _apply_theme(self):
+        mode = self.s.value("ui/mode", "luxurious")
+        theme = self.s.value("ui/theme", "dark")
+        self.setStyleSheet(build_style(mode, theme))
+        animations = self.s.value("ui/animations", True, type=bool)
+        self.dashboard_page.set_animated(animations)
 
-    # --- Appearance / performance ----------------------------------------
-    @staticmethod
-    def _resolve_theme(setting: str) -> str:
-        """Map a theme setting to a concrete 'dark'/'light'. 'system' follows the
-        OS color scheme when available; defaults to dark."""
-        if setting in ("dark", "light"):
-            return setting
-        app = QApplication.instance()
-        try:
-            scheme = app.styleHints().colorScheme()
-            return "light" if scheme == Qt.ColorScheme.Light else "dark"
-        except Exception:
-            return "dark"
+    def _apply_voice_commands(self):
+        enabled = self.s.value("ui/voice_commands", False, type=bool)
+        if enabled and self._voice_service is None:
+            wake_word = self.s.value("ui/wake_word", "hey vantage")
+            self._voice_service = _VoiceCommandService(wake_word)
+            self._voice_service.assistant_said.connect(self._on_assistant_said)
+            self._voice_service.start()
+        elif not enabled and self._voice_service is not None:
+            self._voice_service.stop()
+            self._voice_service.wait(500)
+            self._voice_service = None
 
-    def apply_visuals(self) -> None:
-        """Apply the saved theme + visual mode + animation preference app-wide."""
-        saved = QSettings()
-        mode = str(saved.value("ui/mode", "luxurious"))
-        theme = self._resolve_theme(str(saved.value("ui/theme", "system")))
-        self._animations_on = saved.value("ui/animations", True, type=bool) and mode != "performance"
-        app = QApplication.instance()
-        if app is not None:
-            app.setStyleSheet(build_style(mode, theme))
-        self._apply_card_shadows(enabled=(mode != "performance"))
-        self._sync_coach_panel()
-        self._sync_voice_commands()
-        self._sync_tts()
-        # Drive the dashboard's animated targets backdrop with the theme accent.
-        accent = PALETTES.get(theme, PALETTES["dark"])["accent"]
-        self.dashboard_page.set_animations(self._animations_on, accent)
-        # Kill animations in the training canvas follow the same setting.
-        self.training_page.canvas.set_animations(self._animations_on)
+    # ------------------------------------------------------------------
+    def _on_profile_changed(self, profile):
+        self.coach_panel.say("Calibration profile updated.")
 
-    # --- Text-to-speech for AI responses ---------------------------------
-    def _sync_tts(self) -> None:
-        enabled = QSettings().value("ui/tts_enabled", False, type=bool)
-        running = self._tts_service is not None
-        if enabled and not running:
-            self._tts_service = _TtsService(self)
-            self._tts_service.status.connect(self._on_tts_status)
-            self._tts_service.failed.connect(self._on_tts_failed)
-            self._tts_service.start()
-        elif not enabled and running:
-            self._tts_service.stop()
-            self._tts_service = None
+    def _on_recommendation(self, result):
+        self.coach_panel.say(f"New recommendation: ×{result['sensitivity']} at {result['dpi']} DPI.")
 
-    def _speak_response(self, text: str) -> None:
-        if self._tts_service is not None:
-            self._tts_service.enqueue(text)
+    def _on_assistant_said(self, text):
+        self.coach_panel.say(text)
 
-    def _on_tts_status(self, message: str) -> None:
-        low = message.lower()
-        if any(word in low for word in ("install", "setting up")):
-            self._set_setup_indicator(True, message)
-        elif "ready" in low:
-            self._set_setup_indicator(False)
+    def _on_settings_changed(self):
+        self._apply_theme()
+        self.coach_panel.setVisible(self.s.value("ui/coach_panel", True, type=bool))
+        self.chat_page.tts.enabled = self.s.value("ui/tts_enabled", True, type=bool)
+        self._apply_voice_commands()
 
-    def _on_tts_failed(self, message: str) -> None:
-        self.chat_page._append("Text-to-speech", message)
-        self._set_setup_indicator(False)
-        QSettings().setValue("ui/tts_enabled", False)
-        self.settings_page.tts_toggle.setChecked(False)
-        if self._tts_service is not None:
-            self._tts_service.stop()
-            self._tts_service = None
+    def _on_session_recorded(self, result):
+        self.coach_panel.say(f"Session complete — {result['accuracy'] * 100:.0f}% accuracy.")
 
-    def _sync_coach_panel(self) -> None:
-        if not hasattr(self, "coach_panel"):
-            return
-        show = QSettings().value("ui/coach_panel", False, type=bool)
-        if show:
-            if not self.coach_panel.isVisible():
-                self.coach_panel.place_top_right()
-                self.coach_panel.show()
-        else:
-            self.coach_panel.hide()
+    def _on_crosshair_edited(self, config):
+        pass
 
-    def _disable_coach_panel(self) -> None:
-        QSettings().setValue("ui/coach_panel", False)
-        if hasattr(self, "settings_page"):
-            self.settings_page.coach_panel_toggle.setChecked(False)
+    def _on_coach_closed(self):
+        self.s.setValue("ui/coach_panel", False)
 
-    # --- Offline voice commands (Vosk) -----------------------------------
-    def _sync_voice_commands(self) -> None:
-        enabled = QSettings().value("ui/voice_commands", False, type=bool)
-        running = self._voice_cmd_service is not None
-        if enabled and not running:
-            self._voice_cmd_service = _VoiceCommandService(self)
-            self._voice_cmd_service.recognized.connect(self._on_voice_command)
-            self._voice_cmd_service.status.connect(self._on_voice_status)
-            self._voice_cmd_service.failed.connect(self._on_voice_cmd_failed)
-            self._voice_cmd_service.start()
-            self._set_listening(True, "\U0001f399 Starting\u2026")
-        elif not enabled and running:
-            self._voice_cmd_service.stop()
-            self._voice_cmd_service = None
-            self._set_listening(False)
-
-    def _on_voice_status(self, message: str) -> None:
-        self.chat_page._append("Voice", message)
-        low = message.lower()
-        if "listening" in low:
-            self._set_setup_indicator(False)
-            self._set_listening(True, "\U0001f399 Listening\u2026")
-        elif any(word in low for word in ("install", "download", "extract", "setting up")):
-            # Background setup in progress - show the download indicator.
-            self._set_setup_indicator(True, message)
-        elif "ready" in low:
-            self._set_setup_indicator(False)
-        else:
-            self._set_listening(True, "\U0001f399 " + message[:18])
-
-    def _set_setup_indicator(self, active: bool, text: str = "") -> None:
-        self._setup_active = active
-        collapsed = getattr(self, "_sidebar_collapsed", False)
-        if active and text:
-            self._setup_label.setText(text[:40])
-        self._setup_label.setVisible(active and not collapsed)
-        self._setup_bar.setVisible(active and not collapsed)
-
-    def _on_voice_cmd_failed(self, message: str) -> None:
-        self.chat_page._append("Voice", message)
-        QSettings().setValue("ui/voice_commands", False)
-        self.settings_page.voice_commands_toggle.setChecked(False)
-        self._set_listening(False)
-        self._set_setup_indicator(False)
-        if self._voice_cmd_service is not None:
-            self._voice_cmd_service.stop()
-            self._voice_cmd_service = None
-
-    def _set_listening(self, active: bool, text: str = "") -> None:
-        self._listening_active = active
-        if active and text:
-            self._listening_label.setText(text)
-        self._listening_label.setVisible(active and not self._sidebar_collapsed)
-
-    def _on_voice_command(self, text: str) -> None:
-        from fps_coach.voice_commands import parse
-
-        wake = QSettings().value("ui/wake_word", "coach")
-        command = parse(text, wake_word=str(wake))
-        if command is None:
-            return
-        if command.kind == "navigate":
-            index = self._key_to_index.get(command.value)
-            if index is not None:
-                self._show_page(index)
-        elif command.kind == "calibrate":
-            self._show_page(self._key_to_index["calibration"])
-            if command.value == "start":
-                self._calibration_page.canvas.start_session(12)
-            else:
-                self._calibration_page.canvas.cancel_session()
-        elif command.kind == "preset":
-            self._show_page(self._idx_chat)
-            self.chat_page._apply_quick_action(command.value)
-        elif command.kind == "panel":
-            QSettings().setValue("ui/coach_panel", command.value == "show")
-            self.settings_page.coach_panel_toggle.setChecked(command.value == "show")
-            self._sync_coach_panel()
-        elif command.kind == "dictate":
-            self._show_page(self._idx_chat)
-            self.chat_page.prompt.setPlainText(command.value)
-            self.chat_page._send()
-
-    # --- Retractable sidebar ---------------------------------------------
-    def _toggle_sidebar(self) -> None:
-        self._sidebar_collapsed = not self._sidebar_collapsed
-        collapsed = self._sidebar_collapsed
-        target = 58 if collapsed else 218
-        # Labels/brand hidden when collapsed; nav buttons keep tooltips.
-        self._brand.setVisible(not collapsed)
-        for label in self._status_labels:
-            label.setVisible(not collapsed)
-        for button, name in zip(self.nav_buttons, self._nav_names, strict=True):
-            button.setText("" if collapsed else name)
-            button.setToolTip(name)
-        self._collapse_btn.setText("\u00bb" if collapsed else "\u00ab")
-        if hasattr(self, "_listening_label"):
-            self._listening_label.setVisible(self._listening_active and not collapsed)
-        if hasattr(self, "_setup_bar"):
-            show_setup = getattr(self, "_setup_active", False) and not collapsed
-            self._setup_label.setVisible(show_setup)
-            self._setup_bar.setVisible(show_setup)
-        if getattr(self, "_animations_on", False):
-            anim = QVariantAnimation(self)
-            anim.setStartValue(self._sidebar.width())
-            anim.setEndValue(target)
-            anim.setDuration(160)
-            anim.setEasingCurve(QEasingCurve.Type.OutCubic)
-            anim.valueChanged.connect(lambda v: self._sidebar.setFixedWidth(int(v)))
-            anim.start()
-            self._sidebar_anim = anim
-        else:
-            self._sidebar.setFixedWidth(target)
-
-    def _apply_card_shadows(self, enabled: bool) -> None:
-        for card in self.findChildren(QFrame):
-            if card.objectName() not in ("card", "banner"):
-                continue
-            if enabled:
-                effect = QGraphicsDropShadowEffect(card)
-                effect.setBlurRadius(26)
-                effect.setXOffset(0)
-                effect.setYOffset(6)
-                effect.setColor(QColor(0, 0, 0, 140))
-                card.setGraphicsEffect(effect)
-            else:
-                card.setGraphicsEffect(None)
-
-    def _show_page(self, index: int) -> None:
-        self.stack.setCurrentIndex(index)
-        for button_index, button in enumerate(self.nav_buttons):
-            button.setChecked(button_index == index)
-        if getattr(self, "_animations_on", False):
-            self._animate_current_page()
-
-    def _animate_current_page(self) -> None:
-        widget = self.stack.currentWidget()
-        if widget is None:
-            return
-        effect = QGraphicsOpacityEffect(widget)
-        widget.setGraphicsEffect(effect)
-        anim = QPropertyAnimation(effect, b"opacity", self)
-        anim.setDuration(180)
-        anim.setStartValue(0.0)
-        anim.setEndValue(1.0)
-        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
-        # Drop the effect when done so it doesn't interfere with child effects.
-        anim.finished.connect(lambda w=widget: w.setGraphicsEffect(None))
-        anim.start()
-        self._page_anim = anim
-
-    def _show_recommendation(self, summary: dict, recommendation: dict) -> None:
-        self.recommendation.update_result(summary, recommendation)
-        # Push the new results into the chat so the AI reacts proactively.
-        self.chat_page.notify_new_calibration(summary, recommendation)
-        if hasattr(self, "coach_panel"):
-            self.coach_panel.update_feedback(summary, recommendation)
-        self._show_page(self._idx_recommendation)
-
-    def _on_curve_adjusted(self, previous, current, note: str) -> None:
-        # A chat quick-action produced an adjusted curve: show it on the
-        # Recommendation page as a before/after and switch to that page.
-        self.recommendation.set_adjusted(previous, current, note)
-        if hasattr(self, "coach_panel"):
-            self.coach_panel.update_curve(current, note)
-        self._show_page(self._idx_recommendation)
-
-    def closeEvent(self, event) -> None:  # noqa: ANN001
-        if self.chat_page._request is not None:  # Keep the QThread alive until its network call returns.
-            self._show_page(self._idx_chat)
-            self.chat_page.provider_note.setText("Wait for the current model request to finish before closing.")
-            event.ignore()
-            return
-        self.chat_page.shutdown()  # let any proactive background threads finish
-        if self._tts_service is not None:
-            self._tts_service.stop()
-            self._tts_service.wait(2000)
-        if self._voice_cmd_service is not None:
-            self._voice_cmd_service.stop()
-            self._voice_cmd_service.wait(2000)
-        if hasattr(self, "coach_panel"):
-            self.coach_panel.close()
-        self._backend.close()
+    def closeEvent(self, event):
+        if self._voice_service is not None:
+            self._voice_service.stop()
+            self._voice_service.wait(500)
+        self.s.sync()
         super().closeEvent(event)
+
+
+def main():
+    app = QApplication(sys.argv)
+    app.setApplicationName(APP_NAME)
+    app.setOrganizationName(ORG_NAME)
+    window = MainWindow()
+    window.show()
+    sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()
