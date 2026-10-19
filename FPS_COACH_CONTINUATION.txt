@@ -145,8 +145,13 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     /home/user/workspace/FPSCoach   (clone of https://github.com/AFK-999/FPSCoach.git)
     Remote origin/main = e9e69a2   (the visual REDESIGN; based on 04e6b0f)
     Working branch     = fix/redesign-backend-wiring (from e9e69a2), NOT pushed.
-                         Commits on it: 2569203 TTS hardening (ported from af5c879),
-                         ab574cd + ff8b165 handoff docs, then the rev37 fix commit.
+                         Commits on it (newest first): f6af4b9 rev43, 9b2c551 rev42,
+                         a292b0f rev41, 3c92736 rev40, e6f4aac rev39, 7328318 rev38,
+                         110d50e rev37 addendum, 6ce7dfe rev37 fix, ff8b165 + ab574cd
+                         handoff docs, 2569203 TTS hardening (ported from af5c879).
+                         Push is a fast-forward of origin/main e9e69a2. The sandbox has
+                         no git credentials, so the user must run the push (section 7,
+                         NEXT STEPS).
     Git history on origin: 0a6f205 -> 3189f28 -> e2da6c7 -> 04e6b0f -> e9e69a2
     NOTE: the rev5-rev33 commit hashes quoted in the changelog below were local to
     the earlier sandbox and are NOT on the remote. The changelog is the record of
@@ -158,10 +163,21 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     - Lint: ruff check --select F clean on python/ and tests/ (ruff 0.17.1).
     - MainWindow(backend) TypeError FIXED (rev37). app.py now starts and quits
       cleanly (offscreen). Offscreen wiring smoke test: 32/32 checks pass.
+    - Dropped features RESTORED (rev38-rev43): crosshair presets + PNG export,
+      capture window picker + Custom preset, curve import/export, scenario training
+      + persisted analytics, AI quick actions + proactive AI, voice preset commands.
+      Extended offscreen smoke test (sandbox only, not in the repo): 65/65 checks.
+      Workspace verify_mainwindow_wiring.py: 32/32 (updated to the new controls).
     - Unverified: anything that needs Windows or a real display. The offscreen
       checks prove construction and logic, not pixel-level appearance. Also
       unverified: PyInstaller, Inno Setup (iscc), scripts/build.ps1, SAPI5 and
       PowerShell TTS, real Vosk audio, real Ollama models, native capture.
+
+  LATEST WORK (rev38-rev43): restore of the six dropped features, in
+  python/fps_coach/ui/main_window.py. Each step is one commit, with its own changelog
+  entry in section 8. Visuals (icons, styles, layout) are unchanged except where a
+  control was needed (crosshair sliders; Custom preset row; Import curve button;
+  Capture source row; Suggested-actions chips and a Curve tuning card on AI Coach).
 
   LATEST WORK (rev37): MainWindow(backend) fix in python/fps_coach/ui/main_window.py.
     - MainWindow(backend=None) stores self._backend and passes it to CapturePage,
@@ -174,18 +190,23 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     - QSettings() uses the app-level store (app.py names), as in the original.
     - Restored HEAD defaults and HEAD signal names. Full map: see rev37 changelog.
 
-  KNOWN GAPS IN THE REDESIGN (not restored; need a decision before porting):
-    - Curve import, and the Save profile export. Save writes the calibration
-      recommendation only; chart drag edits are not included in the file.
-    - AI quick actions and proactive AI; the "preset" voice command now says so.
-    - Analytics persistence: TrainingPage has no store.
-    - Crosshair presets and PNG export.
-    - Training scenarios: TrainingCanvas still uses random target placement.
-    - Capture window picker and the custom preset.
-    - AI API key field (online providers): not in the redesign; ChatSettings
-      uses an empty key, so only the local Ollama provider works.
+  KNOWN GAPS IN THE REDESIGN (after rev43):
+    - AI API key field (online providers): still NOT in the redesign. ChatSettings
+      uses an empty key, so only the local Ollama provider works. Not one of the six
+      features; left for a decision.
     - Hardware acceleration is stored only (the original did not pass it to the
       native core either).
+    - Voice "dictate" and wake word: unchanged from rev37.
+    - Crosshair edits are saved and exported; the redesign's "edited" signal is a
+      no-op (HEAD had no handler either).
+    - profile_changed (calibration) only updates coach text. The curve is linked
+      through curve_adjusted / base_profile_changed instead.
+    - Curve chart shows 5 samples. An imported curve with many points is drawn
+      sampled; Export still writes every point unless the chart was edited.
+    - Stop button in Training (rev41) is a redesign control. It records the attempts
+      made so far. HEAD had no Stop.
+    - Real-display and Windows checks are still needed (window picker, native
+      capture, curve files from the game, reaction timing on a real screen).
 
   LATEST WORK (rev34): TTS hardening in python/fps_coach/tts_service.py.
     init_engine() fallback chain: pyttsx3 default -> other pyttsx3 drivers for
@@ -209,8 +230,10 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
       .bat scripts (Update/Reset/Apply/Repair). Not in .gitignore.
 
   NEXT STEPS (in order):
-    1. Push: git push origin fix/redesign-backend-wiring (or merge into main),
-       run by the user with their credentials. Sandbox has no credentials.
+    1. Push (user action): git push origin fix/redesign-backend-wiring:main
+       from a machine with GitHub credentials. This is a fast-forward of
+       origin/main e9e69a2. The sandbox has no credentials, so the push cannot be
+       done from here.
     2. On a Windows machine: run Build-Lite.bat and Build-Full.bat; confirm both
        installers are produced (full should be large, ~1GB+).
     3. Windows smoke test: every tab, Settings theme switch, coach panel, voice
@@ -1028,6 +1051,95 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
               - Repo state: origin/main e9e69a2 (not changed). Branch
                 fix/redesign-backend-wiring holds the fix; NOT pushed.
               - Zip: /home/user/workspace/FPSCoach-full-repo.zip (repo only, .git included).
+
+  2026-10-19 (rev37 addendum)  Commit 110d50e (not in the rev37 entry above):
+              - Sidebar native-core status label (core_label), hidden when the sidebar is
+                collapsed; read-only MainWindow.backend property. Verified offscreen.
+              - Resolves the earlier open item about the rev37 handoff not mentioning the
+                backend property.
+
+  2026-10-19 (rev38)  RESTORE: crosshair presets and PNG export (user request: "restore
+              Dropped features and push into main").
+              - CrosshairPage uses the original CrosshairConfig schema for every field:
+                shape (cross_dot, cross, dot, circle), arm length, thickness, center gap,
+                dot size, opacity, outline, color.
+              - Presets come from crosshair.PRESETS. Export PNG (128 px, transparent),
+                Export JSON and Import JSON added.
+              - Preview and PNG use HEAD's shared _draw_crosshair. Colors and card layout
+                kept.
+              - Smoke checks for this step: 35/35 (sandbox). Commit 7328318.
+
+  2026-10-19 (rev39)  RESTORE: capture window picker and the Custom preset.
+              - "Capture source": Entire display output, or one visible window
+                (window_enum.list_windows; Windows only, empty elsewhere). Refresh windows
+                button.
+              - The chosen window's rectangle (get_window_rect) is passed to start_capture
+                as left/top with its width and height. If the rectangle cannot be read,
+                a note is shown and the full output is captured.
+              - Low-end, Balanced and Quality keep their values (checked against HEAD).
+                Custom is added: region (640x360, 960x540, full output) and FPS (30, 60,
+                120) appear only when Custom is selected. Custom is not saved, as in HEAD.
+              - Smoke checks for this step: 40/40 cumulative. Commit e6f4aac.
+
+  2026-10-19 (rev40)  RESTORE: curve import, and export that includes edits.
+              - "Import curve" (.cc4 or .ccurve) loads the base curve with load_curve.
+              - A calibration result now ADJUSTS an imported curve
+                (adjust_from_recommendation) instead of replacing it, as in HEAD. The
+                before/after overlay is shown.
+              - Dragging chart points scales the current profile. Each chart sample gives
+                a factor (edited / baseline), applied to each profile point at its speed.
+                Export therefore writes what is on screen. This closes the gap "chart
+                edits are not in the Save export".
+              - "Save profile" is now "Export curve". It writes the current profile with
+                save_curve (format from the file extension).
+              - Limitation: the chart draws 5 samples. Export keeps every point unless the
+                chart was edited.
+              - Smoke checks for this step: 47/47 cumulative. Commit 3c92736.
+
+  2026-10-19 (rev41)  RESTORE: scenario training and persisted analytics.
+              - TrainingCanvas: HEAD's scenario logic (scenarios.py): target count, target
+                radius, moving targets, spawn delay, enemy sprites (enemy_sprites),
+                kill animation, reaction times. Redesign colors kept.
+              - TrainingPage: scenario picker and description, progress bar, Start, Stop,
+                result line.
+              - Stop (added by me, not in HEAD): ends the drill early and records the
+                attempts so far. Nothing is recorded if there were no attempts.
+              - Analytics: AnalyticsStore (analytics.py), saved to
+                .fpscoach_analytics.json in the repo root (gitignored), as in HEAD.
+                AnalyticsPage shows average accuracy, average reaction, best reaction, and
+                recent sessions, newest first.
+              - MainWindow._on_session_recorded reads SessionResult.accuracy (it read a
+                dict before).
+              - Smoke checks for this step: 55/55 cumulative. Commit a292b0f.
+
+  2026-10-19 (rev42)  RESTORE: AI Coach quick actions and proactive AI.
+              - Suggestion chips update as you type (chat_suggestions.suggest). A preset
+                chip applies a curve action. A prompt chip fills the input.
+              - "Curve tuning" card: after an action, a read-only preview shows previous
+                and current curves. "Send to calibration" passes the adjusted curve to
+                Calibration.
+              - AI directives: a reply containing [ADJUST: ...] (ai_curve_actions) adjusts
+                the imported curve, shows the result, and switches to Calibration, as in
+                HEAD.
+              - Proactive: each completed calibration posts a local note in the chat. If
+                the provider is Ollama, the server is reachable, and the model is already
+                installed, a short AI assessment follows. Nothing is downloaded and no paid
+                API is called without user action.
+              - Calibration: new base_profile_changed (fired on import) and set_adjusted
+                (shows AI results). MainWindow connects chat.curve_adjusted, which was
+                not connected before.
+              - Smoke checks for this step: 64/64 cumulative. Commit 9b2c551.
+
+  2026-10-19 (rev43)  FIX: voice "preset" commands (raise or lower sensitivity, reset,
+              fast flicks, precision, tracking) now apply the quick action. They printed
+              "Quick actions are not available" before. Smoke: 65/65 cumulative.
+              Commit f6af4b9.
+
+  VERIFICATION (rev38-rev43, sandbox): pytest 92/92; ruff --select F clean; extended
+              offscreen smoke 65/65; verify_mainwindow_wiring.py 32/32 (updated for the
+              slider and the new capture arguments); app.py quit run exit 0, no traceback.
+              NOT verified: real display, Win32 window list, native capture, real Ollama,
+              real game curve files, Windows build.
 
 --------------------------------------------------------------------------------
 9. OPEN QUESTIONS / ACTION ITEMS
