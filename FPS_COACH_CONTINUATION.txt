@@ -145,6 +145,8 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     /home/user/workspace/FPSCoach   (clone of https://github.com/AFK-999/FPSCoach.git)
     Remote origin/main = e9e69a2   (the visual REDESIGN; based on 04e6b0f)
     Working branch     = fix/redesign-backend-wiring (from e9e69a2), NOT pushed.
+    REV52 STATUS: rev51 plus no code change. Answered a question on Vosk model size,
+    memory, and punctuation (see the rev52 changelog entry). Still NOT pushed.
     REV51 STATUS: rev50 plus (1) a "Read replies aloud" switch in AI Coach, sharing the
     Settings > Voice setting, and a "Stop speaking" button that clears queued replies;
     (2) a transcript text-size slider (12-24 px, saved, with Reset). Speech engine is the
@@ -1158,6 +1160,19 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
               slider and the new capture arguments); app.py quit run exit 0, no traceback.
               NOT verified: real display, Win32 window list, native capture, real Ollama,
               real game curve files, Windows build.
+
+  2026-10-19 (rev52)  NO CODE CHANGE. VOSK MODEL AND PUNCTUATION QUESTION.
+              - Vosk recognition outputs lowercase words with no punctuation. Punctuation
+                read aloud comes from the TTS path, which speaks AI replies as raw text
+                (tts_service / _TtsService.enqueue). Sanitising reply text before speaking
+                is the candidate fix. Not built yet.
+              - Speech-to-text model: the default is vosk-model-small-en-us-0.15 (40 MB).
+                The Settings > Voice > Vosk model path field (voice/vosk_model_path) points
+                the app at another unzipped model folder. Candidates: vosk-model-en-us-0.22-lgraph
+                (128 MB, dynamic graph) and vosk-model-en-us-0.22 (1.8 GB). Not tested here.
+              - Code observation: vosk_service.recognize_once loads the model on every call.
+                Caching the loaded model is the main speed and memory fix for a larger model.
+                Not changed in this rev.
 
   2026-10-19 (rev51)  AI COACH: READ ALOUD SWITCH, STOP SPEAKING, TEXT SIZE.
               - Read aloud: the AI Coach page has a "Read replies aloud" switch above the
