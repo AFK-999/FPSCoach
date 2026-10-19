@@ -143,9 +143,11 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
 --------------------------------------------------------------------------------
   REPO (the only source of truth):
     /home/user/workspace/FPSCoach   (clone of https://github.com/AFK-999/FPSCoach.git)
-    Remote origin/main = 04e6b0f   (includes the rev20-33 features)
-    Local HEAD         = rev34 TTS commit (af5c879), 1 ahead, NOT pushed
-    Git history on origin: 0a6f205 Initial commit -> 3189f28 -> e2da6c7 -> 04e6b0f
+    Remote origin/main = e9e69a2   (the visual REDESIGN; based on 04e6b0f)
+    Working branch     = fix/redesign-backend-wiring (from e9e69a2), NOT pushed.
+                         Commits on it: 2569203 TTS hardening (ported from af5c879),
+                         ab574cd + ff8b165 handoff docs, then the rev37 fix commit.
+    Git history on origin: 0a6f205 -> 3189f28 -> e2da6c7 -> 04e6b0f -> e9e69a2
     NOTE: the rev5-rev33 commit hashes quoted in the changelog below were local to
     the earlier sandbox and are NOT on the remote. The changelog is the record of
     what was built; use git log for the real hashes.
@@ -153,12 +155,37 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
 
   STATUS:
     - Tests: 92/92 pass (python3 -m pytest -q, from the repo root).
-    - Lint: ruff clean on all files changed in rev34 (ruff 0.17.1).
-    - Full feature set from the handoff is present in the repo (rev1-rev34).
-    - Unverified: anything that needs Windows or a display. Qt UI cannot render
-      in this sandbox (no libGL/libEGL/libxkbcommon/libdbus). Also unverified:
-      PyInstaller, Inno Setup (iscc), scripts/build.ps1, SAPI5 and PowerShell TTS,
-      Vosk audio capture, Ollama auto-launch.
+    - Lint: ruff check --select F clean on python/ and tests/ (ruff 0.17.1).
+    - MainWindow(backend) TypeError FIXED (rev37). app.py now starts and quits
+      cleanly (offscreen). Offscreen wiring smoke test: 32/32 checks pass.
+    - Unverified: anything that needs Windows or a real display. The offscreen
+      checks prove construction and logic, not pixel-level appearance. Also
+      unverified: PyInstaller, Inno Setup (iscc), scripts/build.ps1, SAPI5 and
+      PowerShell TTS, real Vosk audio, real Ollama models, native capture.
+
+  LATEST WORK (rev37): MainWindow(backend) fix in python/fps_coach/ui/main_window.py.
+    - MainWindow(backend=None) stores self._backend and passes it to CapturePage,
+      CalibrationPage, RecommendationPage. The redesign visuals are unchanged.
+    - Wired to real APIs: backend.outputs/start_capture/stop_capture/capture_stats/
+      latest_frame; CalibrationCanvas(backend.analyzer); analyzer.summary/recommend;
+      ai_chat (AIChatClient, check_ollama, pull_model, curve_context); vosk_service,
+      voice_control, voice_commands, tts_service; CrosshairConfig schema.
+    - Fixed DashboardPage crash: ResponsiveCards needs its cards at construction.
+    - QSettings() uses the app-level store (app.py names), as in the original.
+    - Restored HEAD defaults and HEAD signal names. Full map: see rev37 changelog.
+
+  KNOWN GAPS IN THE REDESIGN (not restored; need a decision before porting):
+    - Curve import, and the Save profile export. Save writes the calibration
+      recommendation only; chart drag edits are not included in the file.
+    - AI quick actions and proactive AI; the "preset" voice command now says so.
+    - Analytics persistence: TrainingPage has no store.
+    - Crosshair presets and PNG export.
+    - Training scenarios: TrainingCanvas still uses random target placement.
+    - Capture window picker and the custom preset.
+    - AI API key field (online providers): not in the redesign; ChatSettings
+      uses an empty key, so only the local Ollama provider works.
+    - Hardware acceleration is stored only (the original did not pass it to the
+      native core either).
 
   LATEST WORK (rev34): TTS hardening in python/fps_coach/tts_service.py.
     init_engine() fallback chain: pyttsx3 default -> other pyttsx3 drivers for
@@ -174,7 +201,7 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     Installer scripts: installer/fpscoach-lite.iss, installer/fpscoach-full.iss
     PyInstaller spec:  installer/fpscoach.spec
 
-  KNOWN LEFTOVERS (user decided to leave these as-is in rev34/rev35):
+  KNOWN LEFTOVERS (user decided to leave these as-is in rev34-rev37):
     - python/fps_coach/calibration_history.py + tests/test_calibration_history.py:
       rev14 feature that rev15 reverted. Not imported by the UI (dead code), still tested.
     - Tracked clutter: .fpscoach-update-backups/ (about 82 files), the
@@ -182,7 +209,8 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
       .bat scripts (Update/Reset/Apply/Repair). Not in .gitignore.
 
   NEXT STEPS (in order):
-    1. Push: git push origin main (user runs this with their credentials).
+    1. Push: git push origin fix/redesign-backend-wiring (or merge into main),
+       run by the user with their credentials. Sandbox has no credentials.
     2. On a Windows machine: run Build-Lite.bat and Build-Full.bat; confirm both
        installers are produced (full should be large, ~1GB+).
     3. Windows smoke test: every tab, Settings theme switch, coach panel, voice
@@ -941,6 +969,63 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
                 the rev8 bundle, so the user can find it where they expect.
               - Repo state: origin/main 04e6b0f; local commits af5c879 (rev34) and
                 b5256c1 (rev35) plus this doc commit; NOT pushed. Tests 92/92.
+
+  2026-10-19 (rev37)  FIX: MainWindow(backend) TypeError (user request, "stop everything
+              and focus on this"). Based on origin/main e9e69a2 (the redesign).
+              - Cause: app.py calls MainWindow(backend); the redesign defined
+                MainWindow.__init__(self) with no backend parameter.
+              - Fix: MainWindow.__init__(self, backend: CoreBackend | None = None).
+                Stores self._backend (attribute name kept from HEAD; the request said
+                self.backend, so this is a deliberate choice) and passes it to
+                CapturePage, CalibrationPage and RecommendationPage.
+              - Real wiring restored (replaces the stubs):
+                  Capture: outputs, start_capture, stop_capture, capture_stats,
+                    latest_frame (250 ms timer; preview frame); preset region/fps
+                    match the original (Low-end 640x360@30, Balanced 960x540@60,
+                    Quality full@120). Errors shown; NativeCoreUnavailable handled.
+                  Calibration: CalibrationCanvas(backend.analyzer); completed ->
+                    recommendation_ready(summary, recommendation). Recalibrate runs
+                    the real task (it no longer resets the curve to linear).
+                  Recommendation: analyzer.summary/recommend. No random numbers.
+                    Refuses with a message when there is no calibration data.
+                  AI Coach: AIChatClient.chat with the calibration as context;
+                    ChatProviderError handled; failed turns are not kept in history.
+                  Settings: Check connection -> check_ollama; Pull model ->
+                    pull_model (thread signals status_ready, progress, finished_ok,
+                    failed, as in HEAD).
+                  Voice: _VoiceListenThread (voice_control.recognize_once);
+                    _VoiceCommandService (vosk_service) -> voice_commands.parse ->
+                    navigate, calibrate, panel, dictate.
+                  TTS: _TtsService using tts_service.init_engine with fallbacks.
+                    Runs only when ui/tts_enabled is on.
+                  Crosshair: reads and writes the original CrosshairConfig schema
+                    under "crosshair/config". Previously it wrote a different schema.
+                  closeEvent: stops voice and TTS, waits for chat threads, then
+                    backend.close().
+              - Settings and QSettings: _settings() returns QSettings() (the app-level
+                store). Before, it used VantageLabs/Vantage, so saved preferences were
+                invisible to the original app. Defaults restored from HEAD: ai/base_url
+                127.0.0.1, ai/model qwen3:1.7b, ai/temperature 0.35, ui/theme system
+                (added "system" to the combo), coach_panel off, wake_word coach, tts off.
+              - Fixed a second crash found after the first: DashboardPage built
+                ResponsiveCards(spacing=16) with no cards. Tiles are now built first and
+                passed in. responsive.py is unchanged.
+              - Module docstring corrected (it wrongly said behavior was unchanged).
+              - Visual redesign kept: icons.py, styles.py, responsive.py, calibration.py,
+                app.py and backend.py have NO diff against origin/main. Layout changes
+                (needed for the wiring): Capture gained an output list and a preview
+                card; Calibration gained the canvas above the curve; Hardware
+                acceleration is a checkbox (was a combo with no backend meaning).
+              - Verification: pytest 92/92; ruff --select F clean; offscreen repro
+                (MainWindow(backend) now constructs); /tmp/smoke_redesign.py 32/32
+                (capture fake core, calibration with the real analyzer, AI error path
+                with real HTTP, check_ollama, crosshair round-trip, voice dispatch);
+                app.py main() starts and quits, exit 0.
+              - Not verified: real display rendering, native capture, real Ollama pull,
+                Vosk audio, TTS audio, Windows build.
+              - Repo state: origin/main e9e69a2 (not changed). Branch
+                fix/redesign-backend-wiring holds the fix; NOT pushed.
+              - Zip: /home/user/workspace/FPSCoach-full-repo.zip (repo only, .git included).
 
 --------------------------------------------------------------------------------
 9. OPEN QUESTIONS / ACTION ITEMS

@@ -1,15 +1,22 @@
 """
 Vantage — main application window.
 
-This module assembles every page of the app (Dashboard, Guide, Capture,
-Calibration, Training, Recommendation, Crosshair, AI Coach, Privacy,
-Settings) behind a grouped icon-rail sidebar, plus the floating Coach
-Panel overlay. All visual chrome uses the "Vantage" design language from
-styles.py and hand-drawn vector icons from icons.py — no emoji, no icon
-fonts. Functional behavior (threads, signals, QSettings keys, calibration
-flow, AI chat, curve import/export, training/analytics, crosshair design,
-dashboard customization, voice commands/TTS) is unchanged from the
-original implementation.
+Assembles every page (Dashboard, Guide, Capture, Calibration, Training,
+Recommendation, Crosshair, AI Coach, Privacy, Settings) behind a grouped
+icon-rail sidebar, plus the floating Coach Panel overlay. Visual chrome uses
+the "Vantage" design language from styles.py and the vector icons from icons.py.
+
+Functional wiring (restored to the original backend behavior):
+  * MainWindow(backend) receives the CoreBackend created in app.py and passes
+    it to Capture, Calibration and Recommendation.
+  * Capture: backend.outputs(), start_capture(), stop_capture(),
+    capture_stats(), latest_frame().
+  * Calibration: CalibrationCanvas(backend.analyzer) -> completed(summary, rec).
+  * Recommendation: backend.analyzer.summary() / recommend().
+  * AI Coach: ai_chat (AIChatClient, check_ollama, pull_model, curve_context).
+  * Voice and TTS: vosk_service, voice_control, voice_commands, tts_service.
+  * Crosshair: CrosshairConfig schema under the "crosshair/config" key.
+  * QSettings() uses the application names set in app.py, so saved keys match.
 """
 from __future__ import annotations
 
@@ -21,7 +28,7 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QSettings, QTimer, QThread, Signal, QSize, QPointF
-from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QPainterPath
+from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QPainterPath, QImage, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
     QGridLayout, QFrame, QScrollArea, QStackedWidget, QLineEdit, QTextEdit, QComboBox,
@@ -32,6 +39,13 @@ from PySide6.QtWidgets import (
 from .icons import icon, pixmap
 from .styles import build_style
 from .responsive import ResponsiveCards, ResponsiveRow
+from .calibration import CalibrationCanvas
+from fps_coach.ai_chat import (
+    AIChatClient, ChatProviderError, ChatSettings, check_ollama, curve_context, pull_model,
+)
+from fps_coach.backend import CoreBackend
+from fps_coach.crosshair import CrosshairConfig
+from fps_coach.curve_io import CurveFormatError, recommendation_profile, save_curve
 
 ORG_NAME = "VantageLabs"
 APP_NAME = "Vantage"
@@ -46,7 +60,9 @@ NAV_SECTIONS = [
 
 
 def _settings() -> QSettings:
-    return QSettings(ORG_NAME, APP_NAME)
+    # Use the application-level store (names are set in app.py), so saved
+    # preferences and QSettings keys match the original app.
+    return QSettings()
 
 
 # ---------------------------------------------------------------------------
@@ -166,32 +182,58 @@ class GuidePage(QWidget):
 # ---------------------------------------------------------------------------
 
 class CapturePage(QWidget):
-    def __init__(self, parent=None):
+    """Capture controls wired to the native backend (CoreBackend).
+
+    Lists display outputs from backend.outputs(), starts and stops capture with
+    the selected preset, shows live stats from backend.capture_stats(), and
+    previews the newest frame from backend.latest_frame(). Without the native
+    core, start is disabled and the reason is shown.
+    """
+
+    # (label, stored value, region side, target fps). Matches the original presets:
+    # Low-end 640x360 @ 30, Balanced 960x540 @ 60, Quality full output @ 120.
+    PRESETS = [
+        ("Quality", "quality", None, 120),
+        ("Balanced", "balanced", (960, 540), 60),
+        ("Performance", "low", (640, 360), 30),
+    ]
+
+    def __init__(self, backend: CoreBackend, parent=None):
         super().__init__(parent)
+        self._backend = backend
+        self._last_sequence = -1
         s = _settings()
+
         outer = QVBoxLayout(self)
         outer.setContentsMargins(28, 24, 28, 24)
         outer.setSpacing(20)
-        outer.addWidget(_page_header("Capture", "Point Vantage at the screen region it should watch."))
+        outer.addWidget(_page_header("Capture", "Point Vantage at the display it should watch."))
 
-        card, lay = _card("Source", "Choose the capture backend and performance preset.")
+        card, lay = _card("Source", "Choose the display output, capture preset, and hardware acceleration.")
         form = QGridLayout()
         form.setHorizontalSpacing(12)
         form.setVerticalSpacing(10)
 
-        form.addWidget(_label("Hardware acceleration", "formLabel"), 0, 0)
-        self.hwaccel = QComboBox()
-        self.hwaccel.addItems(["Auto", "CUDA", "QuickSync", "None"])
-        self.hwaccel.setCurrentText(s.value("capture/hwaccel", "Auto"))
-        self.hwaccel.currentTextChanged.connect(lambda v: s.setValue("capture/hwaccel", v))
-        form.addWidget(self.hwaccel, 0, 1)
+        form.addWidget(_label("Display output", "formLabel"), 0, 0)
+        self.output_combo = QComboBox()
+        form.addWidget(self.output_combo, 0, 1)
 
         form.addWidget(_label("Preset", "formLabel"), 1, 0)
         self.preset = QComboBox()
-        self.preset.addItems(["Quality", "Balanced", "Performance"])
-        self.preset.setCurrentText(s.value("capture/preset", "Balanced"))
-        self.preset.currentTextChanged.connect(lambda v: s.setValue("capture/preset", v))
+        for label, value, _region, _fps in self.PRESETS:
+            self.preset.addItem(label, value)
+        index = self.preset.findData(str(s.value("capture/preset", "balanced")))
+        self.preset.setCurrentIndex(index if index >= 0 else 1)
+        self.preset.currentIndexChanged.connect(
+            lambda i: s.setValue("capture/preset", self.preset.itemData(i))
+        )
         form.addWidget(self.preset, 1, 1)
+
+        form.addWidget(_label("Hardware acceleration", "formLabel"), 2, 0)
+        self.hwaccel = QCheckBox("Use the GPU (D3D11) for capture and scaling")
+        self.hwaccel.setChecked(s.value("capture/hwaccel", True, type=bool))
+        self.hwaccel.toggled.connect(lambda v: s.setValue("capture/hwaccel", bool(v)))
+        form.addWidget(self.hwaccel, 2, 1)
         lay.addLayout(form)
 
         btn_row = QHBoxLayout()
@@ -202,8 +244,12 @@ class CapturePage(QWidget):
         self.stop_btn.setObjectName("secondary")
         self.stop_btn.setIcon(icon("stop"))
         self.stop_btn.setEnabled(False)
+        self.refresh_btn = QPushButton(" Refresh displays")
+        self.refresh_btn.setObjectName("secondary")
+        self.refresh_btn.setIcon(icon("refresh"))
         btn_row.addWidget(self.start_btn)
         btn_row.addWidget(self.stop_btn)
+        btn_row.addWidget(self.refresh_btn)
         btn_row.addStretch(1)
         lay.addLayout(btn_row)
 
@@ -211,27 +257,135 @@ class CapturePage(QWidget):
         self.status_label.setObjectName("statusLabel")
         lay.addWidget(self.status_label)
 
+        self.error_label = QLabel("")
+        self.error_label.setObjectName("statusLabel")
+        self.error_label.setWordWrap(True)
+        self.error_label.setVisible(False)
+        lay.addWidget(self.error_label)
+
+        self.stats_label = _label("", "cardSubtitle")
+        lay.addWidget(self.stats_label)
+
+        preview_card, preview_lay = _card("Preview", "Newest captured frame. Appears once capture starts.")
+        self.preview = QLabel("No frame yet")
+        self.preview.setObjectName("muted")
+        self.preview.setAlignment(Qt.AlignCenter)
+        self.preview.setMinimumSize(480, 270)
+        preview_lay.addWidget(self.preview, 1)
+
         outer.addWidget(card)
-        outer.addStretch(1)
+        outer.addWidget(preview_card, 1)
 
         self.start_btn.clicked.connect(self._start)
         self.stop_btn.clicked.connect(self._stop)
+        self.refresh_btn.clicked.connect(self._load_outputs)
 
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._refresh_stats)
+        self._timer.start(250)
+        self._load_outputs()
+
+    # --- outputs ---------------------------------------------------------
+    def _load_outputs(self):
+        self.output_combo.clear()
+        outputs = self._backend.outputs()
+        for out in outputs:
+            label = f"{out['output_name']} · {out['adapter_name']} · {out['width']}×{out['height']}"
+            self.output_combo.addItem(label, out)
+        if not outputs:
+            self.output_combo.addItem("No display output found", None)
+        self._update_buttons()
+
+    def _update_buttons(self):
+        running = self.stop_btn.isEnabled()
+        has_output = isinstance(self.output_combo.currentData(), dict)
+        self.start_btn.setEnabled(has_output and not running)
+        self.refresh_btn.setEnabled(not running)
+
+    # --- start / stop ----------------------------------------------------
     def _start(self):
-        self.start_btn.setEnabled(False)
-        self.stop_btn.setEnabled(True)
-        self.status_label.setText("Capturing…")
-        self.status_label.setProperty("state", "good")
-        self.status_label.style().unpolish(self.status_label)
-        self.status_label.style().polish(self.status_label)
+        output = self.output_combo.currentData()
+        if not isinstance(output, dict):
+            self._show_error("No display output is available to capture.")
+            return
+        _label_text, _value, region, fps = self.PRESETS[max(0, self.preset.currentIndex())]
+        width, height = region if region else (int(output["width"]), int(output["height"]))
+        try:
+            self._backend.start_capture(
+                int(output["adapter_index"]),
+                int(output["output_index"]),
+                int(width),
+                int(height),
+                int(fps),
+            )
+        except RuntimeError as exc:  # NativeCoreUnavailable is a RuntimeError
+            self._show_error(str(exc))
+            return
+        self._last_sequence = -1
+        self._show_error("")
+        self._set_running(True)
 
     def _stop(self):
-        self.start_btn.setEnabled(True)
-        self.stop_btn.setEnabled(False)
-        self.status_label.setText("Idle")
-        self.status_label.setProperty("state", "")
+        self._backend.stop_capture()
+        self._set_running(False)
+
+    def _set_running(self, running: bool):
+        self.stop_btn.setEnabled(running)
+        if running:
+            self._set_status("Capturing…", "good")
+        else:
+            self._set_status("Idle", "")
+            self.stats_label.setText("")
+            self.preview.clear()
+            self.preview.setText("No frame yet")
+        self._update_buttons()
+
+    def _set_status(self, text, state):
+        self.status_label.setText(text)
+        self.status_label.setProperty("state", state)
         self.status_label.style().unpolish(self.status_label)
         self.status_label.style().polish(self.status_label)
+
+    def _show_error(self, message):
+        self.error_label.setText(message)
+        self.error_label.setVisible(bool(message))
+
+    # --- stats and preview ----------------------------------------------
+    def _refresh_stats(self):
+        stats = self._backend.capture_stats()
+        running = bool(stats.get("running"))
+        if self.stop_btn.isEnabled() and not running:
+            # Capture ended on its own (for example a driver error).
+            self._set_running(False)
+        error = str(stats.get("last_error") or "")
+        if error:
+            self._show_error(error)
+        if not running:
+            return
+        fps = float(stats.get("capture_fps", 0.0))
+        frames = int(stats.get("frames_captured", 0))
+        width = int(stats.get("capture_width", 0))
+        height = int(stats.get("capture_height", 0))
+        adapter = str(stats.get("adapter_name", ""))
+        self.stats_label.setText(f"{fps:.1f} FPS · {frames:,} frames · {width}×{height} · {adapter}")
+
+        frame = self._backend.latest_frame()
+        if not frame or int(frame["sequence"]) == self._last_sequence:
+            return
+        self._last_sequence = int(frame["sequence"])
+        image = QImage(
+            bytes(frame["bgra"]),
+            int(frame["width"]),
+            int(frame["height"]),
+            int(frame["stride"]),
+            QImage.Format.Format_ARGB32,
+        ).copy()
+        pixmap = QPixmap.fromImage(image).scaled(
+            self.preview.size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self.preview.setPixmap(pixmap)
 
 
 # ---------------------------------------------------------------------------
@@ -327,52 +481,134 @@ class CurveChart(QWidget):
             self.curve_adjusted.emit(list(self.points))
 
 
+def _curve_samples(points, count: int = 5) -> list[float]:
+    """Sample a recommendation curve (x, y pairs) at evenly spaced x for CurveChart."""
+    pts = sorted((float(x), float(y)) for x, y in points)
+    if len(pts) < 2:
+        return [0.0, 0.25, 0.5, 0.75, 1.0]
+    samples = []
+    for i in range(count):
+        x = i / (count - 1)
+        if x <= pts[0][0]:
+            y = pts[0][1]
+        elif x >= pts[-1][0]:
+            y = pts[-1][1]
+        else:
+            y = pts[-1][1]
+            for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
+                if x0 <= x <= x1:
+                    t = 0.0 if x1 == x0 else (x - x0) / (x1 - x0)
+                    y = y0 + t * (y1 - y0)
+                    break
+        samples.append(min(1.0, max(0.0, y)))
+    return samples
+
+
 class CalibrationPage(QWidget):
+    """Calibration task (CalibrationCanvas on backend.analyzer) plus the curve view.
+
+    When a run completes, emits recommendation_ready(summary, recommendation).
+    """
+
+    recommendation_ready = Signal(dict, dict)
     profile_changed = Signal(dict)
 
-    def __init__(self, parent=None):
+    def __init__(self, backend: CoreBackend, parent=None):
         super().__init__(parent)
+        self._backend = backend
+        self._last_recommendation = None
+
         outer = QVBoxLayout(self)
         outer.setContentsMargins(28, 24, 28, 24)
         outer.setSpacing(20)
-        outer.addWidget(_page_header("Calibration", "Map raw mouse counts to in-game degrees of rotation."))
+        outer.addWidget(_page_header("Calibration", "Measure your movement, then review the response curve."))
 
-        card, lay = _card(
-            "Sensitivity curve",
-            "Drag points to fine-tune the response curve. Previous curve shown in amber for comparison.",
+        task_card, task_lay = _card(
+            "Calibration task",
+            "Click each target at your normal sensitivity. Only this in-app task is measured.",
         )
-        self.chart = CurveChart()
-        lay.addWidget(self.chart)
-
-        btn_row = QHBoxLayout()
+        bar = QHBoxLayout()
         self.recalibrate_btn = QPushButton(" Recalibrate")
         self.recalibrate_btn.setObjectName("primary")
         self.recalibrate_btn.setIcon(icon("refresh", "#1a1106"))
+        self.reset_btn = QPushButton(" Reset")
+        self.reset_btn.setObjectName("secondary")
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 12)
+        self.progress.setValue(0)
+        self.progress.setFormat("%v / 12 targets")
+        bar.addWidget(self.recalibrate_btn)
+        bar.addWidget(self.reset_btn)
+        bar.addWidget(self.progress, 1)
+        task_lay.addLayout(bar)
+
+        self.canvas = CalibrationCanvas(backend.analyzer)
+        self.canvas.setMinimumHeight(300)
+        task_lay.addWidget(self.canvas, 1)
+
+        self.hint = _label("Press Recalibrate when you are ready.", "cardSubtitle", wrap=True)
+        task_lay.addWidget(self.hint)
+
+        curve_card, curve_lay = _card(
+            "Sensitivity curve",
+            "Previous curve shown in amber for comparison. Drag points to fine-tune.",
+        )
+        self.chart = CurveChart()
+        curve_lay.addWidget(self.chart)
+
+        btn_row = QHBoxLayout()
         self.save_btn = QPushButton(" Save profile")
         self.save_btn.setObjectName("secondary")
         self.save_btn.setIcon(icon("check"))
-        btn_row.addWidget(self.recalibrate_btn)
         btn_row.addWidget(self.save_btn)
         btn_row.addStretch(1)
-        lay.addLayout(btn_row)
-        outer.addWidget(card)
-        outer.addStretch(1)
+        curve_lay.addLayout(btn_row)
 
+        outer.addWidget(task_card, 3)
+        outer.addWidget(curve_card, 2)
+
+        self.recalibrate_btn.clicked.connect(lambda: self.canvas.start_session(12))
+        self.reset_btn.clicked.connect(self.canvas.cancel_session)
+        self.canvas.progress_changed.connect(self._on_progress)
+        self.canvas.hint_changed.connect(self.hint.setText)
+        self.canvas.completed.connect(self._on_complete)
         self.chart.curve_adjusted.connect(self._on_curve_adjusted)
-        self.recalibrate_btn.clicked.connect(self._recalibrate)
         self.save_btn.clicked.connect(self._save)
+
+    def _on_progress(self, completed: int, total: int):
+        self.progress.setRange(0, max(1, total))
+        self.progress.setValue(completed)
+
+    def _on_complete(self, summary: dict, recommendation: dict):
+        self._last_recommendation = recommendation
+        self.chart.set_previous(list(self.chart.points))
+        self.chart.points = _curve_samples(recommendation.get("points") or [])
+        self.chart.update()
+        self.recommendation_ready.emit(summary, recommendation)
 
     def _on_curve_adjusted(self, points):
         self.profile_changed.emit({"points": points})
 
-    def _recalibrate(self):
-        self.chart.set_previous(list(self.chart.points))
-        self.chart.points = [0.0, 0.25, 0.5, 0.75, 1.0]
-        self.chart.update()
-        self.profile_changed.emit({"points": self.chart.points, "recalibrated": True})
-
     def _save(self):
-        self.profile_changed.emit({"points": self.chart.points, "saved": True})
+        if self._last_recommendation is None:
+            self.hint.setText("Run a calibration first, then save the resulting profile.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save curve profile",
+            "fps_coach_curve.cc4",
+            "Custom Curve 4 (*.cc4);;Legacy Custom Curve (*.ccurve)",
+        )
+        if not path:
+            return
+        try:
+            profile = recommendation_profile(self._last_recommendation)
+            save_curve(profile, path)
+        except (CurveFormatError, OSError) as exc:
+            QMessageBox.warning(self, "Vantage", f"Could not save profile: {exc}")
+            return
+        self.hint.setText(f"Saved the calibration recommendation to {path}.")
+        self.profile_changed.emit({"saved": path})
 
 
 # ---------------------------------------------------------------------------
@@ -380,20 +616,28 @@ class CalibrationPage(QWidget):
 # ---------------------------------------------------------------------------
 
 class RecommendationPage(QWidget):
+    """Shows the analyzer's recommendation for the most recent calibration.
+
+    recommendation_ready(dict) is emitted for every new recommendation and is
+    used by the Coach Panel.
+    """
+
     recommendation_ready = Signal(dict)
 
-    def __init__(self, parent=None):
+    def __init__(self, backend: CoreBackend, parent=None):
         super().__init__(parent)
+        self._backend = backend
+
         outer = QVBoxLayout(self)
         outer.setContentsMargins(28, 24, 28, 24)
         outer.setSpacing(20)
         outer.addWidget(_page_header(
             "Recommendation",
-            "Vantage synthesizes your calibration and training data into one suggested setup.",
+            "A suggested sensitivity from your calibration run.",
         ))
 
-        card, lay = _card("Suggested sensitivity", "Based on your most recent calibration and training sessions.")
-        self.summary = QLabel("No recommendation generated yet.")
+        card, lay = _card("Suggested sensitivity", "Based on your most recent calibration run.")
+        self.summary = QLabel("No recommendation yet. Run the calibration task first.")
         self.summary.setObjectName("cardSubtitle")
         self.summary.setWordWrap(True)
         lay.addWidget(self.summary)
@@ -407,14 +651,25 @@ class RecommendationPage(QWidget):
         outer.addStretch(1)
         self.generate_btn.clicked.connect(self._generate)
 
+    def update_result(self, summary: dict, recommendation: dict):
+        """Show a finished calibration's recommendation and notify listeners."""
+        mult = float(recommendation.get("sensitivity_multiplier", 1.0))
+        confidence = float(recommendation.get("confidence", 0.0))
+        title = str(recommendation.get("title", "Recommendation"))
+        reasons = " ".join(str(r) for r in recommendation.get("reasons", []))
+        trials = int(summary.get("trial_count", 0))
+        self.summary.setText(
+            f"{title}: sensitivity ×{mult:.2f} (confidence {confidence:.0%}, {trials} targets). {reasons}"
+        )
+        self.recommendation_ready.emit(recommendation)
+
     def _generate(self):
-        result = {
-            "sensitivity": round(random.uniform(0.6, 1.4), 3),
-            "dpi": 800,
-            "notes": "Slight reduction in low-speed gain recommended based on recent overshoot patterns.",
-        }
-        self.summary.setText(f"Sensitivity ×{result['sensitivity']} @ {result['dpi']} DPI — {result['notes']}")
-        self.recommendation_ready.emit(result)
+        summary = dict(self._backend.analyzer.summary())
+        if int(summary.get("trial_count", 0)) == 0:
+            self.summary.setText("No calibration data yet. Run the calibration task first.")
+            return
+        recommendation = dict(self._backend.analyzer.recommend())
+        self.update_result(summary, recommendation)
 
 
 # ---------------------------------------------------------------------------
@@ -422,126 +677,170 @@ class RecommendationPage(QWidget):
 # ---------------------------------------------------------------------------
 
 class _OllamaStatusCheck(QThread):
-    finished = Signal(bool, str)
+    """Probe the local Ollama server off the UI thread (ai_chat.check_ollama)."""
 
-    def __init__(self, base_url, parent=None):
+    status_ready = Signal(bool, bool)  # (reachable, has_model)
+
+    def __init__(self, base_url: str, model: str = "", parent=None):
         super().__init__(parent)
-        self.base_url = base_url
+        self._base_url = base_url
+        self._model = model
 
-    def run(self):
-        try:
-            import urllib.request
-            req = urllib.request.Request(self.base_url.rstrip("/") + "/api/tags")
-            with urllib.request.urlopen(req, timeout=3) as resp:
-                ok = resp.status == 200
-            self.finished.emit(ok, "Connected" if ok else "Unexpected response")
-        except Exception as exc:
-            self.finished.emit(False, str(exc))
+    def run(self) -> None:
+        result = check_ollama(self._base_url, self._model)
+        self.status_ready.emit(bool(result["reachable"]), bool(result["has_model"]))
 
 
 class _ModelPullThread(QThread):
-    progress = Signal(int, str)
-    finished = Signal(bool, str)
+    """Pull an Ollama model off the UI thread (ai_chat.pull_model)."""
 
-    def __init__(self, base_url, model, parent=None):
+    progress = Signal(str)
+    finished_ok = Signal()
+    failed = Signal(str)
+
+    def __init__(self, base_url: str, model: str, parent=None):
         super().__init__(parent)
-        self.base_url = base_url
-        self.model = model
+        self._base_url = base_url
+        self._model = model
 
-    def run(self):
+    def run(self) -> None:
         try:
-            for pct in range(0, 101, 10):
-                if self.isInterruptionRequested():
-                    self.finished.emit(False, "Cancelled")
-                    return
-                self.progress.emit(pct, f"Pulling {self.model}… {pct}%")
-                self.msleep(120)
-            self.finished.emit(True, f"{self.model} ready")
-        except Exception as exc:
-            self.finished.emit(False, str(exc))
+            pull_model(self._base_url, self._model, progress=lambda msg: self.progress.emit(str(msg)))
+        except Exception as exc:  # noqa: BLE001 - report any pull failure to the UI
+            self.failed.emit(str(exc))
+            return
+        self.finished_ok.emit()
 
 
 class _VoiceListenThread(QThread):
-    heard = Signal(str)
-    finished = Signal()
+    """Capture one spoken phrase off the UI thread (voice_control.recognize_once)."""
 
-    def __init__(self, vosk_model_path="", parent=None):
+    recognized = Signal(str)
+    failed = Signal(str)
+
+    def run(self) -> None:
+        from fps_coach.voice_control import recognize_once
+
+        result = recognize_once()
+        if result.ok:
+            self.recognized.emit(result.text)
+        else:
+            self.failed.emit(result.message)
+
+
+class _TtsService(QThread):
+    """Background text-to-speech worker. Initializes one engine (with fallbacks, see
+    tts_service.init_engine) and speaks queued AI responses off the UI thread."""
+
+    status = Signal(str)
+    failed = Signal(str)
+
+    def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self.vosk_model_path = vosk_model_path
+        import queue
+
+        self._queue: queue.Queue = queue.Queue()
         self._stop = False
 
-    def stop(self):
+    def enqueue(self, text: str) -> None:
+        if text and text.strip():
+            self._queue.put(text.strip())
+
+    def stop(self) -> None:
         self._stop = True
+        self._queue.put(None)
 
-    def run(self):
-        # Hook point: integrate a real recognizer (e.g. Vosk) using self.vosk_model_path.
-        self.msleep(400)
-        if not self._stop:
-            self.heard.emit("")
-        self.finished.emit()
+    def run(self) -> None:
+        import queue
 
+        from fps_coach import tts_service
 
-class _TtsService:
-    """Thin wrapper around a text-to-speech backend."""
-
-    def __init__(self):
-        self.enabled = True
-
-    def speak(self, text: str):
-        if not self.enabled or not text:
-            return
-        # Hook point: integrate platform TTS here.
+        with tts_service.com_apartment():
+            tts_service.ensure_dependency(progress=self.status.emit)
+            result = tts_service.init_engine(progress=self.status.emit)
+            if result.speaker is None:
+                self.failed.emit(tts_service.format_unavailable(result))
+                return
+            self.status.emit("Text-to-speech ready.")
+            try:
+                while not self._stop:
+                    try:
+                        text = self._queue.get(timeout=0.3)
+                    except queue.Empty:
+                        continue
+                    if text is None:
+                        break
+                    try:
+                        result.speaker.say(text)
+                    except Exception:  # noqa: BLE001 - one bad utterance must not kill the worker
+                        continue
+            finally:
+                try:
+                    result.speaker.close()
+                except Exception:  # noqa: BLE001
+                    pass
 
 
 class _VoiceCommandService(QThread):
-    assistant_said = Signal(str)
-    finished = Signal()
+    """Background Vosk listener: downloads the model if needed, then streams mic
+    audio and emits each finalized phrase (MainWindow parses it as a command)."""
 
-    def __init__(self, wake_word="hey vantage", parent=None):
+    recognized = Signal(str)
+    status = Signal(str)
+    failed = Signal(str)
+
+    def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self.wake_word = wake_word
         self._stop = False
 
-    def stop(self):
+    def stop(self) -> None:
         self._stop = True
 
-    def run(self):
-        while not self._stop:
-            self.msleep(500)
-        self.finished.emit()
+    def run(self) -> None:
+        from fps_coach import vosk_service
+
+        try:
+            if not vosk_service.ensure_dependencies(progress=self.status.emit):
+                self.failed.emit(
+                    "Could not auto-install the voice packages (vosk, sounddevice). "
+                    "Check your internet connection, or install them manually: "
+                    "pip install vosk sounddevice"
+                )
+                return
+            model_path = vosk_service.verify_and_configure(progress=self.status.emit)
+            if model_path is None:
+                model_path = vosk_service.ensure_model(progress=self.status.emit)
+            vosk_service.listen(
+                model_path,
+                on_text=self.recognized.emit,
+                should_stop=lambda: self._stop,
+                on_status=self.status.emit,
+            )
+        except Exception as exc:  # noqa: BLE001 - surface any setup/runtime issue
+            self.failed.emit(str(exc))
 
 
 class _ChatRequest(QThread):
-    progress = Signal(str)
-    finished = Signal(bool, str)
+    """Send one conversation turn to the configured AI provider off the UI thread."""
 
-    def __init__(self, provider, base_url, model, temperature, prompt, parent=None):
+    response_ready = Signal(str)
+    request_failed = Signal(str)
+
+    def __init__(self, settings: ChatSettings, messages: list, calibration: str, parent=None):
         super().__init__(parent)
-        self.provider = provider
-        self.base_url = base_url
-        self.model = model
-        self.temperature = temperature
-        self.prompt = prompt
+        self._settings = settings
+        self._messages = messages
+        self._calibration = calibration
 
-    def run(self):
+    def run(self) -> None:
         try:
-            import urllib.request
-            payload = json.dumps({
-                "model": self.model,
-                "prompt": self.prompt,
-                "temperature": self.temperature,
-                "stream": False,
-            }).encode("utf-8")
-            req = urllib.request.Request(
-                self.base_url.rstrip("/") + "/api/generate",
-                data=payload,
-                headers={"Content-Type": "application/json"},
-            )
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                body = json.loads(resp.read().decode("utf-8"))
-            self.finished.emit(True, body.get("response", ""))
-        except Exception as exc:
-            self.finished.emit(False, f"Unable to reach {self.provider}: {exc}")
+            answer = AIChatClient(self._settings).chat(self._messages, curve_context=self._calibration)
+        except ChatProviderError as exc:
+            self.request_failed.emit(str(exc))
+        except Exception as exc:  # noqa: BLE001 - keep the UI alive on any provider error
+            self.request_failed.emit(f"Unexpected error: {exc}")
+        else:
+            self.response_ready.emit(answer)
 
 
 # ---------------------------------------------------------------------------
@@ -549,14 +848,18 @@ class _ChatRequest(QThread):
 # ---------------------------------------------------------------------------
 
 class AIChatPage(QWidget):
-    assistant_said = Signal(str)
+    """AI Coach chat. Sends turns through ai_chat.AIChatClient (Ollama by default),
+    adds the latest calibration as context, and takes one spoken phrase as input."""
+
+    assistant_said = Signal(str)  # emitted with each AI response (Coach Panel, TTS)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._settings = _settings()
         self._thread = None
         self._voice_thread = None
-        self.tts = _TtsService()
+        self._messages: list[dict[str, str]] = []
+        self._calibration_context = ""
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(28, 24, 28, 24)
@@ -588,48 +891,69 @@ class AIChatPage(QWidget):
 
         self.send_btn.clicked.connect(self._send)
         self.input.returnPressed.connect(self._send)
-        self.mic_btn.toggled.connect(self._toggle_voice)
+        self.mic_btn.toggled.connect(self._start_voice)
+
+    def set_calibration_context(self, summary: dict, recommendation: dict) -> None:
+        """Give the coach the latest calibration so answers can refer to it."""
+        self._calibration_context = curve_context(summary, recommendation)
+
+    def shutdown(self) -> None:
+        for thread in (self._thread, self._voice_thread):
+            if thread is not None and thread.isRunning():
+                thread.wait(2000)
 
     def _append(self, who, text):
         self.transcript.append(f"<b>{who}:</b> {text}")
 
+    def _chat_settings(self) -> ChatSettings:
+        s = self._settings
+        return ChatSettings(
+            provider=str(s.value("ai/provider", "ollama")),
+            base_url=str(s.value("ai/base_url", "http://127.0.0.1:11434")),
+            model=str(s.value("ai/model", "qwen3:1.7b")),
+            temperature=float(s.value("ai/temperature", 0.35)),
+        )
+
     def _send(self):
         text = self.input.text().strip()
-        if not text:
+        if not text or (self._thread is not None and self._thread.isRunning()):
             return
         self._append("You", text)
         self.input.clear()
-        s = self._settings
-        self._thread = _ChatRequest(
-            provider=s.value("ai/provider", "ollama"),
-            base_url=s.value("ai/base_url", "http://localhost:11434"),
-            model=s.value("ai/model", "llama3"),
-            temperature=float(s.value("ai/temperature", 0.7)),
-            prompt=text,
-        )
-        self._thread.finished.connect(self._on_reply)
+        self._messages.append({"role": "user", "content": text})
+        self._thread = _ChatRequest(self._chat_settings(), list(self._messages), self._calibration_context, self)
+        self._thread.response_ready.connect(self._on_reply)
+        self._thread.request_failed.connect(self._on_failed)
+        self.send_btn.setEnabled(False)
+        self._thread.finished.connect(lambda: self.send_btn.setEnabled(True))
         self._thread.start()
 
-    def _on_reply(self, ok, text):
-        self._append("Coach", text if ok else f"Error: {text}")
-        if ok:
-            self.assistant_said.emit(text)
-            self.tts.speak(text)
+    def _on_reply(self, answer: str):
+        self._messages.append({"role": "assistant", "content": answer})
+        self._append("Coach", answer)
+        self.assistant_said.emit(answer)
 
-    def _toggle_voice(self, checked):
-        if checked:
-            path = self._settings.value("voice/vosk_model_path", "")
-            self._voice_thread = _VoiceListenThread(path)
-            self._voice_thread.heard.connect(self._on_heard)
-            self._voice_thread.finished.connect(lambda: self.mic_btn.setChecked(False))
-            self._voice_thread.start()
-        elif self._voice_thread:
-            self._voice_thread.stop()
+    def _on_failed(self, message: str):
+        if self._messages and self._messages[-1]["role"] == "user":
+            self._messages.pop()  # keep the history valid for the next attempt
+        self._append("Coach", f"Error: {message}")
 
-    def _on_heard(self, text):
+    def _start_voice(self, checked: bool):
+        if not checked or (self._voice_thread is not None and self._voice_thread.isRunning()):
+            return
+        self._voice_thread = _VoiceListenThread(self)
+        self._voice_thread.recognized.connect(self._on_voice_text)
+        self._voice_thread.failed.connect(self._on_voice_failed)
+        self._voice_thread.finished.connect(lambda: self.mic_btn.setChecked(False))
+        self._voice_thread.start()
+
+    def _on_voice_text(self, text: str):
         if text:
             self.input.setText(text)
             self._send()
+
+    def _on_voice_failed(self, message: str):
+        self._append("Voice", message)
 
 
 # ---------------------------------------------------------------------------
@@ -717,13 +1041,13 @@ class SettingsPage(QWidget):
         form.addWidget(self.provider, 0, 1)
 
         form.addWidget(_label("Base URL", "formLabel"), 1, 0)
-        self.base_url = QLineEdit(self.s.value("ai/base_url", "http://localhost:11434"))
+        self.base_url = QLineEdit(self.s.value("ai/base_url", "http://127.0.0.1:11434"))
         self.base_url.editingFinished.connect(self._on_ai_changed)
         form.addWidget(self.base_url, 1, 1)
 
         form.addWidget(_label("Model", "formLabel"), 2, 0)
         model_row = QHBoxLayout()
-        self.model = QLineEdit(self.s.value("ai/model", "llama3"))
+        self.model = QLineEdit(self.s.value("ai/model", "qwen3:1.7b"))
         self.model.editingFinished.connect(self._on_ai_changed)
         self.pull_btn = QToolButton()
         self.pull_btn.setIcon(icon("download"))
@@ -736,7 +1060,7 @@ class SettingsPage(QWidget):
         form.addWidget(_label("Temperature", "formLabel"), 3, 0)
         self.temperature = QSlider(Qt.Horizontal)
         self.temperature.setRange(0, 150)
-        self.temperature.setValue(int(float(self.s.value("ai/temperature", 0.7)) * 100))
+        self.temperature.setValue(int(float(self.s.value("ai/temperature", 0.35)) * 100))
         self.temperature.valueChanged.connect(self._on_ai_changed)
         form.addWidget(self.temperature, 3, 1)
 
@@ -770,9 +1094,17 @@ class SettingsPage(QWidget):
 
     def _check_status(self):
         self.status_label.setText("Checking…")
-        self._status_thread = _OllamaStatusCheck(self.base_url.text())
-        self._status_thread.finished.connect(self._on_status)
+        self._status_thread = _OllamaStatusCheck(self.base_url.text(), self.model.text())
+        self._status_thread.status_ready.connect(self._on_status_ready)
         self._status_thread.start()
+
+    def _on_status_ready(self, reachable, has_model):
+        if not reachable:
+            self._on_status(False, "Ollama is not reachable at this address.")
+        elif not has_model:
+            self._on_status(False, "Ollama is running, but this model is not installed. Use the download button to pull it.")
+        else:
+            self._on_status(True, "Connected. Model is installed.")
 
     def _on_status(self, ok, message):
         self.status_label.setText(message)
@@ -784,10 +1116,11 @@ class SettingsPage(QWidget):
         self.pull_progress.setVisible(True)
         self.pull_progress.setValue(0)
         self._pull_thread = _ModelPullThread(self.base_url.text(), self.model.text())
-        self._pull_thread.progress.connect(
-            lambda pct, msg: (self.pull_progress.setValue(pct), self.pull_progress.setFormat(msg))
+        self._pull_thread.progress.connect(lambda msg: self.pull_progress.setFormat(msg))
+        self._pull_thread.finished_ok.connect(
+            lambda: self._on_pull_finished(True, f"Model {self.model.text()} is installed.")
         )
-        self._pull_thread.finished.connect(self._on_pull_finished)
+        self._pull_thread.failed.connect(lambda msg: self._on_pull_finished(False, msg))
         self._pull_thread.start()
 
     def _on_pull_finished(self, ok, message):
@@ -810,8 +1143,8 @@ class SettingsPage(QWidget):
 
         form.addWidget(_label("Theme", "formLabel"), 1, 0)
         self.theme = QComboBox()
-        self.theme.addItems(["dark", "light"])
-        self.theme.setCurrentText(self.s.value("ui/theme", "dark"))
+        self.theme.addItems(["system", "dark", "light"])
+        self.theme.setCurrentText(self.s.value("ui/theme", "system"))
         self.theme.currentTextChanged.connect(self._on_ui_changed)
         form.addWidget(self.theme, 1, 1)
 
@@ -821,7 +1154,7 @@ class SettingsPage(QWidget):
         form.addWidget(self.animations, 2, 0, 1, 2)
 
         self.coach_panel = QCheckBox("Show floating coach panel")
-        self.coach_panel.setChecked(self.s.value("ui/coach_panel", True, type=bool))
+        self.coach_panel.setChecked(self.s.value("ui/coach_panel", False, type=bool))
         self.coach_panel.toggled.connect(self._on_ui_changed)
         form.addWidget(self.coach_panel, 3, 0, 1, 2)
 
@@ -845,13 +1178,13 @@ class SettingsPage(QWidget):
 
         wake_row = QHBoxLayout()
         wake_row.addWidget(_label("Wake word", "formLabel"))
-        self.wake_word = QLineEdit(self.s.value("ui/wake_word", "hey vantage"))
+        self.wake_word = QLineEdit(self.s.value("ui/wake_word", "coach"))
         self.wake_word.editingFinished.connect(self._on_voice_changed)
         wake_row.addWidget(self.wake_word, 1)
         lay.addLayout(wake_row)
 
         self.tts_enabled = QCheckBox("Speak responses aloud")
-        self.tts_enabled.setChecked(self.s.value("ui/tts_enabled", True, type=bool))
+        self.tts_enabled.setChecked(self.s.value("ui/tts_enabled", False, type=bool))
         self.tts_enabled.toggled.connect(self._on_voice_changed)
         lay.addWidget(self.tts_enabled)
 
@@ -1033,14 +1366,15 @@ class DashboardPage(QWidget):
         if self.cards_area is not None:
             self.cards_container_layout.removeWidget(self.cards_area)
             self.cards_area.deleteLater()
-        self.cards_area = ResponsiveCards(spacing=16)
+        # ResponsiveCards takes its cards up front, so build the visible tiles first.
         lookup = {t[0]: t for t in self.TILES}
+        tiles = []
         for key in self._order:
             if not self._enabled.get(key, True):
                 continue
             kind, title, subtitle = lookup[key]
-            tile = self._build_tile(kind, title, subtitle)
-            self.cards_area.add_widget(tile)
+            tiles.append(self._build_tile(kind, title, subtitle))
+        self.cards_area = ResponsiveCards(tiles, spacing=16)
         self.cards_container_layout.addWidget(self.cards_area)
 
     def _build_tile(self, key, title, subtitle):
@@ -1198,12 +1532,16 @@ class CrosshairPreview(QWidget):
 
 
 class CrosshairPage(QWidget):
+    """Crosshair designer. Reads and writes the original CrosshairConfig schema under
+    the "crosshair/config" key, so designs saved by the original app load here."""
+
     edited = Signal(dict)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.s = _settings()
-        self.config = self._load_config()
+        self._model = self._load_model()
+        self.config = self._ui_config(self._model)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(28, 24, 28, 24)
@@ -1221,21 +1559,21 @@ class CrosshairPage(QWidget):
 
         form.addWidget(_label("Thickness", "formLabel"), 0, 0)
         self.thickness = QSlider(Qt.Horizontal)
-        self.thickness.setRange(1, 10)
+        self.thickness.setRange(1, 12)
         self.thickness.setValue(int(self.config["thickness"]))
         self.thickness.valueChanged.connect(self._on_change)
         form.addWidget(self.thickness, 0, 1)
 
         form.addWidget(_label("Length", "formLabel"), 1, 0)
         self.length = QSlider(Qt.Horizontal)
-        self.length.setRange(2, 30)
+        self.length.setRange(0, 64)
         self.length.setValue(int(self.config["length"]))
         self.length.valueChanged.connect(self._on_change)
         form.addWidget(self.length, 1, 1)
 
         form.addWidget(_label("Gap", "formLabel"), 2, 0)
         self.gap = QSlider(Qt.Horizontal)
-        self.gap.setRange(0, 20)
+        self.gap.setRange(0, 40)
         self.gap.setValue(int(self.config["gap"]))
         self.gap.valueChanged.connect(self._on_change)
         form.addWidget(self.gap, 2, 1)
@@ -1274,47 +1612,75 @@ class CrosshairPage(QWidget):
 
         self.preview.set_config(self.config)
 
-    def _load_config(self):
+    # --- model <-> UI ---------------------------------------------------
+    def _load_model(self) -> CrosshairConfig:
         raw = self.s.value("crosshair/config", "")
         if raw:
             try:
-                return json.loads(raw)
-            except Exception:
+                return CrosshairConfig.from_dict(json.loads(raw)).normalized()
+            except (ValueError, TypeError):
                 pass
-        return {"color": "#d98f3b", "thickness": 2.0, "length": 10.0, "gap": 4.0, "outline": True, "dot": False}
+        return CrosshairConfig().normalized()
 
+    @staticmethod
+    def _ui_config(model: CrosshairConfig) -> dict:
+        return {
+            "color": model.color,
+            "thickness": model.thickness,
+            "length": model.size,
+            "gap": model.gap,
+            "outline": model.outline,
+            "dot": model.dot_size > 0,
+        }
+
+    def _model_from_ui(self) -> CrosshairConfig:
+        data = self._model.to_dict()
+        data["thickness"] = int(self.config["thickness"])
+        data["size"] = int(self.config["length"])
+        data["gap"] = int(self.config["gap"])
+        data["outline"] = bool(self.config["outline"])
+        data["dot_size"] = max(self._model.dot_size, 2) if self.config["dot"] else 0
+        return CrosshairConfig.from_dict(data).normalized()
+
+    def _save(self):
+        self.s.setValue("crosshair/config", json.dumps(self._model.to_dict()))
+
+    # --- events -----------------------------------------------------------
     def _on_change(self, *_args):
         self.config["thickness"] = self.thickness.value()
         self.config["length"] = self.length.value()
         self.config["gap"] = self.gap.value()
         self.config["outline"] = self.outline.isChecked()
         self.config["dot"] = self.dot.isChecked()
+        self._model = self._model_from_ui()
         self.preview.set_config(self.config)
-        self.s.setValue("crosshair/config", json.dumps(self.config))
+        self._save()
         self.edited.emit(self.config)
 
     def _export(self):
         path, _ = QFileDialog.getSaveFileName(self, "Export crosshair", "crosshair.json", "JSON (*.json)")
         if path:
-            Path(path).write_text(json.dumps(self.config, indent=2))
+            Path(path).write_text(json.dumps(self._model.to_dict(), indent=2))
 
     def _import(self):
         path, _ = QFileDialog.getOpenFileName(self, "Import crosshair", "", "JSON (*.json)")
         if path:
             try:
-                self.config = json.loads(Path(path).read_text())
-                self._sync_controls()
-            except Exception as exc:
+                self._model = CrosshairConfig.from_dict(json.loads(Path(path).read_text())).normalized()
+            except (OSError, ValueError, TypeError) as exc:
                 QMessageBox.warning(self, "Vantage", f"Could not import crosshair: {exc}")
+                return
+            self.config = self._ui_config(self._model)
+            self._sync_controls()
 
     def _sync_controls(self):
-        self.thickness.setValue(int(self.config.get("thickness", 2)))
-        self.length.setValue(int(self.config.get("length", 10)))
-        self.gap.setValue(int(self.config.get("gap", 4)))
-        self.outline.setChecked(self.config.get("outline", True))
-        self.dot.setChecked(self.config.get("dot", False))
+        self.thickness.setValue(int(self.config["thickness"]))
+        self.length.setValue(int(self.config["length"]))
+        self.gap.setValue(int(self.config["gap"]))
+        self.outline.setChecked(bool(self.config["outline"]))
+        self.dot.setChecked(bool(self.config["dot"]))
         self.preview.set_config(self.config)
-        self.s.setValue("crosshair/config", json.dumps(self.config))
+        self._save()
         self.edited.emit(self.config)
 
 
@@ -1530,8 +1896,9 @@ class TrainingPage(QWidget):
 # ---------------------------------------------------------------------------
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, backend: CoreBackend | None = None):
         super().__init__()
+        self._backend = backend if backend is not None else CoreBackend()
         self.setWindowTitle("Vantage")
         self.resize(1360, 860)
         self.s = _settings()
@@ -1539,6 +1906,7 @@ class MainWindow(QMainWindow):
         self._collapsed = False
         self._nav_buttons = {}
         self._voice_service = None
+        self._tts_service = None
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -1562,11 +1930,12 @@ class MainWindow(QMainWindow):
 
         self.coach_panel = CoachPanel(self)
         self.coach_panel.closed.connect(self._on_coach_closed)
-        self.coach_panel.setVisible(self.s.value("ui/coach_panel", True, type=bool))
+        self.coach_panel.setVisible(self.s.value("ui/coach_panel", False, type=bool))
         self._position_coach_panel()
 
         self._wire_signals()
         self._apply_theme()
+        self._sync_tts()
         self._apply_voice_commands()
         self._select_page("dashboard")
 
@@ -1633,10 +2002,10 @@ class MainWindow(QMainWindow):
     def _build_pages(self):
         self.dashboard_page = DashboardPage()
         self.guide_page = GuidePage()
-        self.capture_page = CapturePage()
-        self.calibration_page = CalibrationPage()
+        self.capture_page = CapturePage(self._backend)
+        self.calibration_page = CalibrationPage(self._backend)
         self.training_page = TrainingPage()
-        self.recommendation_page = RecommendationPage()
+        self.recommendation_page = RecommendationPage(self._backend)
         self.crosshair_page = CrosshairPage()
         self.chat_page = AIChatPage()
         self.privacy_page = PrivacyPage()
@@ -1658,9 +2027,11 @@ class MainWindow(QMainWindow):
             self.stack.addWidget(page)
 
     def _wire_signals(self):
+        self.calibration_page.recommendation_ready.connect(self._on_calibration_result)
         self.calibration_page.profile_changed.connect(self._on_profile_changed)
         self.recommendation_page.recommendation_ready.connect(self._on_recommendation)
         self.chat_page.assistant_said.connect(self._on_assistant_said)
+        self.chat_page.assistant_said.connect(self._speak_response)
         self.settings_page.settings_changed.connect(self._on_settings_changed)
         self.training_page.session_recorded.connect(self._on_session_recorded)
         self.crosshair_page.edited.connect(self._on_crosshair_edited)
@@ -1697,39 +2068,73 @@ class MainWindow(QMainWindow):
         super().resizeEvent(event)
         self._position_coach_panel()
 
+    @staticmethod
+    def _resolve_theme(theme: str) -> str:
+        """Map 'system' to the OS dark/light scheme; 'dark' and 'light' pass through."""
+        if theme in ("dark", "light"):
+            return theme
+        app = QApplication.instance()
+        scheme = app.styleHints().colorScheme() if app is not None else None
+        return "light" if scheme == Qt.ColorScheme.Light else "dark"
+
     def _apply_theme(self):
         mode = self.s.value("ui/mode", "luxurious")
-        theme = self.s.value("ui/theme", "dark")
+        theme = self._resolve_theme(str(self.s.value("ui/theme", "system")))
         self.setStyleSheet(build_style(mode, theme))
         animations = self.s.value("ui/animations", True, type=bool)
         self.dashboard_page.set_animated(animations)
 
+    def _sync_tts(self):
+        enabled = self.s.value("ui/tts_enabled", False, type=bool)
+        if enabled and self._tts_service is None:
+            self._tts_service = _TtsService(self)
+            self._tts_service.failed.connect(self._on_tts_failed)
+            self._tts_service.start()
+        elif not enabled and self._tts_service is not None:
+            self._tts_service.stop()
+            self._tts_service.wait(3000)
+            self._tts_service = None
+
+    def _speak_response(self, text: str):
+        if self._tts_service is not None:
+            self._tts_service.enqueue(text)
+
+    def _on_tts_failed(self, message: str):
+        self.chat_page._append("Text-to-speech", message)
+
     def _apply_voice_commands(self):
         enabled = self.s.value("ui/voice_commands", False, type=bool)
         if enabled and self._voice_service is None:
-            wake_word = self.s.value("ui/wake_word", "hey vantage")
-            self._voice_service = _VoiceCommandService(wake_word)
-            self._voice_service.assistant_said.connect(self._on_assistant_said)
+            self._voice_service = _VoiceCommandService(self)
+            self._voice_service.recognized.connect(self._on_voice_command)
+            self._voice_service.failed.connect(self._on_voice_failed)
             self._voice_service.start()
         elif not enabled and self._voice_service is not None:
             self._voice_service.stop()
-            self._voice_service.wait(500)
+            self._voice_service.wait(1500)
             self._voice_service = None
 
     # ------------------------------------------------------------------
+    def _on_calibration_result(self, summary: dict, recommendation: dict):
+        self.recommendation_page.update_result(summary, recommendation)
+        self.chat_page.set_calibration_context(summary, recommendation)
+        self._select_page("recommendation")
+
     def _on_profile_changed(self, profile):
         self.coach_panel.say("Calibration profile updated.")
 
     def _on_recommendation(self, result):
-        self.coach_panel.say(f"New recommendation: ×{result['sensitivity']} at {result['dpi']} DPI.")
+        mult = float(result.get("sensitivity_multiplier", 1.0))
+        confidence = float(result.get("confidence", 0.0))
+        self.coach_panel.say(f"New recommendation: ×{mult:.2f} (confidence {confidence:.0%}).")
 
     def _on_assistant_said(self, text):
         self.coach_panel.say(text)
 
     def _on_settings_changed(self):
         self._apply_theme()
-        self.coach_panel.setVisible(self.s.value("ui/coach_panel", True, type=bool))
-        self.chat_page.tts.enabled = self.s.value("ui/tts_enabled", True, type=bool)
+        self.coach_panel.setVisible(self.s.value("ui/coach_panel", False, type=bool))
+        self._sync_tts()
         self._apply_voice_commands()
 
     def _on_session_recorded(self, result):
@@ -1738,25 +2143,59 @@ class MainWindow(QMainWindow):
     def _on_crosshair_edited(self, config):
         pass
 
+    def _on_voice_failed(self, message: str):
+        self.coach_panel.say(f"Voice commands unavailable: {message}")
+
+    def _on_voice_command(self, text: str) -> None:
+        from fps_coach.voice_commands import parse
+
+        wake = self.s.value("ui/wake_word", "coach")
+        command = parse(text, wake_word=str(wake))
+        if command is None:
+            return
+        if command.kind == "navigate":
+            self._select_page(command.value)
+        elif command.kind == "calibrate":
+            self._select_page("calibration")
+            if command.value == "start":
+                self.calibration_page.canvas.start_session(12)
+            else:
+                self.calibration_page.canvas.cancel_session()
+        elif command.kind == "preset":
+            self._select_page("chat")
+            self.coach_panel.say("Quick actions are not available in this build.")
+        elif command.kind == "panel":
+            show = command.value == "show"
+            self.s.setValue("ui/coach_panel", show)
+            self.coach_panel.setVisible(show)
+        elif command.kind == "dictate":
+            self._select_page("chat")
+            self.chat_page.input.setText(command.value)
+            self.chat_page._send()
+
     def _on_coach_closed(self):
         self.s.setValue("ui/coach_panel", False)
 
     def closeEvent(self, event):
         if self._voice_service is not None:
             self._voice_service.stop()
-            self._voice_service.wait(500)
+            self._voice_service.wait(1500)
+        if self._tts_service is not None:
+            self._tts_service.stop()
+            self._tts_service.wait(3000)
+        self.chat_page.shutdown()
+        self._backend.close()
         self.s.sync()
         super().closeEvent(event)
 
 
 def main():
-    app = QApplication(sys.argv)
-    app.setApplicationName(APP_NAME)
-    app.setOrganizationName(ORG_NAME)
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec())
+    from fps_coach.app import main as app_main
+
+    sys.exit(app_main())
 
 
 if __name__ == "__main__":
     main()
+
+
