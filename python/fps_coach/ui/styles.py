@@ -109,6 +109,8 @@ QToolTip {
 QFrame#topbar { background: $surface; border-bottom: 1px solid $line; }
 QLabel#brand { font-size: 12px; font-weight: 700; letter-spacing: 2px; color: $text; }
 QScrollArea#navScroll { background: transparent; border: none; }
+QScrollArea#navScroll QScrollBar:horizontal { background: transparent; height: 3px; margin: 0; }
+QScrollArea#navScroll QScrollBar::handle:horizontal { background: $line2; border-radius: 1px; min-width: 40px; }
 QPushButton#navTab {
     background: transparent; color: $text2; border: none;
     border-bottom: 2px solid transparent; border-radius: 0;

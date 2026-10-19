@@ -146,7 +146,8 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     Remote origin/main = e9e69a2   (the visual REDESIGN; based on 04e6b0f)
     Working branch     = fix/redesign-backend-wiring (from e9e69a2), NOT pushed.
     REV45 STATUS: full visual redesign committed on the working branch (see
-    changelog rev45). Still NOT pushed. Push needs GitHub credentials that this
+    changelog rev45), including drawn training figures and the top-bar and
+    capture fixes. Still NOT pushed. Push needs GitHub credentials that this
     sandbox does not have. Exact command for a machine with access:
         git push origin fix/redesign-backend-wiring:main
                          Commits on it (newest first): f6af4b9 rev43, 9b2c551 rev42,
@@ -1161,8 +1162,10 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
               - Recommendation: summary (left) and suggested curve (right) are a fixed
                 two-column layout. Nothing stacks on resize or minimize (ResponsiveRow
                 is no longer used here). The chart is read-only.
-              - Training: enemy figures are the bundled transparent sprites (robot and
-                drone). The hit ring is replaced by corner brackets. A hit plays a short
+              - Training: enemy figures are drawn in code (ui/figures.py: a sentry robot
+                and a drone, QPainter paths on transparent pixmaps; the bundled PNG
+                sprites are no longer loaded, and enemy_sprites.py is kept for its tests).
+                The hit ring is replaced by corner brackets. A hit plays a short
                 kill effect (flash, fade, shards, about 460 ms). Performance visual mode
                 turns kill effects off. A HUD shows hits, misses, and accuracy.
                 Drill / Analytics switch is a segmented control on the page.
@@ -1182,11 +1185,20 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
               - Tests: tests/test_ui_redesign.py adds 7 offscreen checks (icons, light
                 palette, 7+3 navigation, all pages switch, side-by-side recommendation,
                 recommendation and dashboard fill, privacy clear).
-              NOT REVIEWED VISUALLY: capture, calibration, AI coach, settings, privacy,
-              crosshair, guide. They were built and switched to in the offscreen smoke
-              test, but I did not inspect their screenshots. Dashboard, recommendation
-              (dark and light), and training were inspected.
-              VERIFICATION (rev45, sandbox): pytest 99/99; ruff --select F clean on
+              Follow-up fixes in the same rev45 work (sandbox screenshots):
+              - Top bar: the seven tabs overflowed at 1360 px and the AI Coach tab was
+                clipped by the Preview mode pill. Tab padding reduced (72 -> 56 px); the
+                horizontal scrollbar under the tabs is now a 3 px line.
+              - Capture: the GPU checkbox label was cut off. Now "GPU capture (D3D11)",
+                with the full wording in the tooltip.
+              - Added tests/test_figures.py: the two figures have transparent corners,
+                and TrainingCanvas uses them.
+              VISUAL REVIEW: all pages were inspected in offscreen screenshots (dashboard,
+              recommendation dark and light, training idle, capture, calibration, AI
+              coach, settings, crosshair, privacy, guide). Not inspected: the training
+              kill effect at full size (only a small capture was checked) and the
+              light theme on pages other than dashboard and recommendation.
+              VERIFICATION (rev45, sandbox): pytest 101/101; ruff --select F clean on
               python and tests; compileall ok; offscreen UI smoke 32/32; wiring script
               32/32; app quit run rc 0, no traceback.
               NOT verified: real display, Windows fonts (Segoe UI Variable), real

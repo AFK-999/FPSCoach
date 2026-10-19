@@ -391,7 +391,8 @@ class CapturePage(QWidget):
         form.addWidget(self.custom_widget, 3, 1)
         self._on_preset_changed(self.preset.currentIndex())
 
-        self.hwaccel = QCheckBox("Use the GPU (D3D11) for capture and scaling")
+        self.hwaccel = QCheckBox("GPU capture (D3D11)")
+        self.hwaccel.setToolTip("Use the GPU (D3D11) for capture and scaling")
         self.hwaccel.setChecked(s.value("capture/hwaccel", True, type=bool))
         self.hwaccel.toggled.connect(lambda v: s.setValue("capture/hwaccel", bool(v)))
         form.addWidget(self.hwaccel, 4, 1)

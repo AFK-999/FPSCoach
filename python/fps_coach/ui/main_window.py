@@ -205,7 +205,7 @@ class MainWindow(QMainWindow):
             # Reserve room for the bold (checked) weight so the label never clips.
             bold = btn.font()
             bold.setWeight(bold.Weight.DemiBold)
-            btn.setMinimumWidth(QFontMetrics(bold).horizontalAdvance(label) + 72)
+            btn.setMinimumWidth(QFontMetrics(bold).horizontalAdvance(label) + 56)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setIconSize(QSize(18, 18))
             btn.clicked.connect(lambda _c=False, k=key: self._select_page(k))

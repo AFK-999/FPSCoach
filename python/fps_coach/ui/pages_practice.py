@@ -94,14 +94,10 @@ class TrainingCanvas(QWidget):
 
     @staticmethod
     def _load_sprites() -> list[QPixmap]:
-        from fps_coach.enemy_sprites import sprite_files
+        """Targets are drawn in code (ui/figures.py), transparent around the figure."""
+        from .figures import target_pixmaps
 
-        pixmaps: list[QPixmap] = []
-        for path in sprite_files():
-            pix = QPixmap(str(path))
-            if not pix.isNull():
-                pixmaps.append(pix)
-        return pixmaps
+        return [pix for pix in target_pixmaps() if not pix.isNull()]
 
     def set_animations(self, enabled: bool) -> None:
         self._anim_enabled = bool(enabled)
