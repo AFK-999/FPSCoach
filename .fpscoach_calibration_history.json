@@ -1,0 +1,42 @@
+[
+  {
+    "timestamp": "2026-10-19T08:53:52",
+    "score": 71.9,
+    "trial_count": 12,
+    "path_efficiency": 0.7109097419612976,
+    "overshoot_score": 0.10617041461061727,
+    "correction_score": 0.3055555555555556,
+    "title": "Add control through the middle of the curve",
+    "sensitivity_multiplier": 0.9785139341761145
+  },
+  {
+    "timestamp": "2026-10-19T08:54:19",
+    "score": 61.7,
+    "trial_count": 12,
+    "path_efficiency": 0.611893837355243,
+    "overshoot_score": 0.19414043210522167,
+    "correction_score": 0.47222222222222227,
+    "title": "Add control through the middle of the curve",
+    "sensitivity_multiplier": 0.973631567053675
+  },
+  {
+    "timestamp": "2026-10-19T09:04:18",
+    "score": 60.6,
+    "trial_count": 12,
+    "path_efficiency": 0.6152473704518455,
+    "overshoot_score": 0.19010504119276594,
+    "correction_score": 0.5694444444444445,
+    "title": "Add control through the middle of the curve",
+    "sensitivity_multiplier": 0.9660017149879717
+  },
+  {
+    "timestamp": "2026-10-19T09:04:36",
+    "score": 69.5,
+    "trial_count": 12,
+    "path_efficiency": 0.7331226359988804,
+    "overshoot_score": 0.16939518010205115,
+    "correction_score": 0.576388888888889,
+    "title": "Add control through the middle of the curve",
+    "sensitivity_multiplier": 0.9571322831106007
+  }
+]

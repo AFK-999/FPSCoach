@@ -5,8 +5,9 @@
 ; Compiled by scripts\build.ps1 -Flavor full, which passes:
 ;   /DAppVersion=<x.y.z>  /DProjectRoot=<path to repo>
 ; Expects the frozen app at <ProjectRoot>\dist\FPSCoach and staged AI assets at
-; <ProjectRoot>\build\ai_assets (produced by fetch_ai_assets.ps1). The spec also
-; folds those assets into the frozen app under {app}\ollama and {app}\models.
+; <ProjectRoot>\build\ai_assets (produced by fetch_ai_assets.ps1). This installer
+; is the SINGLE place the AI assets are copied in (the PyInstaller spec no longer
+; bundles them), so the ~1 GB of model weights is processed exactly once.
 ;
 ; NOTE: Confirm redistribution licensing for Ollama + Qwen before shipping.
 ; ============================================================================

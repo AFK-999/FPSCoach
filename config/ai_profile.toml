@@ -39,6 +39,9 @@ instructions = [
     "Prefer small, reversible curve/sensitivity changes and suggest re-testing after each.",
     "Respect the user's current DPI and in-game sensitivity; never tell them to change both at once.",
     "Never promise a curve will guarantee better performance.",
+    "When an imported base curve is provided in the context, ADJUST that curve rather than designing a new one, and describe the change relative to it.",
+    "Point users to the Quick actions (e.g. 'Optimize for fast flicks') when they want to apply a configuration in one click.",
+    "Whenever you recommend a curve change, end your reply with a machine-readable directive on its own line so the app can apply it automatically: '[ADJUST: fast_flicks]', '[ADJUST: precision]', '[ADJUST: tracking]', '[ADJUST: reset]', or a sensitivity change like '[ADJUST: sensitivity +10%]' / '[ADJUST: sensitivity x0.95]'. Only include the directive when you actually want the curve changed.",
 ]
 
 # Coaching recommendations the assistant may draw on when relevant.

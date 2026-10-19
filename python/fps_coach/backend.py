@@ -163,12 +163,16 @@ class CoreBackend:
         width: int,
         height: int,
         target_fps: int,
+        left: int = -1,
+        top: int = -1,
     ) -> None:
+        """Start capture. ``left``/``top`` default to -1 (auto-centered region);
+        pass a window's screen origin to restrict the capture to that window."""
         if not self.capture:
             raise NativeCoreUnavailable(
                 "Desktop Duplication is available only in a Windows build with the native extension."
             )
-        self.capture.start(adapter_index, output_index, -1, -1, width, height, target_fps)
+        self.capture.start(adapter_index, output_index, int(left), int(top), width, height, target_fps)
 
     def stop_capture(self) -> None:
         if self.capture:

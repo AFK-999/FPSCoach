@@ -13,8 +13,9 @@ with a different `-Flavor` argument.
 - Python 3.11 (`py -3.11`)
 - Visual Studio 2022 C++ Build Tools (for the native `fpscoach_native` module)
 - [Inno Setup 6](https://jrsoftware.org/isinfo.php) with `iscc` on `PATH`
-- For the **full** build: either the Ollama Windows runtime + Qwen weights
-  pre-downloaded, or `ollama` on `PATH` so the script can `ollama pull qwen3:1.7b`.
+- For the **full** build: just an internet connection. `scripts\fetch_ai_assets.ps1`
+  downloads the Ollama Windows runtime and pulls `qwen3:1.7b` automatically - no
+  pre-installed Ollama and no environment variables required.
 
 ## Build
 
@@ -35,13 +36,21 @@ powershell -ExecutionPolicy Bypass -File scripts\build.ps1 -Flavor full
 ### What the script does
 1. Creates/updates `.venv` and installs the project + PyInstaller.
 2. Stamps `python\fps_coach\build_info.py` with the flavor.
-3. **full only:** `scripts\fetch_ai_assets.ps1` stages the Ollama runtime and
-   Qwen 3 1.7B weights into `build\ai_assets\`.
-4. Freezes the app with PyInstaller (`installer\fpscoach.spec`).
-5. Compiles the matching Inno Setup script in `installer\`.
+3. **full only:** `scripts\fetch_ai_assets.ps1` automatically downloads the
+   Ollama Windows runtime and pulls `qwen3:1.7b` into an isolated store under
+   `build\ai_assets\` (only that one model is bundled, nothing else).
+4. **full only:** the build **aborts with a fatal error** if the runtime or the
+   model weights are missing/incomplete - it never silently ships a Lite-like
+   package.
+5. Freezes the app with PyInstaller (`installer\fpscoach.spec`). The AI assets
+   are **not** bundled here - the full Inno Setup script is the single place they
+   are copied in, so the ~1 GB of weights is processed exactly once.
+6. Compiles the matching Inno Setup script in `installer\`.
 
-### Staging AI assets without a network pull
-Set these before running `Build-Full.bat` to copy from local folders instead:
+### Optional: build fully offline
+The automatic download needs no setup. If you are offline, point these at
+pre-downloaded folders to skip the corresponding download (they are still
+verified before the build continues):
 
 ```
 set FPSCOACH_OLLAMA_SRC=C:\path\to\ollama-windows

@@ -5,7 +5,12 @@
 #   .venv\Scripts\python.exe -m PyInstaller --noconfirm --clean installer\fpscoach.spec
 #
 # The build flavor ("lite" / "full") is passed via the FPSCOACH_BUILD_FLAVOR env
-# var by scripts\build.ps1; it only affects bundled data, not the exe itself.
+# var by scripts\build.ps1; it only affects the stamped build_info, not this spec.
+#
+# IMPORTANT: the embedded AI assets (Ollama runtime + Qwen weights) are NOT
+# bundled here. They are copied into the install by the full Inno Setup script
+# (installer\fpscoach-full.iss) as the single source of truth. Bundling them in
+# both places would process ~1 GB of model blobs twice and bloat the build.
 
 import os
 from pathlib import Path
@@ -13,18 +18,11 @@ from pathlib import Path
 from PyInstaller.utils.hooks import collect_submodules
 
 ROOT = Path(os.getcwd())
-FLAVOR = os.environ.get("FPSCOACH_BUILD_FLAVOR", "lite")
 
-# Ship the AI pre-configuration and (for full builds) staged AI assets.
+# Ship only the AI pre-configuration with the frozen app.
 datas = [
     (str(ROOT / "config" / "ai_profile.toml"), "config"),
 ]
-if FLAVOR == "full":
-    assets = ROOT / "build" / "ai_assets"
-    if (assets / "ollama").exists():
-        datas.append((str(assets / "ollama"), "ollama"))
-    if (assets / "models").exists():
-        datas.append((str(assets / "models"), "models"))
 
 block_cipher = None
 

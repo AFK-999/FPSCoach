@@ -1,0 +1,634 @@
+================================================================================
+FPS COACH — CONTINUATION / HANDOFF DOCUMENT
+Copy-paste this whole file into a new agent chat to resume with zero context loss.
+Last updated: 2026-10-19 (rev 19)  (update after EVERY response)
+
+*** IMPORTANT (rev4): The REAL repo was provided and differs a lot from the
+*** earlier scaffold. Work on the REAL repo at /home/user/workspace/FPSCoach
+*** (cloned from https://github.com/AFK-999/FPSCoach.git). The scaffold under
+*** /home/user/workspace/{src,config,installer,scripts} is NOT the project.
+*** Real layout: python/fps_coach/ (ai_chat.py uses STDLIB urllib, not requests),
+*** native/ C++ core + CMakeLists.txt, batch files at repo root, scripts/*.ps1.
+*** There is NO config/ai_profile.toml, NO installer/ folder, NO build.bat yet.
+================================================================================
+
+--------------------------------------------------------------------------------
+0. HOW TO USE THIS FILE
+--------------------------------------------------------------------------------
+- This is the single source of truth for resuming work on FPS Coach.
+- If a chat runs out of tokens: paste this entire file into a fresh agent.
+- The assistant must UPDATE this file after every response (see CHANGELOG, §8).
+- "WHERE WE LEFT OFF" (§7) is the first thing a new agent should read.
+
+--------------------------------------------------------------------------------
+1. PROJECT OVERVIEW
+--------------------------------------------------------------------------------
+FPS Coach — a high-performance Windows desktop application for first-person
+shooter players.
+
+  - C++ core:  real-time screen capture + movement analysis (perf-critical path)
+  - Python UI: user-facing interface, workflows, settings, AI chat
+  - Coupling:  Python "editable install" (pip -e) linked to the project tree
+  - Tooling:   Windows batch (.bat) scripts for setup / launch / self-repair
+
+--------------------------------------------------------------------------------
+2. FEATURES ALREADY IMPLEMENTED (per prior context)
+--------------------------------------------------------------------------------
+  [x] Curve import/export in two formats: .ccurve and .cc4 (import + export)
+  [x] AI chat support:
+        - Local models via Ollama
+        - Online via any OpenAI-compatible API
+  [x] Path robustness:
+        - Fixed editable install referencing stale/old locations after a move
+        - Automated repair scripts to fix editable install when folder moves
+        - Batch files handle spaces in folder names + auto-repair editable install
+
+--------------------------------------------------------------------------------
+3. CURRENT TASK (what we are building now)
+--------------------------------------------------------------------------------
+Produce TWO distinct build packages, plus backend hardening and AI preconfig.
+
+  TASK A — Two build packages:
+    A1. "Lite" / foundation build:
+        - Ships WITHOUT any AI models or Ollama runtime.
+        - User installs Ollama themselves and downloads models themselves.
+        - App detects Ollama + models at runtime and guides the user if missing.
+    A2. "Full" build:
+        - Embeds the Ollama runtime AND Qwen 3 1.7B model weights in the installer.
+        - AI is fully functional out of the box, no manual setup.
+
+  TASK B — Environment self-repair (backend):
+        - On startup, backend checks the local environment.
+        - If the project folder was MOVED or RENAMED, auto-repair the install
+          (re-point the editable install / fix path references) before running.
+
+  TASK C — AI chat preconfiguration:
+        - A dedicated configuration section to purposefully import
+          instructions + recommendations into the AI chat interface.
+        - Goal: the assistant is pre-configured (system prompt / persona /
+          domain guidance) to effectively fulfill its FPS-coaching role.
+
+--------------------------------------------------------------------------------
+4. IMPLEMENTATION PLAN / SPEC (ready for whoever has the real files)
+--------------------------------------------------------------------------------
+
+4.A  BUILD PACKAGES
+  - Introduce a build flavor switch, e.g. an env var / CLI flag:
+        FPSCOACH_BUILD_FLAVOR = "lite" | "full"
+  - Shared build steps compile C++ core + package Python app; flavor only
+    changes which AI assets are bundled.
+  - LITE:
+        * Do NOT bundle Ollama or weights.
+        * Installer stays small.
+        * First-run wizard: detect Ollama (`ollama --version` / API ping on
+          http://localhost:11434), detect required model; if missing, show
+          instructions + a "Download model" helper (calls `ollama pull`).
+  - FULL:
+        * Bundle the Ollama runtime binary for Windows.
+        * Bundle Qwen 3 1.7B weights (model tag e.g. `qwen3:1.7b`).
+        * Installer copies runtime + weights into app data; on first run,
+          start/point to the bundled Ollama and preload the model.
+        * Verify licensing/redistribution terms for Ollama + Qwen weights
+          before shipping embedded (ACTION ITEM — confirm, see §9).
+  - Suggested artifacts:
+        dist/FPSCoach-Setup-lite-x64.exe
+        dist/FPSCoach-Setup-full-x64.exe
+  - Likely installer tooling: Inno Setup or NSIS (confirm what project uses).
+  - A single build script should take the flavor as a parameter, e.g.:
+        build.bat lite   |   build.bat full
+
+4.B  ENVIRONMENT SELF-REPAIR (backend)
+  - Add a startup check (Python, runs before UI loads) that:
+        1. Reads the recorded install path (saved at last successful run).
+        2. Compares to the current actual project path.
+        3. If different (moved/renamed) OR editable install points to a
+           non-existent path -> trigger repair:
+              - Re-run `pip install -e .` against the current path, OR
+              - Rewrite the *.egg-link / *.pth / finder entries to the new path.
+        4. Persist the new path for next time.
+  - Reuse/centralize logic already in the repair .bat scripts so batch and
+    Python share one canonical repair routine (avoid drift).
+  - Must handle spaces AND non-ASCII in paths (quote everything).
+
+4.C  AI CHAT PRECONFIG
+  - New config section (e.g. config/ai_profile.* or a settings page) that holds:
+        * system_prompt / persona (FPS coaching role, tone, constraints)
+        * curated instructions + recommendations ("knowledge" / guidance)
+        * default model, temperature, max tokens, backend (ollama/openai)
+  - Loaded and injected into every chat session automatically.
+  - Make it importable: allow loading an instructions file so the profile can
+    be versioned and shared. Validate on import.
+
+--------------------------------------------------------------------------------
+5. ARCHITECTURE REFERENCE
+--------------------------------------------------------------------------------
+  Core      | C++     | real-time capture, movement analysis
+  UI        | Python  | interface, workflows, settings, AI chat
+  Integrate | pip -e  | editable install links Python to the tree
+  Tooling   | .bat    | setup / launch / self-repair of editable install
+  AI backends: Ollama (local)  |  OpenAI-compatible API (online)
+  Full build embeds: Ollama runtime + Qwen 3 1.7B weights
+
+--------------------------------------------------------------------------------
+6. KNOWN SHARP EDGES
+--------------------------------------------------------------------------------
+  - Editable install breaks when the project folder is moved/renamed (mitigated
+    by repair scripts; root cause of past path bugs).
+  - Scripts must quote/handle spaces (and ideally Unicode) in paths.
+  - Windows-only assumptions in core + tooling.
+  - FULL build size + redistribution licensing for Ollama/Qwen (verify).
+
+--------------------------------------------------------------------------------
+7. WHERE WE LEFT OFF  (read me first)
+--------------------------------------------------------------------------------
+  CONTEXT: The workspace had NO pre-existing FPS Coach source. Rather than stay
+  blocked, we SCAFFOLDED a working project from scratch that implements the
+  requested features. These scaffold files are real and tested (Python verified
+  to import + build system messages; see rev2 log). They must be reconciled with
+  your real codebase if/when it is provided.
+
+  FILES CREATED (all under /home/user/workspace):
+    pyproject.toml                      - package + editable install config
+    src/fps_coach/__init__.py           - version + build flavor exposure
+    src/fps_coach/__main__.py           - entry point: self-repair THEN launch UI
+    src/fps_coach/env_repair.py         - TASK B: startup self-repair (moved/renamed)
+    src/fps_coach/ai/__init__.py
+    src/fps_coach/ai/profile.py         - TASK C: AI preconfig loader
+    src/fps_coach/ai/backend.py         - Ollama + OpenAI-compatible chat
+    config/ai_profile.toml              - TASK C: editable instructions/recs/persona
+    scripts/build.bat                   - TASK A: build.bat lite|full (flavor switch)
+    scripts/fetch_ai_assets.bat         - TASK A(full): stage Ollama + Qwen weights
+    scripts/setup_embedded_ai.bat       - TASK A(full): first-run embedded AI setup
+    scripts/repair_install.bat          - TASK B: batch wrapper over env_repair
+    scripts/launch.bat                  - repair then run
+    installer/fpscoach_lite.iss         - TASK A: Lite installer (no AI assets)
+    installer/fpscoach_full.iss         - TASK A: Full installer (embeds AI)
+    tests/test_scaffold.py              - smoke tests
+
+  HOW THE REQUESTED FEATURES MAP:
+    TASK A (two builds): scripts/build.bat takes `lite|full`, stamps
+      src/fps_coach/build_info.py, and compiles the matching .iss. Full pulls in
+      Ollama + qwen3:1.7b via fetch_ai_assets.bat into build/stage_full/.
+    TASK B (self-repair): env_repair.ensure_healthy() runs at startup
+      (__main__.py) and from launch.bat/repair_install.bat. Detects moved/renamed
+      folder via a marker file + checks the editable install target, then re-runs
+      `pip install -e .`. Quoted paths -> handles spaces.
+    TASK C (AI preconfig): config/ai_profile.toml holds persona + instructions +
+      recommendations; profile.build_system_messages() injects them as system
+      messages into every chat (backend.chat prepends them automatically).
+
+  VERIFIED: PYTHONPATH=src python imported profile + env_repair; system message
+  built (1298 chars); project_root detection OK; needs_repair()=False in dev.
+  (pytest not installed in this sandbox; tests written but not run here.)
+
+  IMMEDIATE NEXT STEPS:
+    1. If you have the REAL codebase, drop it in and reconcile with this scaffold
+       (or tell me to adapt the scaffold to your structure).
+    2. Provide/confirm the C++ core build (core\build.bat hook is stubbed).
+    3. Add the actual UI module at src/fps_coach/ui/app.py (run() entry).
+    4. Supply Ollama Windows runtime + Qwen 3 1.7B source for the Full build
+       (set FPSCOACH_OLLAMA_SRC / FPSCOACH_QWEN_SRC) and confirm licensing.
+    5. Install Inno Setup (iscc) on the build machine, or swap installer tool.
+
+--------------------------------------------------------------------------------
+8. CHANGELOG  (append one entry per response; newest at bottom)
+--------------------------------------------------------------------------------
+  2026-10-18  Created continuation doc. Captured current task (2 build packages
+              lite/full with embedded Ollama+Qwen3 1.7B, env self-repair, AI
+              preconfig). Flagged blocker: workspace empty, no source present.
+  2026-10-18 (rev2)  No real source was provided, so SCAFFOLDED a working project
+              implementing all three tasks: build.bat lite|full flavor switch +
+              Lite/Full Inno Setup installers (Full embeds Ollama+qwen3:1.7b);
+              env_repair.py startup self-repair for moved/renamed folders; AI
+              preconfig via config/ai_profile.toml + ai/profile.py + ai/backend.py.
+              Verified Python imports/build-system-messages in sandbox. Pending:
+              real codebase reconciliation, C++ core build, UI module, AI asset
+              sources + licensing, Inno Setup on build machine. See §7 for file map.
+  2026-10-18 (rev3)  BACKEND UPDATE (non-destructive) to src/fps_coach/ai/backend.py:
+              added auto-pull of a missing Ollama model. New: OllamaModelError,
+              ollama_pull_model() (streams /api/pull progress), ensure_ollama_model();
+              chat() now calls ensure_ollama_model() before an Ollama request and
+              accepts auto_pull + progress kwargs. Default on; disable via
+              FPSCOACH_AUTO_PULL=0 or chat(auto_pull=False). Verified with a stubbed
+              Ollama: missing model is pulled w/ progress events then chat succeeds;
+              auto_pull=False raises a friendly error. No other files touched.
+              NOTE (superseded by rev4): that change was on the SCAFFOLD, not the
+              real repo.
+  2026-10-18 (rev4)  Cloned REAL repo (AFK-999/FPSCoach) into ./FPSCoach. Implemented
+              auto-pull of a missing Ollama model in the REAL file
+              python/fps_coach/ai_chat.py (stdlib urllib style, matches codebase):
+                - ChatSettings gained auto_pull=True + pull_timeout_seconds=3600
+                - new helpers: _ollama_api_base, _get, _ollama_has_model,
+                  _pull_ollama_model (streams /api/pull NDJSON), ensure_ollama_model
+                - chat() now takes progress= and calls ensure_ollama_model() before
+                  the Ollama request; OpenAI path untouched.
+              Previously the app only TOLD users to run `ollama pull qwen3:1.7b`
+              (main_window.py:635). Verified end-to-end vs a simulated Ollama:
+              missing model -> pulled with progress events -> chat replies;
+              auto_pull=False -> friendly ChatProviderError. git: 1 file changed,
+              +102/-1. NOT pushed (no creds / awaiting user OK).
+  2026-10-18 (rev5)  Implemented ALL THREE original tasks in the REAL repo
+              (./FPSCoach), non-destructive, following its conventions. Commit
+              61b5a01 (local, NOT pushed). 19 files, +838/-1. 7/7 tests pass; ruff
+              clean on all changed/new files (pre-existing ruff warnings in
+              untouched files left alone).
+
+              TASK A - two build packages:
+                scripts/build.ps1 -Flavor lite|full  (+ Build-Lite.bat/Build-Full.bat)
+                installer/fpscoach.spec (PyInstaller) + launcher.py
+                installer/fpscoach-lite.iss, installer/fpscoach-full.iss (Inno Setup)
+                scripts/fetch_ai_assets.ps1 (stage Ollama + qwen3:1.7b for full)
+                scripts/setup_embedded_ai.ps1 (first-run embedded AI, full)
+                build.ps1 stamps python/fps_coach/build_info.py with the flavor.
+                docs/build-and-packaging.md explains it all.
+              TASK B - startup self-repair:
+                python/fps_coach/env_repair.py: ensure_environment() detects a
+                moved/renamed project (marker .fpscoach_env.json + package-location
+                check) and reruns `pip install -e . --no-deps`. Fast no-op normally,
+                never raises. Wired into app.main() before the UI loads. Mirrors the
+                existing Repair-FPSCoach-Path-and-Run.bat but automatic.
+              TASK C - AI chat pre-config:
+                config/ai_profile.toml (persona + instructions + recommendations +
+                defaults) loaded by python/fps_coach/ai_profile.py and injected by
+                ai_chat.py as an ADDITIONAL system message AFTER the built-in safety
+                prompt (SYSTEM_PROMPT stays first and non-overridable). Falls back
+                cleanly if the file is missing/invalid.
+              Also: ai_chat.py auto-pull from rev4 is present in the real repo now;
+                pyproject.toml gained tomli (py<3.11) + [build] extra (pyinstaller);
+                .gitignore ignores dist/ and the runtime marker.
+
+              VERIFIED: ai_profile loads 6 instructions/5 recommendations;
+                simulated Ollama chat shows messages = [system(safety),
+                system(preconfig), user]; env_repair reports healthy (not stale);
+                pytest 7/7; ruff clean on changed files.
+              CANNOT do in this sandbox (needs Windows): actually run build.ps1,
+                PyInstaller, Inno Setup (iscc), or download the real Qwen weights.
+              STILL NOT PUSHED to GitHub (no credentials). To push: see next steps.
+
+              NEXT STEPS / OPEN:
+                - Push commit 61b5a01 (user to run `git push` with their creds, or
+                  grant a way to push).
+                - On a Windows build machine: install Inno Setup 6 + VS2022 C++ Build
+                  Tools, set FPSCOACH_OLLAMA_SRC / FPSCOACH_QWEN_SRC (or have ollama
+                  on PATH), then run Build-Lite.bat / Build-Full.bat.
+                - Confirm redistribution licensing for Ollama + Qwen 3 1.7B.
+                - Optional: surface auto-pull/download progress in the chat UI.
+  2026-10-18 (rev6)  ROOT CAUSE found + fixed: the Full build looked identical to
+              Lite because fetch_ai_assets.ps1 only WARNED (never failed) when the
+              Ollama runtime/model weren't supplied, so it shipped empty ollama/
+              and models/ folders = Lite. Commit 4530e3f (local, NOT pushed),
+              5 files, +119/-46. Implemented 4 requested fixes:
+                1. build.ps1 aborts with FATAL error if Full has no runtime/weights
+                   (guard after staging; checks ollama.exe + models >=100MB).
+                2. fetch_ai_assets.ps1 rewritten: FULLY AUTOMATIC - downloads the
+                   official Ollama Windows zip and pulls qwen3:1.7b itself; no
+                   pre-installed Ollama, no required env vars; throws FATAL on any
+                   failure (download, server-not-ready, pull fail, empty result).
+                3. Model pulled into an ISOLATED store (OLLAMA_MODELS=stage dir,
+                   OLLAMA_HOST=127.0.0.1:11435) so ONLY qwen3:1.7b is bundled,
+                   never the user's whole ~/.ollama store.
+                4. Removed double-copy: installer/fpscoach.spec no longer bundles
+                   the AI assets; installer/fpscoach-full.iss is the single copy
+                   path (so ~1GB weights processed once).
+              Optional offline overrides FPSCOACH_OLLAMA_SRC/QWEN_SRC kept (still
+              verified). Docs updated. Tests 7/7. NOTE: PowerShell not runnable in
+              this Linux sandbox (pwsh uninstallable) - scripts reviewed + bracket-
+              balanced but the real Build-Full.bat run must happen on Windows.
+  2026-10-18 (rev7)  Added a ONE-CLICK AI setup button in the chat UI. Commit
+              02735d0 (local, NOT pushed). Files:
+                python/fps_coach/ai_chat.py: + OLLAMA_DOWNLOAD_URL
+                  (https://ollama.com/download), check_ollama(base_url, model) ->
+                  {reachable, has_model} (never raises), pull_model(base_url, model,
+                  progress) one-click download helper.
+                python/fps_coach/ui/main_window.py: AIChatPage now has a setup
+                  banner (QFrame, objectName 'card') shown ONLY when provider=ollama
+                  and Ollama is unreachable OR the model is missing. Buttons:
+                  'Download Ollama' -> QDesktopServices.openUrl(download page);
+                  'Download <model>' -> background pull with live progress;
+                  'Re-check' -> re-probe. Banner auto-hides when ready / for OpenAI.
+                  New threads _OllamaStatusCheck + _ModelPullThread keep the UI
+                  responsive; a failed chat send also triggers _refresh_ai_status().
+              VERIFIED: ai_chat helpers against simulated Ollama (empty ->
+                reachable/no-model; after pull -> has_model; URLError -> unreachable);
+                pytest 7/7; ruff clean on my code (one PRE-EXISTING B905 at
+                main_window.py:406 left alone). COULD NOT render-test the Qt UI here:
+                PySide6 installs but libGL.so.1 is absent and apt/sudo unavailable,
+                so the offscreen smoke test can't run - UI must be launched on the
+                user's machine. Logic + wiring confirmed by inspection/grep.
+              Commits now: 61b5a01, 4530e3f, 02735d0 (all local, NOT pushed).
+  2026-10-18 (rev8)  Added AUTO-LAUNCH of the local Ollama service at app startup.
+              Commit a041214 (local, NOT pushed). Files:
+                python/fps_coach/ollama_service.py (NEW): ensure_running() /
+                  ensure_running_async(). Starts 'ollama serve' DETACHED with no
+                  console window (Windows CREATE_NO_WINDOW|DETACHED_PROCESS; POSIX
+                  start_new_session), ONLY for local endpoints and ONLY if not
+                  already running (is_running() probes /api/tags). Executable
+                  resolution: bundled runtime next to frozen exe (full build, sets
+                  OLLAMA_MODELS to bundled \models) -> build/ai_assets/ollama ->
+                  'ollama' on PATH. Best-effort, never raises.
+                python/fps_coach/app.py: calls ensure_running_async() right after
+                  ensure_environment() - daemon thread, so startup is NOT blocked.
+                tests/test_ollama_service.py (NEW): 4 tests.
+              VERIFIED: ruff clean; 11/11 tests pass. (Qt UI still not render-
+              testable here - no libGL.)
+              Regenerated ALL download bundles to include all 4 commits:
+                /home/user/workspace/FPSCoach-full-repo.zip
+                /home/user/workspace/FPSCoach-all-changes.patch (4 commits)
+                /home/user/workspace/FPSCoach-changed-files.zip (22 files)
+                /home/user/workspace/FPSCoach-patch-and-apply.zip
+              Commits now: 61b5a01, 4530e3f, 02735d0, a041214 (all local, NOT pushed).
+  2026-10-18 (rev9)  UI OVERHAUL + 3 more features. Commits 7996301 (handoff doc
+              into repo) and fdca82a (this work). All local, NOT pushed.
+                python/fps_coach/ui/styles.py: full rounded/modern redesign (cards
+                  18px radius, inputs/buttons/nav rounded, custom rounded scrollbars,
+                  styled QCheckBox/QRadioButton). New build_style(mode): 'luxurious'
+                  (gradient primary buttons) vs 'performance' (flat). APP_STYLE kept
+                  = build_style('luxurious') for compat. app.py still sets APP_STYLE;
+                  MainWindow.apply_visuals() overrides with the saved mode.
+                python/fps_coach/ui/main_window.py:
+                  - AIChatPage: inline one-click 'Download' button placed NEXT TO the
+                    model selector (model_row HBox). Shows only when provider=ollama
+                    and the model is missing; banner still handles 'Ollama not
+                    installed' (opens ollama.com/download). Progress shown on the
+                    button; messages appended to transcript via _append.
+                    New _start_model_download(); _on_status now toggles model_download
+                    + banner; _on_setup_action just opens the runtime download page.
+                  - GuidePage: added a 'What's new' grid documenting Lite/Full
+                    packages, startup self-repair, AI chat profile, Ollama auto-launch,
+                    one-click model download, and the appearance settings.
+                  - SettingsPage (NEW): radios Luxurious vs High-performance +
+                    checkbox Enable animations; persists QSettings ui/mode & ui/
+                    animations; emits settings_changed.
+                  - MainWindow: Settings appended to nav (index 6; recommendation=3,
+                    chat=4 UNCHANGED so _show_recommendation/closeEvent still correct;
+                    scrolled_pages={0,5,6}). apply_visuals() swaps stylesheet, toggles
+                    card/banner QGraphicsDropShadowEffect, sets _animations_on.
+                    _show_page() runs a 180ms opacity fade (_animate_current_page)
+                    only when animations on. High-performance mode disables shadows
+                    AND animations regardless of the checkbox.
+              VERIFIED: ruff clean on changed code; 11/11 tests pass; all new symbols
+                + page indices confirmed by inspection; styles.py substitutes with no
+                leftover %() tokens in either mode.
+              HARD LIMIT in sandbox: cannot render-test Qt - system libs libGL.so.1,
+                libEGL.so.1, libxkbcommon.so.0, libdbus-1.so.3 are ALL missing and
+                not installable (no apt/root/network for them). The UI logic/wiring
+                is verified statically but MUST be eyeballed on a real Windows/desktop
+                run. Watch especially: nested QGraphicsEffect (page opacity fade over
+                cards that have drop-shadows) and overall look of both modes.
+              Commits now: 61b5a01, 4530e3f, 02735d0, a041214, 7996301, fdca82a
+                (+ a pending commit for this rev9 doc). ALL local, NOT pushed.
+  2026-10-19 (rev10)  CALIBRATION + AI curve features. Commit 3d9f1fc (local, NOT
+              pushed). IMPORTANT real-repo note: curve logic lives in
+              python/fps_coach/curve_io.py (CurveProfile/CurvePoint, .ccurve/.cc4);
+              UI in ui/main_window.py (RecommendationPage, CurveChart, AIChatPage,
+              CalibrationPage); analyzer recommend() in backend.py.
+                NEW python/fps_coach/curve_adjust.py (pure, tested):
+                  - adjust_from_recommendation(base, rec): ADJUSTS the imported
+                    curve (keeps speed points; scales by sensitivity_multiplier;
+                    gently bends shape toward rec via shape_blend=0.4). Never
+                    mutates base.
+                  - apply_preset(base, key): quick actions fast_flicks, precision,
+                    tracking, raise_sens, lower_sens, reset -> (new_profile, note).
+                  - normalized_overlay(prev, cur): SHARED-scale points so scaling
+                    differences stay visible on the chart.
+                CurveChart.set_curves(current, previous, labels): overlays previous
+                  (amber #f0a860 dashed) vs current (mint #70e1ba) + legend. Old
+                  set_points() kept for single-curve.
+                RecommendationPage: _base_profile tracks the imported curve;
+                  update_result() ADJUSTS it when present (before/after chart) else
+                  old behavior; new curve_imported Signal + set_adjusted().
+                AIChatPage: quick-action bubble row (preset_labels) enabled only
+                  when a base curve exists; live before/after mini CurveChart;
+                  'Send adjusted curve to Recommendation' -> curve_adjusted Signal;
+                  imported curve folded into AI _calibration_context so the model
+                  adjusts THAT curve. set_base_profile().
+                MainWindow: recommendation.curve_imported -> chat.set_base_profile;
+                  chat.curve_adjusted -> _on_curve_adjusted -> rec.set_adjusted +
+                  show page 3. (Page indices unchanged: recommendation=3, chat=4.)
+                config/ai_profile.toml: +2 instructions (adjust imported curve;
+                  mention quick actions).
+              VERIFIED: ruff clean on new code (pre-existing B905 at main_window
+                ~line 498 left alone); 17/17 tests pass (+6 test_curve_adjust.py);
+                functional check: base 1.5 kept -> 1.725 at sens 1.15; fast_flicks
+                overlay 0.67->1.0 at high speed.
+              STILL cannot render-test Qt here (no libGL/libEGL/libxkbcommon/
+                libdbus). UI logic verified statically - eyeball on Windows:
+                before/after legend + colors, quick-action bubbles, mini preview.
+              Commits: 61b5a01, 4530e3f, 02735d0, a041214, 7996301, fdca82a,
+                d332457, 3d9f1fc (+ pending rev10 doc). ALL local, NOT pushed.
+  2026-10-19 (rev11)  AI CHAT: collapsible settings + dynamic quick actions.
+              Commit 6ae4155 (local, NOT pushed).
+                - Condensed provider/base URL/model/API key/temperature into ONE
+                  collapsible section in AIChatPage: self.settings_toggle (checkable
+                  QPushButton) shows/hides self._settings_card (QFormLayout). Collapsed
+                  by DEFAULT; _on_status auto-expands it when the inline model
+                  download button is needed (reachable but model missing).
+                - NEW python/fps_coach/chat_suggestions.py: suggest(text,
+                  has_base_curve, limit=4) -> list of {label, kind, payload}; kind is
+                  'preset' (key into curve_adjust.PRESETS, only when a base curve is
+                  imported) or 'prompt' (ready-made question). Keyword rules for
+                  flick/track/precision/overshoot/undershoot/sensitivity/recoil/
+                  warmup + raise/lower sens direction; sensible defaults when empty.
+                - AIChatPage quick-action bar is now DYNAMIC: self.suggestion_bar
+                  (QHBoxLayout) rebuilt by _refresh_suggestions() on every keystroke
+                  (self.prompt.textChanged). preset chips -> _apply_quick_action(key);
+                  prompt chips -> _use_prompt(text) (fills compose box, no auto-send).
+                  Seeded once at startup; set_base_profile() now calls
+                  _refresh_suggestions() (replaced the old fixed self.quick_buttons,
+                  which are GONE). quick_preview + apply_to_rec unchanged.
+              VERIFIED: ruff clean on new code (pre-existing B905 ~main_window:497
+                left alone); 23/23 tests pass (+6 test_chat_suggestions.py);
+                functional: ''->defaults, 'flick'->fast_flicks, 'too fast'->lower_sens,
+                'tracking'->tracking.
+              STILL cannot render-test Qt (no libGL/libEGL/libxkbcommon/libdbus).
+                Eyeball on Windows: the collapsible settings expand/collapse + arrow
+                glyph, and the chips changing live as you type.
+              Commits: ...3d9f1fc, d332457, 6ae4155 (+ pending rev11 doc). ALL local,
+                NOT pushed.
+  2026-10-19 (rev12)  RESPONSIVE UI + PERSISTENT AI CONTEXT/PROACTIVE FEEDBACK.
+              Commit dcaaba5 (local, NOT pushed).
+                - NEW python/fps_coach/ui/responsive.py:
+                  ResponsiveCards(cards, min_col_width=320): QGridLayout that reflows
+                  column count by width (1@<~660px, 2@~800, 3@~1000, 4@~1340) so cards
+                  never cramp/overlap; equal column stretch. ResponsiveRow(breakpoint):
+                  QBoxLayout whose direction flips LeftToRight<->TopToBottom via
+                  setDirection() at the breakpoint.
+                - main_window GuidePage: 'steps' and 'whats_new' QGridLayouts replaced
+                  with ResponsiveCards. RecommendationPage chart+summary row is now
+                  ResponsiveRow(breakpoint=820); chart_card minWidth 360, summary 260;
+                  page index 3 ADDED to scrolled_pages={0,3,5,6} so vertical stacking
+                  never clips.
+                - AIChatPage persistent context + PROACTIVE feedback:
+                  notify_new_calibration(summary, rec) [called from MainWindow
+                  _show_recommendation instead of set_calibration_context]:
+                    (1) refreshes context (set_calibration_context + base curve),
+                    (2) ALWAYS posts an instant local 'Coach (auto)' note
+                        (_local_proactive_note, deterministic/offline),
+                    (3) _maybe_proactive_ai: ONLY for provider=ollama AND only when a
+                        _OllamaStatusCheck says reachable+has_model (never triggers a
+                        surprise model pull or paid API call); then a background
+                        _ChatRequest posts a richer 'Coach' note. Quiet on failure.
+                  New attrs _proactive_request/_proactive_check/_proactive_pending;
+                  shutdown() drains them; MainWindow.closeEvent calls chat_page.shutdown().
+              VERIFIED: ruff clean on new code (pre-existing B905 ~main_window:462 left
+                alone); 23/23 tests pass; column reflow math sanity-checked
+                (360->1,800->2,1000->3,1500->4).
+              STILL cannot render-test Qt (6 libs missing: libGL/EGL/xkbcommon/dbus
+                etc.). Eyeball on Windows: card reflow on resize, chart/summary
+                stacking below ~820px width, and the proactive 'Coach (auto)' message
+                appearing right after calibration.
+              Commits: ...6ae4155, d332457, dcaaba5 (+ pending rev12 doc). ALL local,
+                NOT pushed.
+  2026-10-19 (rev13)  REVERTED Recommendation tab to fixed side-by-side per user
+              request (it must NOT stack vertically on resize/minimize). Commit
+              43a73e7 (local, NOT pushed).
+                - RecommendationPage: chart+summary ResponsiveRow -> plain QHBoxLayout
+                  again (chart/recommendation LEFT stretch 3, calibration status
+                  RIGHT stretch 2); root.addLayout(row,1). chart_card minWidth 320,
+                  summary_card minWidth 260 kept so columns never overlap.
+                - scrolled_pages back to {0,5,6} (removed 3).
+                - main_window import now 'from ...responsive import ResponsiveCards'
+                  only (ResponsiveRow no longer used there; class still exists in
+                  responsive.py). GuidePage ResponsiveCards UNCHANGED (guide tab, not
+                  in scope of the revert). Proactive AI feedback from rev12 UNCHANGED.
+              VERIFIED: ruff clean on changed code; 23/23 tests pass; ResponsiveRow
+                fully removed from main_window.
+              Commits: ...dcaaba5, 43a73e7 (+ pending rev13 doc). ALL local, NOT pushed.
+  2026-10-19 (rev14)  CALIBRATION HISTORY (keep + show latest vs previous score).
+              Commit 5684917 (local, NOT pushed).
+                - NEW python/fps_coach/calibration_history.py (pure, tested):
+                  compute_score(summary)->0..100 (0.5*path_eff + 0.5*(1-penalty);
+                  penalty=.35 over+.25 corr+.20 tremor+.20 underreach).
+                  CalibrationRecord (timestamp/score/metrics/title/sens) +
+                  CalibrationHistory.load/add/latest/previous/recent/save; persists
+                  to JSON, keeps up to 100, PREVIOUS NEVER OVERWRITTEN.
+                - CalibrationPage: new 'Calibration history' card shows most recent
+                  score (metric), delta vs previous (up arrow +/down arrow -),
+                  previous score, and a recent list. _history=CalibrationHistory.load(
+                  _history_path()=project_root/.fpscoach_calibration_history.json);
+                  _on_complete() now history.add(summary,rec)+_refresh_history_display()
+                  BEFORE emitting recommendation_ready. _refresh_history_display()
+                  seeded on init.
+                - .gitignore: ignore .fpscoach_calibration_history.json.
+              VERIFIED: ruff clean on changed code (pre-existing B905 ~531 left);
+                27/27 tests pass (+4 test_calibration_history.py); functional check:
+                latest 95.1 vs previous 81.5, delta +13.6, persists across reload.
+              STILL cannot render-test Qt here. Eyeball on Windows: the history card
+                on the Calibration tab after running 2+ calibrations.
+              Commits: ...43a73e7, 5684917 (+ pending rev14 doc). ALL local, NOT pushed.
+  2026-10-19 (rev15)  REVERTED the calibration history feature per user request
+              (only that last feature; everything else kept). Commit e6778d7
+              (git revert of 5684917), local, NOT pushed.
+                - Removed python/fps_coach/calibration_history.py and
+                  tests/test_calibration_history.py.
+                - CalibrationPage back to no history card; _on_complete() just emits
+                  recommendation_ready again. Path import + .gitignore entry removed
+                  with the revert.
+              KEPT: rev13 side-by-side Recommendation tab; rev12 responsive cards +
+                proactive AI feedback; all earlier features.
+              VERIFIED: ruff clean on changed code (pre-existing B905 ~462 left);
+                23/23 tests pass (history tests gone).
+              Commits: ...5684917, e6778d7 (+ pending rev15 doc). ALL local, NOT pushed.
+  2026-10-19 (rev16)  AI AUTO-APPLIES curve recommendations to the Recommendation
+              tab in real-time (not just text). Commit 4b214ea (local, NOT pushed).
+                - NEW python/fps_coach/ai_curve_actions.py (pure, tested):
+                  parse_adjustment(reply)->plan|None. Primary: machine-readable
+                  directive [ADJUST: <x>] (fast_flicks/precision/tracking/reset or
+                  'sensitivity +10%' / 'x0.95'). Fallback: actionable free text
+                  (needs an action stem like increas/rais/lower/optimi so plain
+                  explanations never move the curve). apply_adjustment(base,plan)->
+                  (profile,note) via curve_adjust apply_preset / scale_sensitivity.
+                - curve_adjust.py: NEW scale_sensitivity(base,factor) (clamped 0.5-2).
+                - AIChatPage._received AND _proactive_received -> _apply_ai_adjustment():
+                  if a base curve exists and a plan parses, adjust it, update the chat
+                  mini-preview, and emit curve_adjusted -> RecommendationPage.set_adjusted
+                  (graph updates live). Posts an 'Applied' chat note. Adjusts from the
+                  stable base each time (set_adjusted does NOT re-emit, so no compounding
+                  loop).
+                - RecommendationPage: curve_imported signal REPLACED by profile_changed,
+                  emitted on import AND calibration update_result (both branches) so the
+                  chat's base curve always tracks the Recommendation tab. MainWindow wires
+                  recommendation.profile_changed -> chat.set_base_profile.
+                - config/ai_profile.toml: instruct the model to append [ADJUST: ...].
+              VERIFIED: ruff clean (pre-existing B905 ~462 left); 30/30 tests pass
+                (+7 test_ai_curve_actions.py); functional: directive fast_flicks ->
+                high-speed gain up, '+10%' -> x1.10, plain 'what is a flick' -> no change,
+                'lower by 8%' -> x0.92.
+              STILL cannot render-test Qt. Eyeball on Windows: ask the coach to adjust a
+                curve (with one imported/after calibration) and watch the Recommendation
+                graph change automatically.
+              Commits: ...e6778d7, 4b214ea (+ pending rev16 doc). ALL local, NOT pushed.
+  2026-10-19 (rev17)  Made the AIChatPage 'Suggested actions' card COLLAPSIBLE.
+              Commit 93ec2a8 (local, NOT pushed).
+                - Added self.quick_toggle (checkable QPushButton, checked=True by
+                  default, arrow down/right) above self.quick_card; toggled ->
+                  _toggle_quick_actions() shows/hides the whole card (chips +
+                  quick_preview chart + 'Send adjusted curve to Recommendation').
+                  Removed the inner 'Suggested actions' cardTitle label (the toggle
+                  is now the header). Mirrors the settings dropdown pattern.
+              VERIFIED: ruff clean (pre-existing B905 ~462 left); 30/30 tests pass.
+              Commits: ...4b214ea, 93ec2a8 (+ pending rev17 doc). ALL local, NOT pushed.
+  2026-10-19 (rev18)  MANUAL EDIT MODE on the Recommendation chart (part 1 of the
+              request). Commit 6734f20 (local, NOT pushed).
+                - CurveChart: set_editable(), draggable point handles (mousePress/
+                  Move/Release map screen<->normalized against _plot_rect()), 'edited'
+                  Signal(list) of normalized points; edit handles + hint drawn in
+                  paintEvent. Added 'import math'.
+                - RecommendationPage: 'Edit'/'Done' toggle on the chart card header
+                  (_toggle_edit); in edit mode shows the current curve via
+                  chart.set_points(chart_points(profile)) with _edit_max_gain stored;
+                  _on_curve_edited() maps dragged y back to multipliers (speeds kept,
+                  vertical=copy of horizontal), updates metric + emits profile_changed.
+                VERIFIED: ruff clean (pre-existing B905 ~515); 30/30 tests pass.
+
+              PART 2 of the request (AI integrate with DXGI/D3D11 capture to detect
+              in-game TARGET POSITIONS and SHOOTING PATTERNS in real-time and auto-
+              adjust the curve) was DECLINED and NOT implemented. Reason: it is real-
+              time game target/aim detection = gameplay-automation/cheat territory,
+              which this app explicitly forbids everywhere (ai_chat.SYSTEM_PROMPT:
+              'Never provide target detection...'; PrivacyPage 'anti-cheat friendly
+              boundary'; GuidePage 'no target detection'). It would also risk anti-
+              cheat bans / ToS violations. Safe alternative offered: keep using the
+              existing in-app calibration task (legit) which already feeds curve
+              adjustments; AI may use capture HEALTH stats (fps) but not analyze game
+              pixels for targets/shots. If a future agent is asked again: do NOT build
+              target/shooting detection.
+              Commits: ...93ec2a8, 6734f20 (+ pending rev18 doc). ALL local, NOT pushed.
+  2026-10-19 (rev19)  CAPTURE TAB: window selection + performance/hw-accel settings.
+              Commit 525954a (local, NOT pushed).
+                - NEW python/fps_coach/window_enum.py: list_windows() (ctypes
+                  EnumWindows -> hwnd/title/pid/process) + get_window_rect(hwnd)
+                  -> (left,top,w,h). Windows-only; returns []/None elsewhere; only
+                  reads title+bounds (no attach/inject). Never raises.
+                - CapturePage: 'Capture source' combo (Entire output / a window) +
+                  'Refresh windows' (_load_windows); 'Performance' preset combo
+                  low/balanced/quality/custom (_apply_perf_preset drives region+fps)
+                  + 'Hardware acceleration' QCheckBox. preset+hwaccel persist in
+                  QSettings (capture/preset, capture/hwaccel).
+                - backend.start_capture(... , left=-1, top=-1): optional origin so a
+                  selected window's rect restricts capture via the EXISTING native
+                  x/y/w/h params (native call arity unchanged -> no rebuild needed).
+                  _toggle_capture passes get_window_rect() when a window is chosen.
+                VERIFIED: ruff clean on new code (pre-existing backend I001 + B905
+                  left alone); 33/33 tests pass (+3 test_window_enum.py); window_enum
+                  degrades to []/None on this Linux sandbox.
+                COULD NOT: compile/modify native C++ DXGI/D3D11 for deeper hw-accel
+                  (no Windows/build here) - hwaccel is a persisted preference the
+                  native layer can honor; region/fps presets are the real low-end win.
+              DECLINED AGAIN (same as rev18 part 2): the request's goal of 'AI
+                analyzes the gameplay within that chosen application' (game-content/
+                target/shooting analysis) was NOT built. Window capture only restricts
+                the PREVIEW region; it does NOT feed game frames to any AI analysis.
+              Commits: ...6734f20, 525954a (+ pending rev19 doc). ALL local, NOT pushed.
+
+--------------------------------------------------------------------------------
+9. OPEN QUESTIONS / ACTION ITEMS (need answers to finish)
+--------------------------------------------------------------------------------
+  [ ] Where is the real source? (upload to workspace or provide repo URL)
+  [ ] What installer tech is in use (Inno Setup / NSIS / other)?
+  [ ] Exact Qwen 3 1.7B source/tag + confirm redistribution license is OK.
+  [ ] Confirm Ollama redistribution terms for the FULL embedded build.
+  [ ] Target Windows arch(s) and min OS version.
+  [ ] Where should AI preconfig live (file path / format: json/yaml/toml)?
+  [ ] Preferred naming for the two installers.
+================================================================================

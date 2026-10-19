@@ -50,7 +50,21 @@ EMBEDDED_MODEL = $model
 
 # --- 3. Full flavor: stage the Ollama runtime + Qwen 3 1.7B weights ---------
 if ($Flavor -eq 'full') {
-    & (Join-Path $PSScriptRoot "fetch_ai_assets.ps1") -StageDir (Join-Path $Root "build\ai_assets")
+    $assets = Join-Path $Root "build\ai_assets"
+    & (Join-Path $PSScriptRoot "fetch_ai_assets.ps1") -StageDir $assets
+
+    # Defense in depth: never let a Full build continue without real AI assets.
+    $stagedExe = Get-ChildItem -Path (Join-Path $assets "ollama") -Filter ollama.exe -Recurse -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if (-not $stagedExe) {
+        throw "FATAL: Full build aborted - the Ollama runtime is missing from $assets\ollama."
+    }
+    $stagedModel = Get-ChildItem -Path (Join-Path $assets "models") -Recurse -File -ErrorAction SilentlyContinue
+    $stagedBytes = ($stagedModel | Measure-Object -Property Length -Sum).Sum
+    if (-not $stagedModel -or $stagedBytes -lt 104857600) {
+        throw "FATAL: Full build aborted - the Qwen 3 1.7B weights are missing or incomplete in $assets\models."
+    }
+    Write-Host "Verified embedded AI assets ($([math]::Round($stagedBytes/1MB)) MB)." -ForegroundColor Green
 }
 
 # --- 4. Freeze the app with PyInstaller -------------------------------------

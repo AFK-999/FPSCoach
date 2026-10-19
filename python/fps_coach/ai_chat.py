@@ -21,6 +21,10 @@ class ChatProviderError(RuntimeError):
     pass
 
 
+# Official Ollama download page (runtime installer for Windows/macOS/Linux).
+OLLAMA_DOWNLOAD_URL = "https://ollama.com/download"
+
+
 @dataclass(slots=True)
 class ChatSettings:
     provider: str = "ollama"
@@ -249,6 +253,36 @@ class AIChatClient:
             error_message = response.get("error")
             raise ChatProviderError(f"The provider returned no message. {error_message or ''}".strip())
         return content.strip()
+
+
+def check_ollama(base_url: str, model: str, timeout: float = 1.5) -> dict[str, bool]:
+    """Probe a local Ollama server. Returns {"reachable": bool, "has_model": bool}.
+
+    Never raises - the UI uses this to decide whether to show a setup button.
+    """
+    client = AIChatClient(ChatSettings(base_url=base_url, model=model, timeout_seconds=int(timeout)))
+    try:
+        api_base = client._ollama_api_base(client._validated_base_url(base_url))
+    except ChatProviderError:
+        return {"reachable": False, "has_model": False}
+    try:
+        has_model = client._ollama_has_model(api_base, model)
+    except ChatProviderError:
+        return {"reachable": False, "has_model": False}
+    return {"reachable": True, "has_model": has_model}
+
+
+def pull_model(base_url: str, model: str, progress=None) -> None:
+    """Download ``model`` into the local Ollama, reporting status lines through
+    the optional ``progress`` callback. Raises ChatProviderError on failure.
+
+    This is the one-click path used by the chat UI's download button.
+    """
+    client = AIChatClient(ChatSettings(base_url=base_url, model=model))
+    api_base = client._ollama_api_base(client._validated_base_url(base_url))
+    client._pull_ollama_model(api_base, model, progress=progress)
+    if not client._ollama_has_model(api_base, model):
+        raise ChatProviderError(f"Model '{model}' is still unavailable after downloading.")
 
 
 def curve_context(summary: dict[str, Any], recommendation: dict[str, Any]) -> str:
