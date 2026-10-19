@@ -145,6 +145,11 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     /home/user/workspace/FPSCoach   (clone of https://github.com/AFK-999/FPSCoach.git)
     Remote origin/main = e9e69a2   (the visual REDESIGN; based on 04e6b0f)
     Working branch     = fix/redesign-backend-wiring (from e9e69a2), NOT pushed.
+    REV51 STATUS: rev50 plus (1) a "Read replies aloud" switch in AI Coach, sharing the
+    Settings > Voice setting, and a "Stop speaking" button that clears queued replies;
+    (2) a transcript text-size slider (12-24 px, saved, with Reset). Speech engine is the
+    existing pyttsx3 path with fallbacks (tts_service.py); not changed. Not run here:
+    real audio. Still NOT pushed.
     REV50 STATUS: rev49 plus (1) Calibration Undo and Redo for the sensitivity curve
     (Ctrl+Z / Ctrl+Y, in-session only, not the reverted calibration history), (2) a
     current/older curve key above the chart, (3) a "Coach is thinking" animation in
@@ -1153,6 +1158,25 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
               slider and the new capture arguments); app.py quit run exit 0, no traceback.
               NOT verified: real display, Win32 window list, native capture, real Ollama,
               real game curve files, Windows build.
+
+  2026-10-19 (rev51)  AI COACH: READ ALOUD SWITCH, STOP SPEAKING, TEXT SIZE.
+              - Read aloud: the AI Coach page has a "Read replies aloud" switch above the
+                transcript. It uses the same saved setting as Settings > Voice > Speak
+                responses aloud (ui/tts_enabled), so either place changes both.
+                The engine is the existing tts_service.py (pyttsx3 first, then fallbacks);
+                it was not changed.
+              - Stop speaking: clears replies waiting in the speech queue. The sentence being
+                read finishes, because pyttsx3 is not safe to stop from another thread.
+              - Text size: a slider (12-24 px, default 14) changes the transcript text only.
+                The value is saved as chat/font_px. Reset returns to 14 px.
+              - Fixed during this rev: the app stylesheet sets font-size on every widget, which
+                overrides setFont(). The size is now set with a widget-level font-size rule.
+                The tests now load the real app stylesheet so this regression is caught.
+              - Also: the speaker glyph ("speaker") is drawn in icons.py but is not placed yet.
+              - Tests: tests/test_chat_speech_zoom.py (16). Full suite 148 passed. ruff F
+                clean. compileall OK. Wiring 32/32. Offscreen screenshots at 14 px and 20 px.
+              - NOT verified: real speech output (no audio, no espeak in the sandbox; the
+                engine is a fake in tests), Windows SAPI5, live keyboard use.
 
   2026-10-19 (rev50)  CURVE UNDO/REDO, CURRENT VS OLDER KEY, CHAT THINKING ANIMATION.
               - Calibration: Undo and Redo buttons for the sensitivity curve, with Ctrl+Z

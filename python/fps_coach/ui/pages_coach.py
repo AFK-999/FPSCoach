@@ -134,8 +134,11 @@ class AIChatPage(QWidget):
 
     assistant_said = Signal(str)  # emitted with each AI response (coach strip, TTS)
     curve_adjusted = Signal(object, object, str)  # (previous, current, note)
+    read_aloud_changed = Signal(bool)  # the chat's "Read replies aloud" switch was flipped
+    stop_speaking_requested = Signal()
 
     _THINKING_STRIP = 44  # px reserved under the transcript text while a request runs
+    TEXT_MIN, TEXT_DEFAULT, TEXT_MAX = 12, 14, 24  # transcript font size range, in px
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -163,6 +166,8 @@ class AIChatPage(QWidget):
         body.setSpacing(20)
 
         card, lay = _card()
+        lay.addLayout(self._build_speech_bar())
+        lay.addLayout(self._build_text_size_bar())
         self.transcript = QTextEdit()
         self.transcript.setObjectName("transcript")
         self.transcript.setReadOnly(True)
@@ -174,6 +179,7 @@ class AIChatPage(QWidget):
             self.transcript,
             animate=fx_enabled(str(self._settings.value("ui/mode", "luxurious"))),
         )
+        self.refresh_from_settings()
 
         self.suggestion_bar = QHBoxLayout()
         self.suggestion_bar.setSpacing(8)
@@ -419,6 +425,93 @@ class AIChatPage(QWidget):
         for thread in (self._thread, self._voice_thread, self._proactive_check, self._proactive_request):
             if thread is not None and thread.isRunning():
                 thread.wait(2000)
+
+    # -- read aloud and text size ----------------------------------------------
+    def _build_speech_bar(self) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        self.read_aloud = QCheckBox("Read replies aloud")
+        self.read_aloud.setToolTip(
+            "Speaks each AI reply with the text-to-speech engine. "
+            "Same setting as Settings > Voice > Speak responses aloud."
+        )
+        self.read_aloud.toggled.connect(self._on_read_aloud_toggled)
+        row.addWidget(self.read_aloud)
+        self.stop_speaking_btn = QPushButton(" Stop speaking")
+        self.stop_speaking_btn.setObjectName("secondary")
+        set_glyph(self.stop_speaking_btn, "stop")
+        self.stop_speaking_btn.setToolTip(
+            "Clears replies waiting to be read. The sentence being read finishes."
+        )
+        self.stop_speaking_btn.clicked.connect(self.stop_speaking_requested.emit)
+        row.addWidget(self.stop_speaking_btn)
+        self.speech_status = _label("", wrap=True)
+        row.addWidget(self.speech_status, 1)
+        return row
+
+    def _build_text_size_bar(self) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        row.addWidget(_label("Text size", "formLabel"))
+        self.font_slider = ValueSlider(self.TEXT_MIN, self.TEXT_MAX, fmt=lambda v: f"{v} px")
+        self.font_slider.setToolTip("Makes the chat transcript text larger or smaller.")
+        self.font_slider.valueChanged.connect(self._on_font_size_changed)
+        row.addWidget(self.font_slider, 1)
+        self.font_reset_btn = QPushButton("Reset")
+        self.font_reset_btn.setObjectName("secondary")
+        self.font_reset_btn.setToolTip(f"Back to {self.TEXT_DEFAULT} px")
+        self.font_reset_btn.clicked.connect(lambda: self.font_slider.setValue(self.TEXT_DEFAULT))
+        row.addWidget(self.font_reset_btn)
+        return row
+
+    def refresh_from_settings(self) -> None:
+        """Show the saved read-aloud and text-size values. Signals stay quiet."""
+        enabled = self._settings.value("ui/tts_enabled", False, type=bool)
+        px = self._settings.value("chat/font_px", self.TEXT_DEFAULT, type=int)
+        px = max(self.TEXT_MIN, min(self.TEXT_MAX, int(px)))
+        self.read_aloud.blockSignals(True)
+        self.read_aloud.setChecked(bool(enabled))
+        self.read_aloud.blockSignals(False)
+        self.font_slider.blockSignals(True)
+        self.font_slider.setValue(px)
+        self.font_slider.blockSignals(False)
+        self._apply_text_size(px)
+        self._show_default_speech_text()
+
+    def _on_read_aloud_toggled(self, checked: bool) -> None:
+        self._settings.setValue("ui/tts_enabled", bool(checked))
+        self._show_default_speech_text()
+        self.read_aloud_changed.emit(bool(checked))
+
+    def _show_default_speech_text(self) -> None:
+        if self.read_aloud.isChecked():
+            self.speech_status.setText("Replies are read aloud.")
+        else:
+            self.speech_status.setText("Replies are shown as text only.")
+
+    def set_speech_status(self, text: str) -> None:
+        self.speech_status.setText(text)
+
+    def set_speech_failed(self) -> None:
+        self.speech_status.setText(
+            "Read-aloud is unavailable on this system. See the message in the transcript."
+        )
+
+    def _on_font_size_changed(self, px: int) -> None:
+        self._apply_text_size(px)
+        self._settings.setValue("chat/font_px", int(px))
+
+    def _apply_text_size(self, px: int) -> None:
+        px = int(px)
+        # The app stylesheet sets font-size on every QWidget, and a stylesheet overrides
+        # setFont(). A widget-level font-size rule wins over it; the other transcript
+        # styles (background, padding, colour) still come from the app stylesheet.
+        self.transcript.setStyleSheet(f"font-size: {px}px;")
+        font = self.transcript.font()
+        font.setPixelSize(px)
+        self.transcript.setFont(font)
+        # The transcript's HTML sets no sizes of its own, so the document default decides.
+        self.transcript.document().setDefaultFont(font)
 
     def _append(self, who, text):
         self.transcript.append(f"<b>{who}:</b> {text}")

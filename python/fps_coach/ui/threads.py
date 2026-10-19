@@ -82,6 +82,23 @@ class _TtsService(QThread):
         self._stop = True
         self._queue.put(None)
 
+    def clear(self) -> int:
+        """Drop replies that are queued but not yet spoken. Returns how many were dropped.
+
+        The sentence being read right now is not interrupted: pyttsx3 is not safe to
+        call from another thread, so it finishes first.
+        """
+        import queue
+
+        cleared = 0
+        while True:
+            try:
+                item = self._queue.get_nowait()
+            except queue.Empty:
+                return cleared
+            if item is not None:
+                cleared += 1
+
     def run(self) -> None:
         import queue
 

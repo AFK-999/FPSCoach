@@ -302,6 +302,8 @@ class MainWindow(QMainWindow):
         self.recommendation_page.recommendation_ready.connect(self._on_recommendation)
         self.chat_page.assistant_said.connect(self._on_assistant_said)
         self.chat_page.assistant_said.connect(self._speak_response)
+        self.chat_page.read_aloud_changed.connect(self._on_read_aloud_changed)
+        self.chat_page.stop_speaking_requested.connect(self._on_stop_speaking)
         self.settings_page.settings_changed.connect(self._on_settings_changed)
         self.training_page.session_recorded.connect(self._on_session_recorded)
         self.crosshair_page.edited.connect(self._on_crosshair_edited)
@@ -476,6 +478,24 @@ class MainWindow(QMainWindow):
 
     def _on_tts_failed(self, message: str):
         self.chat_page._append("Text-to-speech", message)
+        self.chat_page.set_speech_failed()
+
+    def _on_read_aloud_changed(self, enabled: bool):
+        """The chat's switch and the Settings checkbox share one saved value."""
+        self._sync_tts()
+        self.settings_page.tts_enabled.blockSignals(True)
+        self.settings_page.tts_enabled.setChecked(bool(enabled))
+        self.settings_page.tts_enabled.blockSignals(False)
+
+    def _on_stop_speaking(self):
+        if self._tts_service is None:
+            self.chat_page.set_speech_status("Read aloud is off, so nothing is queued.")
+            return
+        dropped = self._tts_service.clear()
+        self.chat_page.set_speech_status(
+            f"Stopped. {dropped} queued repl{'y' if dropped == 1 else 'ies'} cleared; "
+            "the sentence being read finishes."
+        )
 
     def _apply_voice_commands(self):
         enabled = self.s.value("ui/voice_commands", False, type=bool)
@@ -521,6 +541,7 @@ class MainWindow(QMainWindow):
         self._apply_theme()
         self.coach_panel.setVisible(self.s.value("ui/coach_panel", False, type=bool))
         self._sync_tts()
+        self.chat_page.refresh_from_settings()
         self._apply_voice_commands()
 
     def _on_session_recorded(self, result):

@@ -232,6 +232,13 @@ def _draw_stop(p: QPainter, c: QColor) -> None:
     p.drawRoundedRect(QRectF(6.5, 6.5, 11.0, 11.0), 2.0, 2.0)
 
 
+def _draw_speaker(p: QPainter, c: QColor) -> None:
+    _outline(p, c)
+    p.drawPath(_poly([(4.0, 9.5), (8.0, 9.5), (13.0, 5.0), (13.0, 19.0), (8.0, 14.5), (4.0, 14.5)], closed=True))
+    p.drawArc(QRectF(13.5, 8.5, 4.0, 7.0), -60 * 16, 120 * 16)
+    p.drawArc(QRectF(15.5, 5.5, 7.5, 13.0), -55 * 16, 110 * 16)
+
+
 def _tray(p: QPainter, c: QColor) -> None:
     p.drawPath(_poly([(4.0, 15.0), (4.0, 19.0), (5.5, 20.5), (18.5, 20.5), (20.0, 19.0), (20.0, 15.0)]))
 
@@ -314,6 +321,7 @@ _DRAWERS: dict[str, Callable[[QPainter, QColor], None]] = {
     "refresh": _draw_refresh,
     "play": _draw_play,
     "stop": _draw_stop,
+    "speaker": _draw_speaker,
     "upload": _draw_upload,
     "download": _draw_download,
     "undo": _draw_undo,
