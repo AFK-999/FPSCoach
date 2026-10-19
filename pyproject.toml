@@ -24,6 +24,20 @@ dev = [
 build = [
   "pyinstaller>=6",
 ]
+voice = [
+  # Optional speech-to-text for the AI chat mic button.
+  "SpeechRecognition>=3.10",
+  "PyAudio>=0.2.13",
+]
+voice-offline = [
+  # Fully offline voice commands via Vosk.
+  "vosk>=0.3.45",
+  "sounddevice>=0.4.6",
+]
+tts = [
+  # Offline text-to-speech for AI responses.
+  "pyttsx3>=2.90",
+]
 
 [project.scripts]
 fpscoach = "fps_coach.app:main"
@@ -32,6 +46,8 @@ fpscoach = "fps_coach.app:main"
 cmake.version = ">=3.23"
 build-dir = "build/{wheel_tag}"
 wheel.packages = ["python/fps_coach"]
+# Ship bundled data (enemy sprites, etc.) inside the package.
+sdist.include = ["python/fps_coach/assets/**"]
 
 [tool.pytest.ini_options]
 pythonpath = ["python"]

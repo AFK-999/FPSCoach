@@ -1,7 +1,7 @@
 ================================================================================
 FPS COACH — CONTINUATION / HANDOFF DOCUMENT
 Copy-paste this whole file into a new agent chat to resume with zero context loss.
-Last updated: 2026-10-19 (rev 19)  (update after EVERY response)
+Last updated: 2026-10-19 (rev 33)  (update after EVERY response)
 
 *** IMPORTANT (rev4): The REAL repo was provided and differs a lot from the
 *** earlier scaffold. Work on the REAL repo at /home/user/workspace/FPSCoach
@@ -620,6 +620,288 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
                 target/shooting analysis) was NOT built. Window capture only restricts
                 the PREVIEW region; it does NOT feed game frames to any AI analysis.
               Commits: ...6734f20, 525954a (+ pending rev19 doc). ALL local, NOT pushed.
+  2026-10-19 (rev20)  MODERN UI REDESIGN (4-part request). Commit d7819d1 (local,
+              NOT pushed). Addressed:
+                (3) DARK MODE adaptive core: styles.py rewritten as a theme engine -
+                    PALETTES['dark'|'light'] (dark values identical to before; new
+                    light palette) + build_style(mode, theme). Settings has a Theme
+                    control (Adaptive/Dark/Light -> ui/theme, default 'system').
+                    MainWindow._resolve_theme() uses QApplication.styleHints().
+                    colorScheme(); apply_visuals() builds build_style(mode,theme);
+                    colorSchemeChanged reconnected to re-apply live. Dark default.
+                (4) CUSTOMIZABLE DASHBOARD: NEW dashboard_config.py (pure: TOOLS,
+                    DEFAULT_ORDER/ENABLED, normalize_order/normalize_enabled, move) +
+                    DashboardPage (landing page, index 0): tiles for enabled tools in
+                    order (navigate on click) + 'Customize' panel (checkbox enable +
+                    up/down reorder), persisted to QSettings dashboard/order &
+                    dashboard/enabled (comma-joined).
+                (1) MINIMAL/CLEAN: palette-driven low-chrome styling; (2) MOTION:
+                    existing page-fade transitions (animations setting) kept as the
+                    micro-interaction layer.
+                NAV REINDEX: pages now (key,label,widget); Dashboard=0, guide=1,
+                    capture=2, calibration=3, recommendation=4, chat=5, privacy=6,
+                    settings=7. Magic indices replaced by key lookup: self.
+                    _idx_recommendation/_idx_chat; scrolled_keys={dashboard,guide,
+                    privacy,settings}. dashboard_page.configure(self._show_page,
+                    key_to_index).
+              VERIFIED: ruff clean on changed code (pre-existing B905 ~591 only);
+                41/41 tests pass (+test_styles.py +test_dashboard_config.py);
+                build_style has no leftover tokens for all mode x theme.
+              STILL cannot render-test Qt (no GL/X libs). Eyeball on Windows: light
+                theme contrast, Dashboard tiles + Customize reorder/show-hide, nav
+                now starts on Dashboard, theme switch in Settings.
+              Commits: ...525954a, d7819d1 (+ pending rev20 doc). ALL local, NOT pushed.
+  2026-10-19 (rev21)  VOICE INPUT added (part 2 of request). Commit 4af5d47 (local,
+              NOT pushed).
+                - NEW python/fps_coach/voice_control.py: available_backend()
+                  (importlib find_spec speech_recognition/vosk), is_available(),
+                  recognize_once()->VoiceResult(ok,text,message); graceful install
+                  hint when no backend; never raises.
+                - AIChatPage: '\U0001f3a4 Speak' push-to-talk button + _VoiceListenThread
+                  (QThread) -> _on_voice_text drops recognized text into the compose
+                  box; _on_voice_failed posts guidance. self._voice_thread lifecycle.
+                - pyproject: optional [voice] extra (SpeechRecognition + PyAudio); NOT
+                  a core dependency.
+                VERIFIED: ruff clean on new code (pre-existing B905 ~591); 43/43 tests
+                  pass (+test_voice_control.py); backend None in sandbox -> graceful.
+
+              DECLINED (part 1): 'real-time in-game overlays to provide instant
+              feedback directly on screen during gameplay'. An overlay drawn over a
+              live game giving gameplay-derived feedback = requires the game target/
+              shooting analysis already declined (rev16/18/19) AND crosses the app's
+              explicit 'does not attach to / draw on the game' anti-cheat boundary
+              (PrivacyPage), risking anti-cheat/ToS bans. NOT built. Compliant
+              alternative offered (not yet built, awaiting user OK): a companion
+              'coach panel' window showing only the USER'S OWN calibration score /
+              curve summary / reminders - no game capture analysis, no injection.
+              Also deliberately NO global keyboard hooks for in-fullscreen PTT.
+              Commits: ...d7819d1, 4af5d47 (+ pending rev21 doc). ALL local, NOT pushed.
+  2026-10-19 (rev22)  Built the COMPLIANT on-screen Coach panel (the offered
+              alternative to the declined in-game overlay). Commit a2c72b7 (local,
+              NOT pushed).
+                - CoachPanel(QWidget) in main_window.py: Frameless + WindowStaysOnTop
+                  + Tool, WA_TranslucentBackground, draggable (mouse press/move),
+                  fixed width 260, a QFrame#card inside. Shows ONLY the user's own
+                  data: recommendation title, sensitivity multiplier (metric), path
+                  efficiency + trials, a reminder. 'x' hides + emits closed. methods
+                  update_feedback(summary,rec), place_top_right(). NO game capture/
+                  analysis, NO injection -> stays within anti-cheat boundary.
+                - SettingsPage: 'On-screen coach panel' QCheckBox -> ui/coach_panel
+                  (default False), coach_panel_enabled(), saved in _changed.
+                - MainWindow: self.coach_panel=CoachPanel(self); closed ->
+                  _disable_coach_panel (sets ui/coach_panel False + unchecks box);
+                  _sync_coach_panel() in apply_visuals shows/hides (top-right on
+                  first show); _show_recommendation updates it; closeEvent closes it.
+                VERIFIED: ruff clean on changed code (pre-existing B905 ~591); 43/43
+                  tests pass. (Qt still not render-testable here.)
+              Commits: ...4af5d47, a2c72b7 (+ pending rev22 doc). ALL local, NOT pushed.
+  2026-10-19 (rev23)  Coach panel: refresh-on-curve-change + compact/mini toggle.
+              Commit 45c7864 (local, NOT pushed).
+                - CoachPanel.update_curve(current, note): sets title=curve name,
+                  score=first-point multiplier, detail=note. Called from
+                  _on_curve_adjusted (AI auto-apply + quick actions) and from
+                  recommendation.profile_changed (import / manual edit). Calibration
+                  still uses update_feedback (richer) and is called last so it wins.
+                - Compact/mini toggle: mini_btn ('\u2013'/'\u25a1') hides title/
+                  caption/detail/reminder, leaving just the sensitivity metric;
+                  adjustSize() shrinks the window. caption_label now stored.
+                VERIFIED: ruff clean (pre-existing B905 ~591); 43/43 tests pass.
+              Commits: ...a2c72b7, 45c7864 (+ pending rev23 doc). ALL local, NOT pushed.
+  2026-10-19 (rev24)  UI deltas for the repeated redesign request (theme/dashboard/
+              motion already shipped rev20-23). Commit 2f832c6 (local, NOT pushed).
+                - LIGHT THEME = soft light gray: styles.py PALETTES['light'] bg
+                  #e8eaef, panel #f1f3f7, card #f7f8fb, borders #d9dee7/#dde2ea.
+                - RETRACTABLE SIDEBAR: self._collapse_btn ('«'/'»') ->
+                  _toggle_sidebar(): 218<->58px, hides brand/status + clears nav
+                  button text (keeps tooltips) when collapsed; animates width via
+                  QVariantAnimation when _animations_on else instant. Stored
+                  self._sidebar/_brand/_status_labels/_nav_names.
+                - DASHBOARD ANIMATED TARGETS BACKDROP: DashboardPage paints pulsing
+                  concentric rings (6 targets) drifting via sin/cos; QTimer ~22fps
+                  (_tick advances _phase); set_animations(enabled, accent) gates it
+                  (off in performance mode / when animations off / when hidden via
+                  show/hideEvent). apply_visuals passes PALETTES[theme]['accent'].
+                VERIFIED: ruff clean on new code (pre-existing B905 ~592 only; my new
+                  zip uses strict=True); 43/43 tests pass; styles no leftover tokens.
+              Commits: ...45c7864, 2f832c6 (+ pending rev24 doc). ALL local, NOT pushed.
+  2026-10-19 (rev25)  VOSK OFFLINE VOICE integrated. Commit a44e4cb (local, NOT
+              pushed).
+                - NEW vosk_service.py (pure/degrading): DEFAULT_MODEL_NAME=
+                  vosk-model-small-en-us-0.15, DEFAULT_MODEL_URL (alphacephei),
+                  cache_dir()=project_root/.fpscoach_vosk, dependencies_available()
+                  (vosk+sounddevice via find_spec), find_model(), ensure_model(
+                  progress) downloads+unzips on first use, listen(model, on_text,
+                  should_stop, on_status) streams sounddevice RawInputStream ->
+                  KaldiRecognizer. VoskUnavailable on any failure.
+                - NEW voice_commands.py (pure/tested): parse(text)->Command(kind,
+                  value). kinds: navigate(page key), calibrate(start|reset),
+                  preset(fast_flicks/precision/tracking/raise_sens/lower_sens/reset),
+                  panel(show|hide), dictate(text) via 'ask/coach ...' prefix.
+                - main_window: _VoiceCommandService(QThread) emits recognized/status/
+                  failed; Settings card 'Voice commands (offline)' -> ui/voice_commands;
+                  _sync_voice_commands() (called from apply_visuals) starts/stops it;
+                  _on_voice_command() dispatches: navigate->_show_page via
+                  self._key_to_index; calibrate->_calibration_page.canvas.start_session/
+                  cancel_session; preset->chat_page._apply_quick_action; panel->toggle
+                  coach panel; dictate->chat prompt + _send(). Failures surface in chat
+                  + auto-uncheck toggle; stopped on closeEvent.
+                - pyproject [voice-offline] = vosk + sounddevice; .gitignore .fpscoach_vosk/.
+                VERIFIED: ruff clean on new code (pre-existing B905 ~592); 53/53 tests
+                  pass (+test_voice_commands.py +test_vosk_service.py); parser mapping
+                  confirmed; deps False/find_model None in sandbox -> graceful.
+                CANNOT test here: real audio capture + model download (no audio/vosk/
+                  network); runs on the user's Windows machine with the extra installed.
+              Commits: ...2f832c6, a44e4cb (+ pending rev25 doc). ALL local, NOT pushed.
+  2026-10-19 (rev26)  Voice UX: listening indicator + configurable wake word.
+              Commit f1a4081 (local, NOT pushed).
+                - Sidebar self._listening_label (statusGood pill) shows '\U0001f399
+                  Listening...'/starting/status while the Vosk service runs; hidden
+                  when off or sidebar collapsed. _set_listening(active,text) +
+                  _listening_active; updated from _sync_voice_commands/_on_voice_status/
+                  _on_voice_cmd_failed and respected in _toggle_sidebar.
+                - Configurable WAKE WORD: voice_commands.parse(text, wake_word='coach')
+                  builds dictation prefixes from the wake word ('<wake>', 'hey <wake>',
+                  'ask <wake>', 'ask'); bare phrases still run commands. Settings has a
+                  wake-word QLineEdit -> ui/wake_word; _on_voice_command reads it.
+                VERIFIED: ruff clean (pre-existing B905 ~592); 54/54 tests pass
+                  (+custom-wake-word test).
+              Commits: ...a44e4cb, f1a4081 (+ pending rev26 doc). ALL local, NOT pushed.
+  2026-10-19 (rev27)  Training scenarios + performance analytics + crosshair
+              generator. Commit 0d5c379 (local, NOT pushed). All operate on the app's
+              OWN in-app drills / a preference tool (no game capture/injection).
+                - NEW scenarios.py (pure): Scenario catalog flick/precision/reaction/
+                  tracking (target_count, radius, moving, speed, spawn_delay_ms).
+                - NEW analytics.py (pure): summarize(reaction_times,hits,misses),
+                  SessionResult, AnalyticsStore(load/add/recent/aggregate/by_scenario/
+                  save) persisted to project_root/.fpscoach_analytics.json.
+                - NEW crosshair.py (pure): CrosshairConfig (shape/size/thickness/gap/
+                  dot/color/outline/opacity) normalized()+to/from_dict, PRESETS.
+                - UI in main_window.py: _draw_crosshair() + CrosshairPreview +
+                  CrosshairPage (controls, color picker, presets, PNG export via
+                  QImage, persists crosshair/config); TrainingCanvas (spawns targets
+                  per scenario, moving via QTimer, records reaction time=spawn->hit,
+                  accuracy; emits finished(key,rts,hits,misses)) + TrainingPage
+                  (scenario combo + progress + records to store, session_recorded);
+                  AnalyticsPage (avg accuracy/avg+best reaction metrics + recent list,
+                  refresh()).
+                - Wiring: new pages added to nav (keys training/analytics/crosshair)
+                  -> key_to_index auto-updates _idx_* lookups; scrolled_keys +=
+                  analytics/crosshair; dashboard_config.TOOLS + DEFAULT_ENABLED gained
+                  the 3 tools; voice_commands nav keywords added; shared
+                  self._analytics_store; training.session_recorded -> analytics.refresh.
+                  .gitignore .fpscoach_analytics.json.
+                VERIFIED: ruff clean on changed code (pre-existing B905 ~601 only);
+                  61/61 tests pass (+test_training_features.py). Qt not render-tested
+                  (no GL) - canvases/pages verified by logic + inspection.
+              Commits: ...f1a4081, 0d5c379 (+ pending rev27 doc). ALL local, NOT pushed.
+  2026-10-19 (rev28)  Auto-install vosk + sounddevice (seamless voice setup).
+              Commit 2e346ae (local, NOT pushed).
+                - vosk_service.py: REQUIRED_PACKAGES=((vosk,vosk),(sounddevice,
+                  sounddevice)); missing_packages(); ensure_dependencies(progress,
+                  timeout=900) pip-installs missing ones via [sys.executable,-m,pip,
+                  install,...], importlib.invalidate_caches(), re-verifies. Best-effort,
+                  non-raising, reports progress. dependencies_available() now derived
+                  from REQUIRED_PACKAGES.
+                - _VoiceCommandService.run() calls ensure_dependencies() (was a hard
+                  'needs packages' fail) before ensure_model/listen. Since
+                  _sync_voice_commands starts the service at startup when ui/
+                  voice_commands is on (and on toggle), deps install automatically
+                  with chat status; friendly message if it fails.
+                VERIFIED: ruff clean; 64/64 tests pass (+3 monkeypatched install tests
+                  - no real pip in tests). Actual pip run happens on the user's machine.
+              Commits: ...0d5c379, 2e346ae (+ pending rev28 doc). ALL local, NOT pushed.
+  2026-10-19 (rev29)  Training: stylized 2D enemy sprites + fast kill animation.
+              Commit b34bd37 (local, NOT pushed).
+                - ASSETS: generated 2 transparent enemy sprites via arena image gen,
+                  auto-cropped+resized to 256px (~70KB each) ->
+                  python/fps_coach/assets/enemies/enemy_robot.png, enemy_drone.png.
+                - NEW enemy_sprites.py (pure): sprite_files() lists bundled PNGs.
+                - TrainingCanvas: _load_sprites() caches QPixmaps; _next_target picks
+                  one (self._target_pix); _draw_enemy(painter,cx,cy,r,pix,scale)
+                  scales sprite to ~2.4*radius (aspect kept) or draws a procedural
+                  vector enemy fallback. paintEvent draws enemies instead of circles.
+                - FAST KILL ANIM (KILL_MS=420, <0.5s): on hit _spawn_kill() adds a
+                  transient {cx,cy,radius,pix,t0}; _kill_timer(16ms) -> _kill_tick
+                  prunes expired + update(); paint draws ghost scaling 1->1.6 + fading
+                  with a hit ring. Next target spawns immediately. set_animations(
+                  enabled) clears/stops when off; wired from apply_visuals ->
+                  training_page.canvas.set_animations(self._animations_on) (off in
+                  performance mode / animations off).
+                - Packaging: pyproject sdist.include assets/**; fpscoach.spec datas
+                  adds fps_coach/assets/enemies.
+                VERIFIED: ruff clean (pre-existing B905 ~601); 65/65 tests pass
+                  (+test_enemy_sprites.py); sprites RGBA/transparent, discovered OK.
+                  Qt paint not render-tested (no GL) - eyeball on Windows.
+              Commits: ...2e346ae, b34bd37 (+ pending rev29 doc). ALL local, NOT pushed.
+  2026-10-19 (rev30)  Merged Analytics INTO the Training tab (scrollable). Commit
+              13dc9af (local, NOT pushed).
+                - main_window: training_combined QWidget stacks self.training_page +
+                  self.analytics_page in a VBox; registered as the single page
+                  ("training","Training & analytics", training_combined). Removed the
+                  standalone ("analytics",...) page. scrolled_keys now includes
+                  "training" so the combined page scrolls. analytics_page.refresh()
+                  still wired to training_page.session_recorded.
+                - dashboard_config: removed the "analytics" tool; "training" label ->
+                  'Training & analytics'; DEFAULT_ENABLED drops analytics.
+                - voice_commands: 'analytics'/'stats' keywords merged into the
+                  "training" nav entry.
+                VERIFIED: ruff clean (pre-existing B905 ~601); 65/65 tests pass.
+              Commits: ...b34bd37, 13dc9af (+ pending rev30 doc). ALL local, NOT pushed.
+  2026-10-19 (rev31)  Download indicator + true-transparent sprites. Commit 7d95de7
+              (local, NOT pushed).
+                - DOWNLOAD INDICATOR: sidebar _setup_label + _setup_bar (indeterminate
+                  QProgressBar range(0,0)); _set_setup_indicator(active,text) +
+                  _setup_active. _on_voice_status shows it on install/download/extract/
+                  'setting up' keywords (appears immediately when ensure_dependencies/
+                  ensure_model start), hides on 'ready'/'listening'/failure. Respects
+                  sidebar collapse (re-applied in _toggle_sidebar).
+                - SPRITES: the earlier generated sprites were actually 100% OPAQUE
+                  (baked gray checkerboard bg). Regenerated both on a SOLID MAGENTA
+                  (#FF00FF) background, then chroma-keyed to real transparency
+                  (is_magenta test), trimmed to bbox, resized to 256px, low-alpha
+                  fringe snapped to 0. Now min alpha 0 (~21-42% transparent). Files:
+                  python/fps_coach/assets/enemies/enemy_robot.png (143x256) &
+                  enemy_drone.png (256x125). Verified visually - clean figures only.
+                VERIFIED: ruff clean (pre-existing B905 ~601); 65/65 tests pass.
+              Commits: ...13dc9af, 7d95de7 (+ pending rev31 doc). ALL local, NOT pushed.
+  2026-10-19 (rev32)  Eliminated the 'Vosk model installed but not configured' error.
+              Commit af6b663 (local, NOT pushed).
+                - vosk_service: validate_model(path) (needs conf + am/graph);
+                  find_model() returns only valid models; configured_model_path()/
+                  set_configured_model_path() persist the exact path to
+                  cache_dir()/model_path.txt; verify_and_configure(progress) validates
+                  + self-corrects the configured path WITHOUT downloading (returns
+                  None if truly absent). ensure_model() validates + locks the path.
+                  NEW recognize_once(phrase_limit) = real offline one-shot via the
+                  configured model.
+                - voice_control.recognize_once() vosk branch now calls
+                  vosk_service.recognize_once() -> the 'not configured' message is
+                  DELETED entirely.
+                - _VoiceCommandService uses verify_and_configure() then ensure_model()
+                  only if absent. MainWindow._verify_vosk_config() runs on startup
+                  (seamless) and mirrors the path to QSettings voice/vosk_model_path.
+                VERIFIED: ruff clean on changed code (pre-existing B905 ~601); 69/69
+                  tests pass (+4 validate/configure tests, monkeypatched cache_dir).
+              Commits: ...7d95de7, af6b663 (+ pending rev32 doc). ALL local, NOT pushed.
+  2026-10-19 (rev33)  pyttsx3 TEXT-TO-SPEECH for AI responses. Commit 9027afa
+              (local, NOT pushed).
+                - NEW tts_service.py: dependency_available(), ensure_dependency(
+                  progress) auto-pip-installs pyttsx3, create_engine() inits engine.
+                - _TtsService(QThread) in main_window: ensures dep, inits one engine,
+                  consumes a queue, engine.say+runAndWait off the UI thread.
+                  enqueue(text)/stop(); status/failed signals.
+                - AIChatPage.assistant_said Signal emitted in _received +
+                  _proactive_received; MainWindow.chat_page.assistant_said ->
+                  _speak_response -> _tts_service.enqueue. _sync_tts() (from
+                  apply_visuals) starts/stops per ui/tts_enabled; _on_tts_status shows
+                  the setup indicator during install; _on_tts_failed appends chat +
+                  unchecks toggle. Stopped on closeEvent.
+                - SettingsPage: 'Speak AI responses aloud' QCheckBox -> ui/tts_enabled
+                  (default False = opt-in; fully automatic once on). pyproject [tts]
+                  extra = pyttsx3.
+                VERIFIED: ruff clean (pre-existing B905 ~601); 74/74 tests pass (+5
+                  monkeypatched tts tests). Actual speech runs on user's machine.
+              Commits: ...af6b663, 9027afa (+ pending rev33 doc). ALL local, NOT pushed.
 
 --------------------------------------------------------------------------------
 9. OPEN QUESTIONS / ACTION ITEMS (need answers to finish)

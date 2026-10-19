@@ -19,9 +19,10 @@ from PyInstaller.utils.hooks import collect_submodules
 
 ROOT = Path(os.getcwd())
 
-# Ship only the AI pre-configuration with the frozen app.
+# Ship the AI pre-configuration and bundled enemy sprites with the frozen app.
 datas = [
     (str(ROOT / "config" / "ai_profile.toml"), "config"),
+    (str(ROOT / "python" / "fps_coach" / "assets" / "enemies"), "fps_coach/assets/enemies"),
 ]
 
 block_cipher = None
