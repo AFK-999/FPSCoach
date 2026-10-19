@@ -45,6 +45,7 @@ from fps_coach.ai_chat import (
     AIChatClient, ChatProviderError, ChatSettings, check_ollama, curve_context, pull_model,
 )
 from fps_coach.backend import CoreBackend
+from fps_coach.window_enum import get_window_rect, list_windows
 from fps_coach.crosshair import PRESETS as CROSSHAIR_PRESETS, CrosshairConfig, preset_names
 from fps_coach.curve_io import CurveFormatError, recommendation_profile, save_curve
 
@@ -197,6 +198,7 @@ class CapturePage(QWidget):
         ("Quality", "quality", None, 120),
         ("Balanced", "balanced", (960, 540), 60),
         ("Performance", "low", (640, 360), 30),
+        ("Custom", "custom", None, None),  # region + FPS chosen manually below
     ]
 
     def __init__(self, backend: CoreBackend, parent=None):
@@ -225,9 +227,7 @@ class CapturePage(QWidget):
             self.preset.addItem(label, value)
         index = self.preset.findData(str(s.value("capture/preset", "balanced")))
         self.preset.setCurrentIndex(index if index >= 0 else 1)
-        self.preset.currentIndexChanged.connect(
-            lambda i: s.setValue("capture/preset", self.preset.itemData(i))
-        )
+        self.preset.currentIndexChanged.connect(self._on_preset_changed)
         form.addWidget(self.preset, 1, 1)
 
         form.addWidget(_label("Hardware acceleration", "formLabel"), 2, 0)
@@ -235,6 +235,34 @@ class CapturePage(QWidget):
         self.hwaccel.setChecked(s.value("capture/hwaccel", True, type=bool))
         self.hwaccel.toggled.connect(lambda v: s.setValue("capture/hwaccel", bool(v)))
         form.addWidget(self.hwaccel, 2, 1)
+
+        self.custom_label = _label("Custom", "formLabel")
+        form.addWidget(self.custom_label, 4, 0)
+        self.custom_widget = QWidget()
+        custom_row = QHBoxLayout(self.custom_widget)
+        custom_row.setContentsMargins(0, 0, 0, 0)
+        self.custom_region = QComboBox()
+        self.custom_region.addItem("Center 640 × 360", (640, 360))
+        self.custom_region.addItem("Center 960 × 540", (960, 540))
+        self.custom_region.addItem("Full output", None)
+        self.custom_fps = QComboBox()
+        for fps in (30, 60, 120):
+            self.custom_fps.addItem(f"{fps} FPS", fps)
+        self.custom_fps.setCurrentIndex(1)
+        custom_row.addWidget(self.custom_region, 1)
+        custom_row.addWidget(self.custom_fps, 1)
+        form.addWidget(self.custom_widget, 4, 1)
+        self._on_preset_changed(self.preset.currentIndex())
+
+        form.addWidget(_label("Capture source", "formLabel"), 3, 0)
+        source_row = QHBoxLayout()
+        self.source_combo = QComboBox()
+        source_row.addWidget(self.source_combo, 1)
+        self.window_refresh_btn = QPushButton(" Refresh windows")
+        self.window_refresh_btn.setObjectName("secondary")
+        self.window_refresh_btn.setIcon(icon("refresh"))
+        source_row.addWidget(self.window_refresh_btn)
+        form.addLayout(source_row, 3, 1)
         lay.addLayout(form)
 
         btn_row = QHBoxLayout()
@@ -280,11 +308,13 @@ class CapturePage(QWidget):
         self.start_btn.clicked.connect(self._start)
         self.stop_btn.clicked.connect(self._stop)
         self.refresh_btn.clicked.connect(self._load_outputs)
+        self.window_refresh_btn.clicked.connect(self._load_windows)
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._refresh_stats)
         self._timer.start(250)
         self._load_outputs()
+        self._load_windows()
 
     # --- outputs ---------------------------------------------------------
     def _load_outputs(self):
@@ -296,6 +326,23 @@ class CapturePage(QWidget):
         if not outputs:
             self.output_combo.addItem("No display output found", None)
         self._update_buttons()
+
+    def _on_preset_changed(self, index: int):
+        value = self.preset.itemData(index)
+        if value is not None:
+            _settings().setValue("capture/preset", value)
+        custom = value == "custom"
+        self.custom_label.setVisible(custom)
+        self.custom_widget.setVisible(custom)
+
+    def _load_windows(self):
+        self.source_combo.clear()
+        self.source_combo.addItem("Entire display output", None)
+        for win in list_windows():
+            proc = f"  ·  {win['process']}" if win.get("process") else ""
+            title = win["title"]
+            label = (title[:48] + "…") if len(title) > 49 else title
+            self.source_combo.addItem(f"{label}{proc}", int(win["hwnd"]))
 
     def _update_buttons(self):
         running = self.stop_btn.isEnabled()
@@ -309,8 +356,20 @@ class CapturePage(QWidget):
         if not isinstance(output, dict):
             self._show_error("No display output is available to capture.")
             return
-        _label_text, _value, region, fps = self.PRESETS[max(0, self.preset.currentIndex())]
+        _label_text, value, region, fps = self.PRESETS[max(0, self.preset.currentIndex())]
+        if value == "custom":
+            region = self.custom_region.currentData()
+            fps = self.custom_fps.currentData()
         width, height = region if region else (int(output["width"]), int(output["height"]))
+        left, top = -1, -1
+        window_note = ""
+        hwnd = self.source_combo.currentData()
+        if hwnd:
+            rect = get_window_rect(int(hwnd))
+            if rect:
+                left, top, width, height = rect
+            else:
+                window_note = "Could not read that window's bounds; capturing the full output instead."
         try:
             self._backend.start_capture(
                 int(output["adapter_index"]),
@@ -318,12 +377,14 @@ class CapturePage(QWidget):
                 int(width),
                 int(height),
                 int(fps),
+                int(left),
+                int(top),
             )
         except RuntimeError as exc:  # NativeCoreUnavailable is a RuntimeError
             self._show_error(str(exc))
             return
         self._last_sequence = -1
-        self._show_error("")
+        self._show_error(window_note)
         self._set_running(True)
 
     def _stop(self):
