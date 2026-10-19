@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import json
 import math
+from copy import deepcopy
+from dataclasses import replace
 import random
 import sys
 import time
@@ -47,7 +49,14 @@ from fps_coach.ai_chat import (
 from fps_coach.backend import CoreBackend
 from fps_coach.window_enum import get_window_rect, list_windows
 from fps_coach.crosshair import PRESETS as CROSSHAIR_PRESETS, CrosshairConfig, preset_names
-from fps_coach.curve_io import CurveFormatError, recommendation_profile, save_curve
+from fps_coach.curve_adjust import adjust_from_recommendation, normalized_overlay
+from fps_coach.curve_io import (
+    CurveFormatError,
+    chart_points,
+    load_curve,
+    recommendation_profile,
+    save_curve,
+)
 
 ORG_NAME = "VantageLabs"
 APP_NAME = "Vantage"
@@ -566,6 +575,40 @@ def _curve_samples(points, count: int = 5) -> list[float]:
     return samples
 
 
+def _lerp_factor(xs: list[float], ys: list[float], x: float) -> float:
+    """Piecewise-linear lookup of ys at x (xs ascending), clamped at the ends."""
+    if x <= xs[0]:
+        return ys[0]
+    if x >= xs[-1]:
+        return ys[-1]
+    for (x0, y0), (x1, y1) in zip(zip(xs, ys), zip(xs[1:], ys[1:])):
+        if x0 <= x <= x1:
+            return y0 if x1 == x0 else y0 + (x - x0) / (x1 - x0) * (y1 - y0)
+    return ys[-1]
+
+
+def _apply_chart_edit(profile, baseline: list[float], edited: list[float]):
+    """Scale a profile's gains by how far each chart point was dragged (edited / baseline).
+
+    The chart samples the curve at evenly spaced x positions, so each sample gives a
+    factor; every profile point gets the factor interpolated at its own speed.
+    """
+    n = len(edited)
+    xs = [i / (n - 1) for i in range(n)]
+    factors = [(e / b) if b > 1e-6 else 1.0 for e, b in zip(edited, baseline)]
+
+    def scaled(points):
+        if not points:
+            return points
+        top = max((p.speed for p in points), default=1.0) or 1.0
+        return [
+            replace(p, multiplier=max(0.05, min(20.0, p.multiplier * _lerp_factor(xs, factors, min(1.0, p.speed / top)))))
+            for p in points
+        ]
+
+    return replace(profile, horizontal=scaled(profile.horizontal), vertical=scaled(profile.vertical))
+
+
 class CalibrationPage(QWidget):
     """Calibration task (CalibrationCanvas on backend.analyzer) plus the curve view.
 
@@ -579,6 +622,9 @@ class CalibrationPage(QWidget):
         super().__init__(parent)
         self._backend = backend
         self._last_recommendation = None
+        self._profile = None         # the curve Export writes (imported, calibrated, or edited)
+        self._base_profile = None    # imported curve that calibration adjusts
+        self._chart_baseline = None  # chart values before the latest drag
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(28, 24, 28, 24)
@@ -619,9 +665,13 @@ class CalibrationPage(QWidget):
         curve_lay.addWidget(self.chart)
 
         btn_row = QHBoxLayout()
-        self.save_btn = QPushButton(" Save profile")
+        self.import_btn = QPushButton(" Import curve")
+        self.import_btn.setObjectName("secondary")
+        self.import_btn.setIcon(icon("upload"))
+        self.save_btn = QPushButton(" Export curve")
         self.save_btn.setObjectName("secondary")
-        self.save_btn.setIcon(icon("check"))
+        self.save_btn.setIcon(icon("download"))
+        btn_row.addWidget(self.import_btn)
         btn_row.addWidget(self.save_btn)
         btn_row.addStretch(1)
         curve_lay.addLayout(btn_row)
@@ -636,42 +686,95 @@ class CalibrationPage(QWidget):
         self.canvas.completed.connect(self._on_complete)
         self.chart.curve_adjusted.connect(self._on_curve_adjusted)
         self.save_btn.clicked.connect(self._save)
+        self.import_btn.clicked.connect(self._import_curve)
 
     def _on_progress(self, completed: int, total: int):
         self.progress.setRange(0, max(1, total))
         self.progress.setValue(completed)
 
+    def _set_chart(self, points, previous=None):
+        self.chart.set_previous(previous)
+        self.chart.points = list(points)
+        self._chart_baseline = list(points)
+        self.chart.update()
+
     def _on_complete(self, summary: dict, recommendation: dict):
         self._last_recommendation = recommendation
-        self.chart.set_previous(list(self.chart.points))
-        self.chart.points = _curve_samples(recommendation.get("points") or [])
-        self.chart.update()
+        try:
+            if self._base_profile is not None:
+                # An imported curve is adjusted by the result instead of replaced.
+                adjusted, note = adjust_from_recommendation(self._base_profile, recommendation)
+                prev_pts, cur_pts = normalized_overlay(self._base_profile, adjusted)
+                self._profile = adjusted
+                self._set_chart(_curve_samples(cur_pts), previous=_curve_samples(prev_pts))
+                self.hint.setText(note)
+            else:
+                self._profile = recommendation_profile(recommendation)
+                self._set_chart(
+                    _curve_samples(recommendation.get("points") or []),
+                    previous=list(self.chart.points),
+                )
+        except CurveFormatError as exc:
+            self._profile = None
+            self.hint.setText(f"Could not build a curve from this run: {exc}")
         self.recommendation_ready.emit(summary, recommendation)
 
     def _on_curve_adjusted(self, points):
+        points = [float(v) for v in points]
+        baseline = self._chart_baseline or points
+        if self._profile is None:
+            # No curve yet: treat the chart values as the curve's output-speed shape.
+            n = len(points)
+            try:
+                self._profile = recommendation_profile(
+                    {"points": [(i / (n - 1), y) for i, y in enumerate(points)], "sensitivity_multiplier": 1.0}
+                )
+            except CurveFormatError:
+                pass
+        else:
+            self._profile = _apply_chart_edit(self._profile, baseline, points)
+        self._chart_baseline = list(points)
+        self.hint.setText("Curve edited. Export curve to save the edited version.")
         self.profile_changed.emit({"points": points})
 
+    def _import_curve(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import curve", "", "Custom Curves (*.cc4 *.ccurve);;All files (*)"
+        )
+        if not path:
+            return
+        try:
+            profile = load_curve(path)
+        except (CurveFormatError, OSError) as exc:
+            self.hint.setText(f"Import failed: {exc}")
+            return
+        self._base_profile = deepcopy(profile)
+        self._profile = deepcopy(profile)
+        self._set_chart(_curve_samples(chart_points(profile)))
+        self.hint.setText(
+            f"Imported {Path(path).name}. Run calibration to adjust it, or drag points to edit it."
+        )
+        self.profile_changed.emit({"imported": path})
+
     def _save(self):
-        if self._last_recommendation is None:
-            self.hint.setText("Run a calibration first, then save the resulting profile.")
+        if self._profile is None:
+            self.hint.setText("Run a calibration or import a curve first, then export it.")
             return
         path, _ = QFileDialog.getSaveFileName(
             self,
-            "Save curve profile",
+            "Export curve",
             "fps_coach_curve.cc4",
             "Custom Curve 4 (*.cc4);;Legacy Custom Curve (*.ccurve)",
         )
         if not path:
             return
         try:
-            profile = recommendation_profile(self._last_recommendation)
-            save_curve(profile, path)
+            destination = save_curve(self._profile, path)
         except (CurveFormatError, OSError) as exc:
-            QMessageBox.warning(self, "Vantage", f"Could not save profile: {exc}")
+            QMessageBox.warning(self, "Vantage", f"Could not export curve: {exc}")
             return
-        self.hint.setText(f"Saved the calibration recommendation to {path}.")
-        self.profile_changed.emit({"saved": path})
-
+        self.hint.setText(f"Exported the current curve to {destination}.")
+        self.profile_changed.emit({"saved": str(destination)})
 
 # ---------------------------------------------------------------------------
 # Recommendation
