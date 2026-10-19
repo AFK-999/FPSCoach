@@ -2861,7 +2861,7 @@ class MainWindow(QMainWindow):
                 self.calibration_page.canvas.cancel_session()
         elif command.kind == "preset":
             self._select_page("chat")
-            self.coach_panel.say("Quick actions are not available in this build.")
+            self.chat_page._apply_quick_action(command.value)
         elif command.kind == "panel":
             show = command.value == "show"
             self.s.setValue("ui/coach_panel", show)
