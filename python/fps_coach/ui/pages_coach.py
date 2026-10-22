@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from fps_coach import scenarios as scenario_defs
 from fps_coach.ai_chat import ChatSettings, curve_context
 from fps_coach.tts_service import SPEED_MAX, SPEED_MIN, VOLUME_MAX, VOLUME_MIN, SpeechOptions
 from fps_coach.ai_curve_actions import apply_adjustment, parse_adjustment
@@ -125,6 +126,32 @@ class ThinkingIndicator(QWidget):
         p.end()
 
 
+# AI Coach Focus: the tabs the coach works with. Capture gives settings only (no screen, no gameplay).
+FOCUS_AREAS = (("capture", "Capture"), ("calibration", "Calibration"), ("training", "Training"))
+
+_CALIBRATION_INSTRUCTION = (
+    "The user just completed a new calibration. Using the calibration summary "
+    "and current curve already in your context, give a brief (2-3 sentence) "
+    "proactive assessment and one concrete next step. Do not ask questions."
+)
+
+
+def _training_instruction(name: str, result) -> str:
+    return (
+        f"The user just finished a training drill: {name}, accuracy {result.accuracy * 100:.0f}%, "
+        f"average reaction {result.avg_reaction_ms:.0f} ms, best {result.best_reaction_ms:.0f} ms. "
+        "Using these results and your context, give a brief (2-3 sentence) assessment. "
+        "If a curve change would help, name one concrete adjustment. Do not ask questions."
+    )
+
+
+def _scenario_label(key: str) -> str:
+    try:
+        return scenario_defs.get(key).name
+    except KeyError:
+        return key
+
+
 class AIChatPage(QWidget):
     """AI Coach chat. Sends turns through ai_chat.AIChatClient (Ollama by default),
     adds the latest calibration as context, and takes one spoken phrase as input.
@@ -189,6 +216,7 @@ class AIChatPage(QWidget):
         voice_lay = QVBoxLayout(self.voice_settings)
         voice_lay.setContentsMargins(0, 0, 0, 0)
         voice_lay.setSpacing(8)
+        voice_lay.addLayout(self._build_focus_section())
         voice_lay.addWidget(_label("Replies", "formLabel"))
         voice_lay.addLayout(self._build_speech_bar())
         voice_lay.addLayout(self._build_text_size_bar())
@@ -269,11 +297,113 @@ class AIChatPage(QWidget):
         self._refresh_context()
 
     def notify_new_calibration(self, summary: dict, recommendation: dict) -> None:
-        """Called when a calibration completes: refresh the coach's context and post
-        a proactive note without waiting for the user."""
+        """Called when a calibration completes. The coach's context is always refreshed. An
+        automatic note and AI recommendation are posted only when Calibration focus is on."""
         self.set_calibration_context(summary, recommendation)
+        if not self._focus_on("calibration"):
+            return
         self._append("Coach (auto)", self._local_proactive_note(summary, recommendation))
-        self._maybe_proactive_ai(summary, recommendation)
+        self._maybe_proactive_ai(_CALIBRATION_INSTRUCTION)
+
+    def notify_new_training(self, result) -> None:
+        """Called when a training drill finishes. Posts a note and an AI recommendation only
+        when Training focus is on. Uses the app's own drill result; no screen is read."""
+        if not self._focus_on("training"):
+            return
+        name = _scenario_label(result.scenario)
+        self._append(
+            "Coach (auto)",
+            f"Training drill finished: {name}. Accuracy {result.accuracy * 100:.0f}%, "
+            f"average reaction {result.avg_reaction_ms:.0f} ms, best {result.best_reaction_ms:.0f} ms. "
+            "Ask for a curve adjustment, or use a suggested action.",
+        )
+        self._maybe_proactive_ai(_training_instruction(name, result))
+
+    # -- AI Coach Focus ---------------------------------------------------------
+    def _build_focus_section(self) -> QVBoxLayout:
+        box = QVBoxLayout()
+        box.setSpacing(6)
+        box.addWidget(_label("AI Coach Focus", "formLabel"))
+        box.addWidget(_label(
+            "Choose which tabs the coach works with. Everything is off until you turn it on.",
+            "cardSubtitle", wrap=True,
+        ))
+        self.focus_master = QCheckBox("All three")
+        self.focus_master.setToolTip("Turns Capture, Calibration and Training on or off together.")
+        self.focus_master.toggled.connect(self._on_focus_master_toggled)
+        box.addWidget(self.focus_master)
+        row = QHBoxLayout()
+        row.setSpacing(16)
+        self.focus_boxes: dict[str, QCheckBox] = {}
+        for key, label in FOCUS_AREAS:
+            check = QCheckBox(label)
+            check.setChecked(self._settings.value(f"coach/focus/{key}", False, type=bool))
+            check.toggled.connect(self._on_focus_item_toggled)
+            self.focus_boxes[key] = check
+            row.addWidget(check)
+        row.addStretch(1)
+        box.addLayout(row)
+        self.focus_note = _label("", "cardSubtitle", wrap=True)
+        box.addWidget(self.focus_note)
+        self._sync_focus_master()
+        self._update_focus_note()
+        return box
+
+    def _focus_on(self, key: str) -> bool:
+        boxes = getattr(self, "focus_boxes", None)
+        return bool(boxes and boxes[key].isChecked())
+
+    def _sync_focus_master(self) -> None:
+        all_on = all(box.isChecked() for box in self.focus_boxes.values())
+        self.focus_master.blockSignals(True)
+        self.focus_master.setChecked(all_on)
+        self.focus_master.blockSignals(False)
+
+    def _on_focus_master_toggled(self, checked: bool) -> None:
+        for box in self.focus_boxes.values():
+            box.blockSignals(True)
+            box.setChecked(bool(checked))
+            box.blockSignals(False)
+        self._focus_changed()
+
+    def _on_focus_item_toggled(self, _checked: bool = False) -> None:
+        self._sync_focus_master()
+        self._focus_changed()
+
+    def _focus_changed(self) -> None:
+        for key, box in self.focus_boxes.items():
+            self._settings.setValue(f"coach/focus/{key}", box.isChecked())
+        self._update_focus_note()
+        self._refresh_context()
+
+    def _update_focus_note(self) -> None:
+        if not any(self._focus_on(key) for key, _ in FOCUS_AREAS):
+            self.focus_note.setText(
+                "Off. The coach posts no automatic notes after calibration or training."
+            )
+            return
+        parts = []
+        if self._focus_on("calibration"):
+            parts.append("After each calibration: a note and a curve recommendation.")
+        if self._focus_on("training"):
+            parts.append("After each training drill: a note and a recommendation.")
+        if self._focus_on("capture"):
+            parts.append(
+                "Capture: the coach sees capture settings (preset, FPS) only. "
+                "It cannot see the screen or gameplay."
+            )
+        self.focus_note.setText(" ".join(parts))
+
+    def _with_capture_focus(self, context: str) -> str:
+        if not self._focus_on("capture"):
+            return context
+        preset = str(self._settings.value("capture/preset", "balanced"))
+        fps = self._settings.value("capture/fps", 60, type=int)
+        line = (
+            f"Capture settings: preset '{preset}', {fps} FPS. The coach cannot see the "
+            "screen or gameplay; this is configuration only."
+        )
+        return f"{context}\n\n{line}" if context else line
 
     def set_base_profile(self, profile) -> None:
         """Receive the imported curve so suggestions and AI adjustments can build on it."""
@@ -303,7 +433,7 @@ class AIChatPage(QWidget):
                 f"({self._base_profile.source_format}); horizontal speed,gain points: {pts}. "
                 "When asked for adjustments, modify THIS curve rather than designing a new one."
             )
-        self._calibration_context = context
+        self._calibration_context = self._with_capture_focus(context)
 
     def _local_proactive_note(self, summary: dict, recommendation: dict) -> str:
         title = str(recommendation.get("title", "Recommendation"))
@@ -325,7 +455,7 @@ class AIChatPage(QWidget):
         parts.append("Ask me anything about these results, or use a suggested action.")
         return " ".join(parts)
 
-    def _maybe_proactive_ai(self, summary: dict, recommendation: dict) -> None:
+    def _maybe_proactive_ai(self, instruction: str) -> None:
         # Never trigger a surprise download or a paid API call without user action.
         if str(self._settings.value("ai/provider", "ollama")) != "ollama":
             return
@@ -334,7 +464,7 @@ class AIChatPage(QWidget):
         settings = self._chat_settings()
         if not settings.base_url or not settings.model:
             return
-        self._proactive_pending = (summary, recommendation)
+        self._proactive_pending = instruction
         self._proactive_check = _OllamaStatusCheck(settings.base_url, settings.model, self)
         self._proactive_check.status_ready.connect(self._on_proactive_status)
         self._proactive_check.finished.connect(self._proactive_check_finished)
@@ -350,11 +480,7 @@ class AIChatPage(QWidget):
             return
         if self._proactive_request is not None:
             return
-        instruction = (
-            "The user just completed a new calibration. Using the calibration summary "
-            "and current curve already in your context, give a brief (2-3 sentence) "
-            "proactive assessment and one concrete next step. Do not ask questions."
-        )
+        instruction = self._proactive_pending
         messages = list(self._messages) + [{"role": "user", "content": instruction}]
         self._proactive_request = _ChatRequest(self._chat_settings(), messages, self._calibration_context, self)
         self._proactive_request.response_ready.connect(self._proactive_received)
@@ -368,7 +494,8 @@ class AIChatPage(QWidget):
         self._messages.append({"role": "assistant", "content": answer})
         self._append("Coach", answer)
         self.assistant_said.emit(answer)
-        self._apply_ai_adjustment(answer)
+        # Automatic answers are recommendations only. A curve change is applied from the chat,
+        # by the user, never from this path.
 
     def _proactive_quiet_fail(self, _message: str) -> None:
         # The instant local note already covered the user; stay silent on failure.

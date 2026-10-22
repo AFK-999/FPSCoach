@@ -579,6 +579,7 @@ class MainWindow(QMainWindow):
     def _on_session_recorded(self, result):
         self.coach_panel.say(f"Session complete \u2014 {result.accuracy * 100:.0f}% accuracy.")
         self._refresh_dashboard()
+        self.chat_page.notify_new_training(result)
 
     def _on_crosshair_edited(self, config):
         self._refresh_dashboard()

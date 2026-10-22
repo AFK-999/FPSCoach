@@ -1,7 +1,7 @@
 ================================================================================
 FPS COACH — CONTINUATION / HANDOFF DOCUMENT
 Copy-paste this whole file into a new agent chat to resume with zero context loss.
-Last updated: 2026-10-22 (rev 63)  (update after EVERY response)
+Last updated: 2026-10-22 (rev 64)  (update after EVERY response)
 
 *** IMPORTANT (rev4): The REAL repo was provided and differs a lot from the
 *** earlier scaffold. Work on the REAL repo at /home/user/workspace/FPSCoach
@@ -145,6 +145,14 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     /home/user/workspace/FPSCoach   (clone of https://github.com/AFK-999/FPSCoach.git)
     Remote origin/main = e9e69a2   (the visual REDESIGN; based on 04e6b0f)
     Working branch     = fix/redesign-backend-wiring (from e9e69a2), NOT pushed.
+    REV64 STATUS: rev63 plus AI Coach Focus (in the Settings block on AI Coach): toggles for Capture,
+    Calibration and Training, plus an "All three" master. All off by default; saved as coach/focus/*.
+    Calibration: the automatic note and AI recommendation after a calibration run only when Calibration
+    is on (this changes the old always-on behaviour). Training: a note and AI recommendation after each
+    drill when Training is on (app drill results only). Capture: the coach sees capture settings
+    (preset, FPS) only. NOT BUILT, declined category: any screen or gameplay access, real-time feedback
+    from gameplay, and curves generated from capture. Automatic answers are shown but never applied to
+    the curve. Still NOT pushed.
     REV63 STATUS: rev62 plus (1) AI Coach: the Replies controls (Read replies aloud, Stop speaking,
     reply text size) moved from the top of the tab into the gear-opened Settings block, above Voice.
     The gear is the only control at the top, and the block is collapsed by default. This reverses the
@@ -1213,6 +1221,20 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
               slider and the new capture arguments); app.py quit run exit 0, no traceback.
               NOT verified: real display, Win32 window list, native capture, real Ollama,
               real game curve files, Windows build.
+
+  2026-10-22 (rev64)  AI COACH FOCUS: CAPTURE / CALIBRATION / TRAINING TOGGLES.
+              - pages_coach.py: FOCUS_AREAS, _build_focus_section (master "All three" + 3 checkboxes,
+                saved coach/focus/<area>, default off), _focus_changed, _update_focus_note,
+                _with_capture_focus (capture preset and FPS only in context).
+              - notify_new_calibration: note + AI recommendation only when Calibration is on (context
+                still refreshed). notify_new_training (new): note + AI recommendation when Training is on.
+              - _maybe_proactive_ai now takes the instruction text. _proactive_received no longer
+                applies a curve change: automatic answers are shown only.
+              - main_window._on_session_recorded calls chat_page.notify_new_training.
+              - DECLINED, NOT BUILT: Capture screen/gameplay access, real-time gameplay feedback, curves
+                generated from capture. Gameplay analysis from screen capture is a declined category.
+              - Tests: tests/test_coach_focus.py (11). Full suite 280 passed. ruff F clean. compileall OK.
+                Wiring 32/32. Screenshot /tmp/shots13/focus_open.png checked.
 
   2026-10-22 (rev63)  AI COACH REPLIES MOVED INTO SETTINGS; TEST VOICE PLAYS EVERY TIME.
               - pages_coach.py: the top of AI Coach is now a "Settings" header with the gear. The gear
