@@ -145,6 +145,11 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     /home/user/workspace/FPSCoach   (clone of https://github.com/AFK-999/FPSCoach.git)
     Remote origin/main = e9e69a2   (the visual REDESIGN; based on 04e6b0f)
     Working branch     = fix/redesign-backend-wiring (from e9e69a2), NOT pushed.
+    REV56 STATUS: rev55 plus crosshair overlay focus: the overlay is a top-level window with
+    no owner (it was a child of the main window), carries the no-focus window flag, and
+    answers WM_MOUSEACTIVATE with MA_NOACTIVATE on Windows, so clicks and drags do not
+    activate it. NOT verified on Windows: the real focus behaviour (see report 1I checklist).
+    Still NOT pushed.
     REV55 STATUS: rev54 plus (1) Capture: a Frame rate row (30 / 60 / 120 FPS) is always
     visible; choosing a preset sets its rate; the choice is saved and used at Start;
     (2) Training: Target speed (0.50x-2.00x) and Difficulty (Level 1-5) sliders, applied to
@@ -1177,6 +1182,21 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
               slider and the new capture arguments); app.py quit run exit 0, no traceback.
               NOT verified: real display, Win32 window list, native capture, real Ollama,
               real game curve files, Windows build.
+
+  2026-10-22 (rev56)  CROSSHAIR OVERLAY FOCUS.
+              - Cause: the overlay was created with parent=MainWindow, so it was an owned
+                window. On Windows an owned window can pull activation back to its owner.
+              - Fix (ui/crosshair_overlay.py): no parent or owner. Added the
+                WindowDoesNotAcceptFocus flag in both modes. nativeEvent answers
+                WM_MOUSEACTIVATE with MA_NOACTIVATE (native_reply), so a click delivers
+                the mouse events but does not activate the overlay. Other messages are not
+                handled there.
+              - ui/main_window.py: the overlay is created without parent.
+              - Tests: tests/test_crosshair_focus.py (8). Full suite 228 passed. ruff F clean.
+                compileall OK. Wiring 32/32.
+              - NOT verified: real Windows focus. The offscreen test platform does not model
+                activation, so the focus check there is only a smoke test. Manual Windows
+                checklist in report section 1I.
 
   2026-10-22 (rev55)  CAPTURE FRAME RATE, TRAINING SPEED AND DIFFICULTY, PRECISION DRILL.
               - Capture: 30 / 60 / 120 FPS selector is always visible (it had been shown only

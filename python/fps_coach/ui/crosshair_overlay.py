@@ -9,9 +9,18 @@ Off by default. Two states:
 
 The overlay only draws. It does not read the screen, the game, or any process, and it
 never injects into or hooks any process. It does not take keyboard focus.
+
+Focus: the overlay is a top-level window with no owner. An owned window (a child of the
+main window) can pull activation back to its owner on Windows, so it must not have one.
+In both states it also refuses to be activated by a click (WM_MOUSEACTIVATE returns
+MA_NOACTIVATE). Dragging it therefore keeps focus where it was, and the AI Coach window
+does not take it back.
 """
 
 from __future__ import annotations
+
+import ctypes
+from ctypes import wintypes
 
 from PySide6.QtCore import QPoint, QRect, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
@@ -23,6 +32,35 @@ from .widgets import _draw_crosshair
 
 _MIN_SIDE = 32
 _EDIT_MIN_SIDE = 200  # larger target area while editing, so it is easy to grab
+
+_WM_MOUSEACTIVATE = 0x0021
+_MA_NOACTIVATE = 3  # receive the click, but do not activate this window
+_WINDOWS_MSG_EVENT = b"windows_generic_MSG"
+
+
+class _MSG(ctypes.Structure):
+    """Win32 MSG layout. Only `message` is read; the rest keeps the layout correct."""
+
+    _fields_ = [
+        ("hwnd", ctypes.c_void_p),
+        ("message", wintypes.UINT),
+        ("wParam", ctypes.c_size_t),
+        ("lParam", ctypes.c_ssize_t),
+        ("time", wintypes.DWORD),
+        ("x", wintypes.LONG),
+        ("y", wintypes.LONG),
+    ]
+
+
+def native_reply(message_id: int) -> tuple[bool, int] | None:
+    """Return the (handled, result) reply for a Win32 message, or None to pass it on.
+
+    Clicking the overlay must not activate it, so WM_MOUSEACTIVATE is answered with
+    MA_NOACTIVATE. The mouse events still arrive, so dragging works.
+    """
+    if message_id == _WM_MOUSEACTIVATE:
+        return True, _MA_NOACTIVATE
+    return None
 
 
 def overlay_side(cfg: CrosshairConfig) -> int:
@@ -41,9 +79,9 @@ class CrosshairOverlay(QWidget):
 
     position_committed = Signal(QPoint)  # emitted when a drag ends (use it to save)
 
-    def __init__(self, config: CrosshairConfig, centre: QPoint | None = None,
-                 parent: QWidget | None = None):
-        super().__init__(parent, self._flags())
+    def __init__(self, config: CrosshairConfig, centre: QPoint | None = None):
+        # Always a top-level window with no parent or owner. See the module docstring.
+        super().__init__(None, self._flags())
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self._cfg = config
@@ -55,7 +93,21 @@ class CrosshairOverlay(QWidget):
 
     @staticmethod
     def _flags() -> Qt.WindowType:
-        return Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool
+        return (
+            Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.Tool
+            | Qt.WindowType.WindowDoesNotAcceptFocus
+        )
+
+    def nativeEvent(self, eventType, message):  # noqa: N802 - Qt naming
+        """Refuse click-activation on Windows; every other message is not handled here."""
+        if bytes(eventType) == _WINDOWS_MSG_EVENT and message:
+            msg = ctypes.cast(int(message), ctypes.POINTER(_MSG)).contents
+            reply = native_reply(int(msg.message))
+            if reply is not None:
+                return reply
+        return False, 0  # not handled: Qt continues with its normal processing
 
     # -- state -----------------------------------------------------------------
     @property

@@ -321,8 +321,9 @@ class MainWindow(QMainWindow):
 
     def _ensure_overlay(self) -> CrosshairOverlay:
         if self._overlay is None:
+            # No parent: the overlay must stay an independent window (see crosshair_overlay).
             self._overlay = CrosshairOverlay(
-                self.crosshair_page._model, centre=self._saved_overlay_centre(), parent=self
+                self.crosshair_page._model, centre=self._saved_overlay_centre()
             )
             self._overlay.position_committed.connect(self._save_overlay_centre)
         return self._overlay
