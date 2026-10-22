@@ -300,6 +300,7 @@ class MainWindow(QMainWindow):
         self.calibration_page.base_profile_changed.connect(self.chat_page.set_base_profile)
         self.chat_page.curve_adjusted.connect(self._on_curve_adjusted)
         self.recommendation_page.recommendation_ready.connect(self._on_recommendation)
+        self.recommendation_page.apply_requested.connect(self._on_apply_recommendation)
         self.chat_page.assistant_said.connect(self._on_assistant_said)
         self.chat_page.assistant_said.connect(self._speak_response)
         self.chat_page.read_aloud_changed.connect(self._on_read_aloud_changed)
@@ -542,6 +543,13 @@ class MainWindow(QMainWindow):
         # Calibration graph as before/after and switch there.
         self.calibration_page.set_adjusted(previous, current, note)
         self.coach_panel.say(note)
+        self._select_page("calibration")
+
+    def _on_apply_recommendation(self, recommendation: dict):
+        """Generate recommendation: draw the curve on the Calibration chart and show it there."""
+        self.calibration_page.apply_recommendation(dict(recommendation))
+        mult = float(recommendation.get("sensitivity_multiplier", 1.0))
+        self.coach_panel.say(f"Applied the recommended curve (\u00d7{mult:.2f}) to the Calibration chart.")
         self._select_page("calibration")
 
     def _on_recommendation(self, result):

@@ -783,7 +783,16 @@ class CalibrationPage(QWidget):
 
     def _on_complete(self, summary: dict, recommendation: dict):
         self._last_recommendation = recommendation
-        self._checkpoint()  # a calibration result is a change: the old curve can be undone
+        self.apply_recommendation(recommendation)
+        self.recommendation_ready.emit(summary, recommendation)
+
+    def apply_recommendation(self, recommendation: dict) -> None:
+        """Draw a recommendation's curve on the chart, before/after, and make it the curve Export writes.
+
+        Used when a calibration finishes and when Generate recommendation is clicked. The
+        change is recorded for Undo.
+        """
+        self._checkpoint()  # a recommendation is a change: the old curve can be undone
         try:
             if self._base_profile is not None:
                 # An imported curve is adjusted by the result instead of replaced.
@@ -801,7 +810,6 @@ class CalibrationPage(QWidget):
         except CurveFormatError as exc:
             self._profile = None
             self.hint.setText(f"Could not build a curve from this run: {exc}")
-        self.recommendation_ready.emit(summary, recommendation)
 
     def _on_curve_adjusted(self, points):
         points = [float(v) for v in points]
@@ -885,9 +893,12 @@ class RecommendationPage(QWidget):
     Neither column is stacked on resize or minimize.
 
     recommendation_ready(dict) is emitted for every new recommendation.
+    apply_requested(dict) is emitted only by the Generate button. The main window
+    uses it to show the curve on the Calibration chart.
     """
 
     recommendation_ready = Signal(dict)
+    apply_requested = Signal(dict)
 
     def __init__(self, backend: CoreBackend, parent=None):
         super().__init__(parent)
@@ -992,3 +1003,4 @@ class RecommendationPage(QWidget):
             return
         recommendation = dict(self._backend.analyzer.recommend())
         self.update_result(summary, recommendation)
+        self.apply_requested.emit(recommendation)

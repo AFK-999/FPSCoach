@@ -145,6 +145,9 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     /home/user/workspace/FPSCoach   (clone of https://github.com/AFK-999/FPSCoach.git)
     Remote origin/main = e9e69a2   (the visual REDESIGN; based on 04e6b0f)
     Working branch     = fix/redesign-backend-wiring (from e9e69a2), NOT pushed.
+    REV61 STATUS: rev60 plus Recommendation: Generate recommendation now opens the Calibration tab
+    and draws the generated curve on its chart (solid line, previous curve dashed). The change can
+    be undone. The calibration-finished path still opens the Recommendation tab. Still NOT pushed.
     REV60 STATUS: rev59 plus AI Coach: the speech bar (Speed, Volume, Voice, Test voice) and the
     pitch note are in their own collapsible "Voice settings" block, opened from a gear on the
     Voice heading. The gear tooltip shows speed and volume. Read aloud, Stop speaking and text
@@ -1198,6 +1201,17 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
               slider and the new capture arguments); app.py quit run exit 0, no traceback.
               NOT verified: real display, Win32 window list, native capture, real Ollama,
               real game curve files, Windows build.
+
+  2026-10-22 (rev61)  GENERATE RECOMMENDATION APPLIES THE CURVE ON CALIBRATION.
+              - CalibrationPage.apply_recommendation(rec): draws the curve on the chart with the
+                previous curve kept for comparison, records undo, and sets the hint. The
+                calibration-finished path uses the same method.
+              - RecommendationPage: new signal apply_requested(dict), emitted only by the
+                Generate button (not by calibration results).
+              - MainWindow._on_apply_recommendation: applies the curve, shows a coach message,
+                and switches to Calibration.
+              - Tests: tests/test_recommendation_apply.py (6). Full suite 248 passed. ruff F clean.
+                compileall OK. Wiring 32/32. Screenshot of Calibration after Generate checked.
 
   2026-10-22 (rev60)  AI COACH VOICE SETTINGS BLOCK.
               - The speech bar (Speed, Volume, Voice, Test voice) and the pitch note moved into
