@@ -150,7 +150,9 @@ class _TtsService(QThread):
                         pass
                     try:
                         result.speaker.say(text)
-                    except Exception:  # noqa: BLE001 - one bad utterance must not kill the worker
+                    except Exception as exc:  # noqa: BLE001 - one bad utterance must not kill the worker
+                        # Say so in the chat; the next reply gets a fresh engine.
+                        self.status.emit(f"Could not read that reply aloud: {exc or type(exc).__name__}")
                         continue
             finally:
                 try:

@@ -136,12 +136,24 @@ class InitResult:
 
 
 class _Pyttsx3Speaker:
-    def __init__(self, engine, driver: str | None) -> None:
-        self._engine = engine
+    """Speaks through pyttsx3.
+
+    pyttsx3 can refuse a second runAndWait() on the same engine: its loop flag stays set
+    after a run that raised, so every later sentence is lost. The first sentence uses the
+    engine made at start-up. Every later sentence gets a new engine from ``make_engine``,
+    configured with the same settings, so one bad run cannot silence the rest.
+    """
+
+    def __init__(self, engine, driver: str | None, make_engine=None) -> None:
+        self._engine = engine  # used for voices() and for the first sentence
+        self._make_engine = make_engine
+        self._spent = False  # True once the start-up engine has spoken
+        self._current = engine
         self.name = f"pyttsx3 {driver or 'default'} driver"
         self._voice_ids: dict[str, str] = {}
         self._default_voice_id = None
         self._applied: SpeechOptions | None = None
+        self._options = SpeechOptions()
 
     def voices(self) -> list[str]:
         """Voice names this engine can use. Also remembers the engine's default voice."""
@@ -160,26 +172,45 @@ class _Pyttsx3Speaker:
         return names
 
     def apply(self, options: SpeechOptions) -> None:
-        """Set rate, volume, and voice on this thread, before the next utterance."""
-        if options == self._applied:
+        """Remember rate, volume, and voice. They are set on the engine before each sentence."""
+        options = options.clamped()
+        if options == self._options and self._applied is not None:
             return
-        self._engine.setProperty("rate", pyttsx3_rate(options.speed))
-        self._engine.setProperty("volume", options.volume / 100.0)
+        self._options = options
+        if not self._spent:
+            # The start-up engine is set now; later engines are set when they speak.
+            self._configure(self._engine)
+
+    def _configure(self, engine) -> None:
+        options = self._options
+        engine.setProperty("rate", pyttsx3_rate(options.speed))
+        engine.setProperty("volume", options.volume / 100.0)
         if options.voice:
             voice_id = self._voice_ids.get(options.voice)
             if voice_id is not None:
-                self._engine.setProperty("voice", voice_id)
+                engine.setProperty("voice", voice_id)
         elif self._default_voice_id is not None:
-            self._engine.setProperty("voice", self._default_voice_id)
+            engine.setProperty("voice", self._default_voice_id)
         self._applied = options
 
+    def _next_engine(self):
+        if not self._spent:
+            self._spent = True
+            return self._engine
+        if self._make_engine is None:
+            return self._engine
+        return self._make_engine()
+
     def say(self, text: str) -> None:
-        self._engine.say(text)
-        self._engine.runAndWait()
+        engine = self._next_engine()
+        self._current = engine
+        self._configure(engine)
+        engine.say(text)
+        engine.runAndWait()
 
     def close(self) -> None:
         try:
-            self._engine.stop()
+            self._current.stop()
         except Exception:  # noqa: BLE001 - shutdown must never raise
             pass
 
@@ -365,7 +396,7 @@ def _speaker_from_pyttsx3(driver: str | None) -> Speaker:
     voices = engine.getProperty("voices")
     if not voices:
         raise RuntimeError("no voices are installed for this driver")
-    return _Pyttsx3Speaker(engine, driver)
+    return _Pyttsx3Speaker(engine, driver, make_engine=lambda: pyttsx3.init(driverName=driver))
 
 
 def _init_powershell() -> Speaker:

@@ -42,13 +42,23 @@ def _y(page, widget) -> int:
     return widget.mapTo(page, widget.rect().topLeft()).y()
 
 
-def test_read_aloud_and_reply_text_size_sit_above_the_transcript(page) -> None:
-    assert _y(page, page.read_aloud) < _y(page, page.transcript)
-    assert _y(page, page.font_slider) < _y(page, page.transcript)
+def test_settings_gear_sits_above_the_transcript(page) -> None:
+    assert _y(page, page.voice_settings_toggle) < _y(page, page.transcript)
 
 
-def test_replies_controls_come_before_the_voice_section(page) -> None:
-    assert _y(page, page.read_aloud) < _y(page, page.font_slider) < _y(page, page.voice_settings_toggle)
+def test_replies_controls_live_in_the_settings_block(page) -> None:
+    # Read aloud, Stop speaking, and reply text size moved into the gear-opened Settings block.
+    for widget in (page.read_aloud, page.stop_speaking_btn, page.font_slider,
+                   page.font_reset_btn, page.speech_status):
+        assert page.voice_settings.isAncestorOf(widget)
+
+
+def test_replies_come_before_voice_inside_the_settings_block(page) -> None:
+    # The block is hidden until the gear opens, so open it before comparing positions.
+    page.voice_settings_toggle.setChecked(True)
+    page.show()
+    assert _y(page, page.read_aloud) < _y(page, page.font_slider) < _y(page, page.speed_slider)
+    page.voice_settings_toggle.setChecked(False)
 
 
 def test_quick_actions_stay_below_the_transcript(page) -> None:
@@ -63,6 +73,7 @@ def test_section_headings_are_present(page) -> None:
     from PySide6.QtWidgets import QLabel
 
     texts = [label.text() for label in page.findChildren(QLabel)]
+    assert "Settings" in texts
     assert "Replies" in texts
     assert "Voice" in texts
 
@@ -87,8 +98,8 @@ def test_voice_settings_are_collapsed_behind_a_gear(page) -> None:
 def test_speed_volume_voice_and_test_live_in_the_voice_settings(page) -> None:
     for widget in (page.speed_slider, page.volume_slider, page.voice_combo, page.test_voice_btn):
         assert page.voice_settings.isAncestorOf(widget)
-    assert not page.voice_settings.isAncestorOf(page.read_aloud)
-    assert not page.voice_settings.isAncestorOf(page.font_slider)
+    assert page.voice_settings.isAncestorOf(page.read_aloud)
+    assert page.voice_settings.isAncestorOf(page.font_slider)
 
 
 def test_pitch_note_is_inside_the_voice_settings(page) -> None:
@@ -104,3 +115,11 @@ def test_gear_tooltip_shows_speed_and_volume(page) -> None:
     page.volume_slider.setValue(70)
     tip = page.voice_settings_toggle.toolTip()
     assert "speed 1.50x" in tip and "volume 70%" in tip
+
+
+def test_gear_tooltip_shows_read_aloud_and_text_size(page) -> None:
+    page.read_aloud.setChecked(True)
+    page.font_slider.setValue(18)
+    tip = page.voice_settings_toggle.toolTip()
+    assert "read aloud on" in tip and "text 18 px" in tip
+    page.read_aloud.setChecked(False)

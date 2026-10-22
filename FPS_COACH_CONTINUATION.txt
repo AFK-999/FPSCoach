@@ -1,7 +1,7 @@
 ================================================================================
 FPS COACH — CONTINUATION / HANDOFF DOCUMENT
 Copy-paste this whole file into a new agent chat to resume with zero context loss.
-Last updated: 2026-10-22 (rev 62)  (update after EVERY response)
+Last updated: 2026-10-22 (rev 63)  (update after EVERY response)
 
 *** IMPORTANT (rev4): The REAL repo was provided and differs a lot from the
 *** earlier scaffold. Work on the REAL repo at /home/user/workspace/FPSCoach
@@ -145,6 +145,14 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     /home/user/workspace/FPSCoach   (clone of https://github.com/AFK-999/FPSCoach.git)
     Remote origin/main = e9e69a2   (the visual REDESIGN; based on 04e6b0f)
     Working branch     = fix/redesign-backend-wiring (from e9e69a2), NOT pushed.
+    REV63 STATUS: rev62 plus (1) AI Coach: the Replies controls (Read replies aloud, Stop speaking,
+    reply text size) moved from the top of the tab into the gear-opened Settings block, above Voice.
+    The gear is the only control at the top, and the block is collapsed by default. This reverses the
+    rev59/rev60 placement, as the user asked. (2) Test voice: fixed. Each sentence now gets a fresh
+    pyttsx3 engine, so later sentences are no longer lost after the first. A failed sentence is shown
+    in the speech status. The exact Windows cause is NOT reproduced here: the user must confirm on
+    Windows. The Settings-tab Replies card from rev62 is kept, and the user should confirm whether
+    to remove it. Still NOT pushed.
     REV62 STATUS: rev61 plus Settings > Replies: a new card with Read replies aloud, Stop speaking,
     and Reply text size (12-24 px, with Reset). It uses the same saved values as the AI Coach tab,
     and the two places stay in step in both directions. The Voice card's "Speak responses aloud"
@@ -1205,6 +1213,24 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
               slider and the new capture arguments); app.py quit run exit 0, no traceback.
               NOT verified: real display, Win32 window list, native capture, real Ollama,
               real game curve files, Windows build.
+
+  2026-10-22 (rev63)  AI COACH REPLIES MOVED INTO SETTINGS; TEST VOICE PLAYS EVERY TIME.
+              - pages_coach.py: the top of AI Coach is now a "Settings" header with the gear. The gear
+                block (collapsed by default) holds Replies (Read replies aloud, Stop speaking, reply
+                text size) and then Voice (speed, volume, voice, Test voice, pitch note). Gear tooltip
+                shows read aloud, speed, volume and text size.
+              - tts_service.py: _Pyttsx3Speaker takes make_engine. The start-up engine speaks the first
+                sentence; each later sentence gets a new engine with the same settings. Reason (from
+                pyttsx3 engine.py): runAndWait() sets _inLoop and only clears it when the run returns,
+                so after one failed run every later runAndWait() on that engine is refused.
+              - threads.py: a sentence that fails emits status "Could not read that reply aloud: ...",
+                shown in the speech status (was silently dropped). main_window connects it.
+              - Tests: tests/test_tts_repeat_play.py (6, incl. a Test-voice x3 run through the speaker
+                thread). tests/test_chat_top_settings.py updated to the new placement (+1 tooltip test).
+                Full suite 269 passed. ruff F clean. compileall OK. Wiring 32/32.
+              - NOT verified: real SAPI5 or espeak (none in this sandbox). Windows test needed: turn read
+                aloud on, press Test voice 3+ times, and check each play is heard. Residual risk: a
+                driver call that hangs (not raises) would still block the speaker thread.
 
   2026-10-22 (rev62)  SETTINGS > REPLIES: READ ALOUD, STOP SPEAKING, REPLY TEXT SIZE.
               - SettingsPage: new "Replies" card (right column, under Interface). Controls: Read

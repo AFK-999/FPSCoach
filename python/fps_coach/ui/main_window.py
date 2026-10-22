@@ -474,6 +474,7 @@ class MainWindow(QMainWindow):
             self._tts_service = _TtsService(self, options=self.chat_page.speech_options())
             self._tts_service.voices_ready.connect(self.chat_page.set_voices)
             self._tts_service.failed.connect(self._on_tts_failed)
+            self._tts_service.status.connect(self.chat_page.set_speech_status)
             self._tts_service.start()
         elif not enabled and self._tts_service is not None:
             self._tts_service.stop()

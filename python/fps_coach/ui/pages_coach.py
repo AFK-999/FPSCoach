@@ -170,28 +170,29 @@ class AIChatPage(QWidget):
         body.setSpacing(20)
 
         card, lay = _card()
-        # Settings at the top: Replies (read aloud, stop, reply text size), then Voice.
-        lay.addWidget(_label("Replies", "formLabel"))
-        lay.addLayout(self._build_speech_bar())
-        lay.addLayout(self._build_text_size_bar())
-        # Voice settings (speed, volume, voice, test, pitch note) live behind a gear icon.
-        voice_head = QHBoxLayout()
-        voice_head.setSpacing(8)
-        voice_head.addWidget(_label("Voice", "formLabel"))
-        voice_head.addStretch(1)
+        # Settings: a gear at the top opens the block with Replies (read aloud, stop, reply
+        # text size) and Voice (speed, volume, voice, test, pitch note).
+        settings_head = QHBoxLayout()
+        settings_head.setSpacing(8)
+        settings_head.addWidget(_label("Settings", "formLabel"))
+        settings_head.addStretch(1)
         self.voice_settings_toggle = QToolButton()
         self.voice_settings_toggle.setObjectName("iconButton")
         self.voice_settings_toggle.setCheckable(True)
         self.voice_settings_toggle.setChecked(False)
         set_glyph(self.voice_settings_toggle, "settings")
-        self.voice_settings_toggle.setAccessibleName("Voice settings")
+        self.voice_settings_toggle.setAccessibleName("Settings")
         self.voice_settings_toggle.toggled.connect(self._on_voice_settings_toggled)
-        voice_head.addWidget(self.voice_settings_toggle)
-        lay.addLayout(voice_head)
+        settings_head.addWidget(self.voice_settings_toggle)
+        lay.addLayout(settings_head)
         self.voice_settings = QWidget()
         voice_lay = QVBoxLayout(self.voice_settings)
         voice_lay.setContentsMargins(0, 0, 0, 0)
-        voice_lay.setSpacing(0)
+        voice_lay.setSpacing(8)
+        voice_lay.addWidget(_label("Replies", "formLabel"))
+        voice_lay.addLayout(self._build_speech_bar())
+        voice_lay.addLayout(self._build_text_size_bar())
+        voice_lay.addWidget(_label("Voice", "formLabel"))
         voice_lay.addLayout(self._build_voice_bar())
         self.voice_settings.setVisible(False)  # collapsed until the gear is opened
         lay.addWidget(self.voice_settings)
@@ -462,7 +463,7 @@ class AIChatPage(QWidget):
         self.read_aloud = QCheckBox("Read replies aloud")
         self.read_aloud.setToolTip(
             "Speaks each AI reply with the text-to-speech engine. "
-            "Same setting as Settings > Voice > Speak responses aloud."
+            "Same setting as Settings > Replies > Read replies aloud."
         )
         self.read_aloud.toggled.connect(self._on_read_aloud_toggled)
         row.addWidget(self.read_aloud)
@@ -540,8 +541,10 @@ class AIChatPage(QWidget):
 
     def _update_voice_tooltip(self) -> None:
         self.voice_settings_toggle.setToolTip(
-            f"Voice settings: speed {self.speed_slider.value() / 100:.2f}x, "
-            f"volume {self.volume_slider.value()}%"
+            f"Settings: read aloud {'on' if self.read_aloud.isChecked() else 'off'}, "
+            f"speed {self.speed_slider.value() / 100:.2f}x, "
+            f"volume {self.volume_slider.value()}%, "
+            f"text {self.font_slider.value()} px"
         )
 
     def _emit_speech_options(self) -> None:
@@ -607,6 +610,7 @@ class AIChatPage(QWidget):
     def _on_read_aloud_toggled(self, checked: bool) -> None:
         self._settings.setValue("ui/tts_enabled", bool(checked))
         self._show_default_speech_text()
+        self._update_voice_tooltip()
         self.read_aloud_changed.emit(bool(checked))
 
     def _show_default_speech_text(self) -> None:
@@ -626,6 +630,7 @@ class AIChatPage(QWidget):
     def _on_font_size_changed(self, px: int) -> None:
         self._apply_text_size(px)
         self._settings.setValue("chat/font_px", int(px))
+        self._update_voice_tooltip()
         self.replies_changed.emit()
 
     def set_text_size(self, px: int) -> None:
@@ -636,6 +641,7 @@ class AIChatPage(QWidget):
         self.font_slider.blockSignals(False)
         self._apply_text_size(px)
         self._settings.setValue("chat/font_px", px)
+        self._update_voice_tooltip()
 
     def _apply_text_size(self, px: int) -> None:
         px = int(px)
