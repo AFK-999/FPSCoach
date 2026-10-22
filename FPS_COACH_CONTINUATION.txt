@@ -145,6 +145,10 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     /home/user/workspace/FPSCoach   (clone of https://github.com/AFK-999/FPSCoach.git)
     Remote origin/main = e9e69a2   (the visual REDESIGN; based on 04e6b0f)
     Working branch     = fix/redesign-backend-wiring (from e9e69a2), NOT pushed.
+    REV60 STATUS: rev59 plus AI Coach: the speech bar (Speed, Volume, Voice, Test voice) and the
+    pitch note are in their own collapsible "Voice settings" block, opened from a gear on the
+    Voice heading. The gear tooltip shows speed and volume. Read aloud, Stop speaking and text
+    size stay at the top. Still NOT pushed.
     REV59 STATUS: rev58 plus AI Coach top settings: a "Replies" section (Read aloud, Stop
     speaking, reply text size) sits first, then a "Voice" section (speed, volume, voice, Test
     voice, pitch note). The transcript and quick actions stay below. Answers from the user:
@@ -1194,6 +1198,16 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
               slider and the new capture arguments); app.py quit run exit 0, no traceback.
               NOT verified: real display, Win32 window list, native capture, real Ollama,
               real game curve files, Windows build.
+
+  2026-10-22 (rev60)  AI COACH VOICE SETTINGS BLOCK.
+              - The speech bar (Speed, Volume, Voice, Test voice) and the pitch note moved into
+                a "Voice settings" block that is collapsed by default. A gear on the Voice
+                heading opens and closes it. The gear tooltip shows speed and volume.
+              - Read aloud, Stop speaking and text size stay visible at the top.
+              - Behaviour and saved keys unchanged.
+              - Tests: tests/test_chat_top_settings.py now 9. Full suite 242 passed. ruff F clean.
+                Wiring 32/32. Collapsed-state screenshot checked.
+              - Environment: PySide6 and libxkbcommon were reinstalled after a sandbox reset.
 
   2026-10-22 (rev59)  AI COACH TOP SETTINGS.
               - Answers to the questions: "Replies" means the reply display controls (text size

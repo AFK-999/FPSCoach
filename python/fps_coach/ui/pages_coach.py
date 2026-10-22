@@ -173,8 +173,27 @@ class AIChatPage(QWidget):
         lay.addWidget(_label("Replies", "formLabel"))
         lay.addLayout(self._build_speech_bar())
         lay.addLayout(self._build_text_size_bar())
-        lay.addWidget(_label("Voice", "formLabel"))
-        lay.addLayout(self._build_voice_bar())
+        # Voice settings (speed, volume, voice, test, pitch note) live behind a gear icon.
+        voice_head = QHBoxLayout()
+        voice_head.setSpacing(8)
+        voice_head.addWidget(_label("Voice", "formLabel"))
+        voice_head.addStretch(1)
+        self.voice_settings_toggle = QToolButton()
+        self.voice_settings_toggle.setObjectName("iconButton")
+        self.voice_settings_toggle.setCheckable(True)
+        self.voice_settings_toggle.setChecked(False)
+        set_glyph(self.voice_settings_toggle, "settings")
+        self.voice_settings_toggle.setAccessibleName("Voice settings")
+        self.voice_settings_toggle.toggled.connect(self._on_voice_settings_toggled)
+        voice_head.addWidget(self.voice_settings_toggle)
+        lay.addLayout(voice_head)
+        self.voice_settings = QWidget()
+        voice_lay = QVBoxLayout(self.voice_settings)
+        voice_lay.setContentsMargins(0, 0, 0, 0)
+        voice_lay.setSpacing(0)
+        voice_lay.addLayout(self._build_voice_bar())
+        self.voice_settings.setVisible(False)  # collapsed until the gear is opened
+        lay.addWidget(self.voice_settings)
         self.transcript = QTextEdit()
         self.transcript.setObjectName("transcript")
         self.transcript.setReadOnly(True)
@@ -188,6 +207,7 @@ class AIChatPage(QWidget):
             animate=fx_enabled(str(self._settings.value("ui/mode", "luxurious"))),
         )
         self.refresh_from_settings()
+        self._update_voice_tooltip()
 
         self.suggestion_bar = QHBoxLayout()
         self.suggestion_bar.setSpacing(8)
@@ -514,10 +534,20 @@ class AIChatPage(QWidget):
         self.voice_combo.setCurrentIndex(index if index >= 0 else 0)
         self.voice_combo.blockSignals(False)
 
+    def _on_voice_settings_toggled(self, checked: bool) -> None:
+        self.voice_settings.setVisible(bool(checked))
+
+    def _update_voice_tooltip(self) -> None:
+        self.voice_settings_toggle.setToolTip(
+            f"Voice settings: speed {self.speed_slider.value() / 100:.2f}x, "
+            f"volume {self.volume_slider.value()}%"
+        )
+
     def _emit_speech_options(self) -> None:
         options = self.speech_options()
         self._settings.setValue("tts/speed", options.speed)
         self._settings.setValue("tts/volume", options.volume)
+        self._update_voice_tooltip()
         self.speech_options_changed.emit(options)
 
     def _on_voice_chosen(self) -> None:
