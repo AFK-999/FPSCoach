@@ -145,6 +145,10 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     /home/user/workspace/FPSCoach   (clone of https://github.com/AFK-999/FPSCoach.git)
     Remote origin/main = e9e69a2   (the visual REDESIGN; based on 04e6b0f)
     Working branch     = fix/redesign-backend-wiring (from e9e69a2), NOT pushed.
+    REV57 STATUS: rev56 plus Training layout: Target speed and Difficulty moved out of the
+    drill area into a "Target settings" side panel on the right of the Training page. The panel
+    stays visible in both Drill and Analytics views. Nothing else changed in behaviour.
+    Still NOT pushed.
     REV56 STATUS: rev55 plus crosshair overlay focus: the overlay is a top-level window with
     no owner (it was a child of the main window), carries the no-focus window flag, and
     answers WM_MOUSEACTIVATE with MA_NOACTIVATE on Windows, so clicks and drags do not
@@ -1182,6 +1186,16 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
               slider and the new capture arguments); app.py quit run exit 0, no traceback.
               NOT verified: real display, Win32 window list, native capture, real Ollama,
               real game curve files, Windows build.
+
+  2026-10-22 (rev57)  TRAINING SETTINGS MOVED TO A SIDE PANEL.
+              - Training page: the Target speed and Difficulty sliders, and the tuning note,
+                moved out of the drill column into a "Target settings" card on the right
+                (about 280-320 px wide). The card stays visible in Drill and Analytics views.
+              - Option chosen: side panel (the user's first option). The dropdown was not built.
+              - Behaviour unchanged: same sliders, same saved keys (training/speed_pct,
+                training/difficulty), same lock while a drill runs.
+              - Tests: tests/test_training_tuning.py now 28. Full suite 230 passed. ruff F clean.
+                compileall OK. Wiring 32/32. Screenshots of Drill and Analytics views checked.
 
   2026-10-22 (rev56)  CROSSHAIR OVERLAY FOCUS.
               - Cause: the overlay was created with parent=MainWindow, so it was an owned

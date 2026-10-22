@@ -420,7 +420,6 @@ class TrainingPage(QWidget):
 
         self.view_switch = Segmented(["Drill", "Analytics"])
         self.view_switch.changed.connect(self._on_view_changed)
-        outer.addWidget(self.view_switch, 0)
 
         self.stack = QWidget()
         stack_lay = QVBoxLayout(self.stack)
@@ -452,33 +451,6 @@ class TrainingPage(QWidget):
         self.desc = _label("", "cardSubtitle", wrap=True)
         drill.addWidget(self.desc)
 
-        # Speed and difficulty of the targets. Changes apply to the next drill started.
-        tune = QGridLayout()
-        tune.setHorizontalSpacing(12)
-        tune.setVerticalSpacing(8)
-        settings = _settings()
-        tune.addWidget(_label("Target speed", "formLabel"), 0, 0)
-        self.speed_slider = ValueSlider(
-            scenario_defs.SPEED_MIN_PCT,
-            scenario_defs.SPEED_MAX_PCT,
-            fmt=lambda v: f"{v / 100:.2f}x",
-        )
-        self.speed_slider.setValue(int(settings.value(
-            "training/speed_pct", scenario_defs.SPEED_DEFAULT_PCT, type=int)))
-        tune.addWidget(self.speed_slider, 0, 1)
-        tune.addWidget(_label("Difficulty", "formLabel"), 1, 0)
-        self.difficulty_slider = ValueSlider(
-            scenario_defs.DIFFICULTY_MIN,
-            scenario_defs.DIFFICULTY_MAX,
-            fmt=lambda v: f"Level {v}",
-        )
-        self.difficulty_slider.setValue(int(settings.value(
-            "training/difficulty", scenario_defs.DIFFICULTY_DEFAULT, type=int)))
-        tune.addWidget(self.difficulty_slider, 1, 1)
-        drill.addLayout(tune)
-        self.tuning_note = _label("", "cardSubtitle", wrap=True)
-        drill.addWidget(self.tuning_note)
-
         self.canvas = TrainingCanvas()
         self.canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.canvas.progress.connect(self._on_progress)
@@ -508,7 +480,46 @@ class TrainingPage(QWidget):
         self.analytics_page.setVisible(False)
         stack_lay.addWidget(self.analytics_page, 1)
 
-        outer.addWidget(self.stack, 1)
+        # Side panel: target speed and difficulty. It sits beside the drill and the
+        # analytics, so it stays in view in both. It is outside the drill canvas.
+        panel, panel_lay = _card("Target settings", "Applies to the next drill you start.")
+        panel.setMinimumWidth(280)
+        panel.setMaximumWidth(320)
+        settings = _settings()
+        panel_lay.addWidget(_label("Target speed", "formLabel"))
+        self.speed_slider = ValueSlider(
+            scenario_defs.SPEED_MIN_PCT,
+            scenario_defs.SPEED_MAX_PCT,
+            fmt=lambda v: f"{v / 100:.2f}x",
+        )
+        self.speed_slider.setValue(int(settings.value(
+            "training/speed_pct", scenario_defs.SPEED_DEFAULT_PCT, type=int)))
+        panel_lay.addWidget(self.speed_slider)
+        panel_lay.addWidget(_label("Difficulty", "formLabel"))
+        self.difficulty_slider = ValueSlider(
+            scenario_defs.DIFFICULTY_MIN,
+            scenario_defs.DIFFICULTY_MAX,
+            fmt=lambda v: f"Level {v}",
+        )
+        self.difficulty_slider.setValue(int(settings.value(
+            "training/difficulty", scenario_defs.DIFFICULTY_DEFAULT, type=int)))
+        panel_lay.addWidget(self.difficulty_slider)
+        self.tuning_note = _label("", "cardSubtitle", wrap=True)
+        panel_lay.addWidget(self.tuning_note)
+        panel_lay.addStretch(1)
+        panel_lay.addWidget(_label("Locked while a drill is running.", "cardSubtitle", wrap=True))
+        self.settings_panel = panel
+
+        # Left: the drill or the analytics. Right: the settings panel.
+        body = QHBoxLayout()
+        body.setSpacing(20)
+        left = QVBoxLayout()
+        left.setSpacing(14)
+        left.addWidget(self.view_switch, 0)
+        left.addWidget(self.stack, 1)
+        body.addLayout(left, 1)
+        body.addWidget(panel, 0, Qt.AlignmentFlag.AlignTop)
+        outer.addLayout(body, 1)
 
         self.start_btn.clicked.connect(self._start)
         self.stop_btn.clicked.connect(self._stop)

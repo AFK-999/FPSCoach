@@ -248,3 +248,24 @@ def test_saved_preset_without_saved_frame_rate_uses_its_own_rate(qapp, saved) ->
     page = _capture_page(qapp)
     assert page.preset.currentData() == "low"
     assert page.fps_combo.currentData() == 30
+
+
+def test_settings_are_in_a_side_panel_outside_the_drill(qapp, saved) -> None:
+    page = _training_page(qapp)
+    assert page.settings_panel.isAncestorOf(page.speed_slider)
+    assert page.settings_panel.isAncestorOf(page.difficulty_slider)
+    assert page.settings_panel.isAncestorOf(page.tuning_note)
+    assert not page.drill_view.isAncestorOf(page.speed_slider)
+    assert not page.drill_view.isAncestorOf(page.difficulty_slider)
+    assert not page.settings_panel.isAncestorOf(page.canvas)
+
+
+def test_side_panel_is_not_inside_the_analytics_view_either(qapp, saved) -> None:
+    page = _training_page(qapp)
+    assert not page.analytics_page.isAncestorOf(page.settings_panel)
+    page._show_analytics()
+    # The panel is not hidden along with the drill, so it stays beside the analytics.
+    assert not page.settings_panel.isHidden()
+    assert page.drill_view.isHidden()
+    page._show_training()
+    assert not page.drill_view.isHidden()
