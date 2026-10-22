@@ -307,6 +307,9 @@ class MainWindow(QMainWindow):
         self.chat_page.stop_speaking_requested.connect(self._on_stop_speaking)
         self.chat_page.speech_options_changed.connect(self._on_speech_options_changed)
         self.chat_page.voice_test_requested.connect(self._on_voice_test)
+        self.chat_page.replies_changed.connect(self.settings_page.refresh_replies)
+        self.settings_page.stop_speaking_requested.connect(self._on_stop_speaking)
+        self.settings_page.text_size_changed.connect(self._on_reply_text_size)
         self.settings_page.settings_changed.connect(self._on_settings_changed)
         self.training_page.session_recorded.connect(self._on_session_recorded)
         self.crosshair_page.edited.connect(self._on_crosshair_edited)
@@ -488,9 +491,11 @@ class MainWindow(QMainWindow):
     def _on_read_aloud_changed(self, enabled: bool):
         """The chat's switch and the Settings checkbox share one saved value."""
         self._sync_tts()
-        self.settings_page.tts_enabled.blockSignals(True)
-        self.settings_page.tts_enabled.setChecked(bool(enabled))
-        self.settings_page.tts_enabled.blockSignals(False)
+        self.settings_page.refresh_replies()
+
+    def _on_reply_text_size(self, px: int):
+        """Settings > Replies moved the text size. The AI Coach transcript follows."""
+        self.chat_page.set_text_size(px)
 
     def _on_speech_options_changed(self, options):
         """Speed, volume, or voice changed. A running speaker picks it up on the next sentence."""

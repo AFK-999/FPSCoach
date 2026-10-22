@@ -139,6 +139,7 @@ class AIChatPage(QWidget):
     stop_speaking_requested = Signal()
     speech_options_changed = Signal(object)  # SpeechOptions, sent on every slider or voice change
     voice_test_requested = Signal()
+    replies_changed = Signal()  # the reply text size changed here; Settings > Replies follows
 
     _THINKING_STRIP = 44  # px reserved under the transcript text while a request runs
     TEXT_MIN, TEXT_DEFAULT, TEXT_MAX = 12, 14, 24  # transcript font size range, in px
@@ -625,6 +626,16 @@ class AIChatPage(QWidget):
     def _on_font_size_changed(self, px: int) -> None:
         self._apply_text_size(px)
         self._settings.setValue("chat/font_px", int(px))
+        self.replies_changed.emit()
+
+    def set_text_size(self, px: int) -> None:
+        """Set the reply text size from Settings > Replies. Does not emit replies_changed."""
+        px = max(self.TEXT_MIN, min(self.TEXT_MAX, int(px)))
+        self.font_slider.blockSignals(True)
+        self.font_slider.setValue(px)
+        self.font_slider.blockSignals(False)
+        self._apply_text_size(px)
+        self._settings.setValue("chat/font_px", px)
 
     def _apply_text_size(self, px: int) -> None:
         px = int(px)
@@ -795,6 +806,8 @@ class PrivacyPage(QWidget):
 
 class SettingsPage(QWidget):
     settings_changed = Signal()
+    stop_speaking_requested = Signal()  # Settings > Replies > Stop speaking
+    text_size_changed = Signal(int)  # Settings > Replies > Reply text size, sent while dragging
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -820,6 +833,7 @@ class SettingsPage(QWidget):
         right = QVBoxLayout()
         right.setSpacing(20)
         right.addWidget(self._build_ui_card())
+        right.addWidget(self._build_replies_card())
         right.addWidget(self._build_advanced_card())
         right.addStretch(1)
         columns.addLayout(left, 1)
@@ -999,6 +1013,76 @@ class SettingsPage(QWidget):
 
         return card
 
+    # ---- Replies (same saved values as the AI Coach tab) ------------------
+    def _build_replies_card(self):
+        card, lay = _card(
+            "Replies",
+            "Read aloud, stop speech, and reply text size. Same settings as the AI Coach tab.",
+        )
+        self.replies_read_aloud = QCheckBox("Read replies aloud")
+        self.replies_read_aloud.setToolTip("Same setting as Speak responses aloud under Voice.")
+        self.replies_read_aloud.toggled.connect(self._on_replies_read_aloud)
+        lay.addWidget(self.replies_read_aloud)
+
+        stop_row = QHBoxLayout()
+        self.replies_stop_btn = QPushButton(" Stop speaking")
+        self.replies_stop_btn.setObjectName("secondary")
+        set_glyph(self.replies_stop_btn, "stop")
+        self.replies_stop_btn.setToolTip(
+            "Clears replies waiting to be read. The sentence being read finishes."
+        )
+        self.replies_stop_btn.clicked.connect(self.stop_speaking_requested.emit)
+        stop_row.addWidget(self.replies_stop_btn)
+        stop_row.addStretch(1)
+        lay.addLayout(stop_row)
+
+        size_row = QHBoxLayout()
+        size_row.setSpacing(10)
+        size_row.addWidget(_label("Reply text size", "formLabel"))
+        self.replies_font_slider = ValueSlider(
+            AIChatPage.TEXT_MIN, AIChatPage.TEXT_MAX, fmt=lambda v: f"{v} px"
+        )
+        self.replies_font_slider.setToolTip("Makes the chat transcript text larger or smaller.")
+        self.replies_font_slider.valueChanged.connect(self._on_replies_text_size)
+        size_row.addWidget(self.replies_font_slider, 1)
+        self.replies_font_reset = QPushButton("Reset")
+        self.replies_font_reset.setObjectName("secondary")
+        self.replies_font_reset.setToolTip(f"Back to {AIChatPage.TEXT_DEFAULT} px")
+        self.replies_font_reset.clicked.connect(
+            lambda: self.replies_font_slider.setValue(AIChatPage.TEXT_DEFAULT)
+        )
+        size_row.addWidget(self.replies_font_reset)
+        lay.addLayout(size_row)
+
+        self.refresh_replies()
+        return card
+
+    def refresh_replies(self) -> None:
+        """Show the saved read-aloud and text-size values. Signals stay quiet.
+
+        Called when the AI Coach tab changes the same values.
+        """
+        enabled = self.s.value("ui/tts_enabled", False, type=bool)
+        px = self.s.value("chat/font_px", AIChatPage.TEXT_DEFAULT, type=int)
+        px = max(AIChatPage.TEXT_MIN, min(AIChatPage.TEXT_MAX, int(px)))
+        for box in (self.replies_read_aloud, self.tts_enabled):
+            box.blockSignals(True)
+            box.setChecked(bool(enabled))
+            box.blockSignals(False)
+        self.replies_font_slider.blockSignals(True)
+        self.replies_font_slider.setValue(px)
+        self.replies_font_slider.blockSignals(False)
+
+    def _on_replies_read_aloud(self, checked: bool) -> None:
+        self.s.setValue("ui/tts_enabled", bool(checked))
+        self.refresh_replies()
+        self.settings_changed.emit()
+
+    def _on_replies_text_size(self, px: int) -> None:
+        px = int(px)
+        self.s.setValue("chat/font_px", px)
+        self.text_size_changed.emit(px)
+
     def _browse_model(self):
         path = QFileDialog.getExistingDirectory(self, "Select voice model folder")
         if path:
@@ -1010,6 +1094,7 @@ class SettingsPage(QWidget):
         self.s.setValue("ui/wake_word", self.wake_word.text())
         self.s.setValue("ui/tts_enabled", self.tts_enabled.isChecked())
         self.s.setValue("voice/vosk_model_path", self.vosk_path.text())
+        self.refresh_replies()
         self.settings_changed.emit()
 
     # ---- Advanced (disclosure) --------------------------------------------

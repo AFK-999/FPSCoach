@@ -1,7 +1,7 @@
 ================================================================================
 FPS COACH — CONTINUATION / HANDOFF DOCUMENT
 Copy-paste this whole file into a new agent chat to resume with zero context loss.
-Last updated: 2026-10-19 (rev 36)  (update after EVERY response)
+Last updated: 2026-10-22 (rev 62)  (update after EVERY response)
 
 *** IMPORTANT (rev4): The REAL repo was provided and differs a lot from the
 *** earlier scaffold. Work on the REAL repo at /home/user/workspace/FPSCoach
@@ -145,6 +145,10 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     /home/user/workspace/FPSCoach   (clone of https://github.com/AFK-999/FPSCoach.git)
     Remote origin/main = e9e69a2   (the visual REDESIGN; based on 04e6b0f)
     Working branch     = fix/redesign-backend-wiring (from e9e69a2), NOT pushed.
+    REV62 STATUS: rev61 plus Settings > Replies: a new card with Read replies aloud, Stop speaking,
+    and Reply text size (12-24 px, with Reset). It uses the same saved values as the AI Coach tab,
+    and the two places stay in step in both directions. The Voice card's "Speak responses aloud"
+    stays and shares the same value. Still NOT pushed.
     REV61 STATUS: rev60 plus Recommendation: Generate recommendation now opens the Calibration tab
     and draws the generated curve on its chart (solid line, previous curve dashed). The change can
     be undone. The calibration-finished path still opens the Recommendation tab. Still NOT pushed.
@@ -1201,6 +1205,18 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
               slider and the new capture arguments); app.py quit run exit 0, no traceback.
               NOT verified: real display, Win32 window list, native capture, real Ollama,
               real game curve files, Windows build.
+
+  2026-10-22 (rev62)  SETTINGS > REPLIES: READ ALOUD, STOP SPEAKING, REPLY TEXT SIZE.
+              - SettingsPage: new "Replies" card (right column, under Interface). Controls: Read
+                replies aloud (ui/tts_enabled), Stop speaking, Reply text size slider (chat/font_px,
+                12-24 px, exact readout, Reset).
+              - Sync: AIChatPage.replies_changed -> SettingsPage.refresh_replies; SettingsPage.
+                text_size_changed -> AIChatPage.set_text_size (no echo); SettingsPage.stop_speaking_requested
+                -> the same stop handler as the chat. Voice card checkbox and Replies checkbox stay in step.
+              - Tests: tests/test_settings_replies.py (13). Full suite 261 passed. ruff F clean.
+                compileall OK. Wiring 32/32. Screenshot of Settings checked (/tmp/shots13/settings.png).
+              - Interpretation flagged: "settings" was read as the app Settings tab. The AI Coach
+                controls are unchanged.
 
   2026-10-22 (rev61)  GENERATE RECOMMENDATION APPLIES THE CURVE ON CALIBRATION.
               - CalibrationPage.apply_recommendation(rec): draws the curve on the chart with the
