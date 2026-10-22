@@ -145,6 +145,10 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     /home/user/workspace/FPSCoach   (clone of https://github.com/AFK-999/FPSCoach.git)
     Remote origin/main = e9e69a2   (the visual REDESIGN; based on 04e6b0f)
     Working branch     = fix/redesign-backend-wiring (from e9e69a2), NOT pushed.
+    REV58 STATUS: rev57 plus Training: the Target settings card is collapsed behind a drawn gear
+    icon (settings glyph, checkable). Clicking the gear opens the card; the gear tooltip shows the
+    current speed and level. AI Coach: NOT changed yet. The request is ambiguous ("Replies"), so
+    the question was asked before any change. Still NOT pushed.
     REV57 STATUS: rev56 plus Training layout: Target speed and Difficulty moved out of the
     drill area into a "Target settings" side panel on the right of the Training page. The panel
     stays visible in both Drill and Analytics views. Nothing else changed in behaviour.
@@ -1186,6 +1190,15 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
               slider and the new capture arguments); app.py quit run exit 0, no traceback.
               NOT verified: real display, Win32 window list, native capture, real Ollama,
               real game curve files, Windows build.
+
+  2026-10-22 (rev58)  TRAINING GEAR ICON.
+              - Training: the Target settings card is collapsed by default. A drawn gear icon
+                (existing "settings" glyph, checkable tool button) opens and closes it. Its
+                tooltip shows the current speed and level.
+              - AI Coach: no change in this revision. The "Replies" control request is
+                ambiguous, so a question was asked first.
+              - Tests: tests/test_training_tuning.py now 32. Full suite 233 passed. ruff F clean.
+                compileall OK. Wiring 32/32. Screenshot of the collapsed state checked.
 
   2026-10-22 (rev57)  TRAINING SETTINGS MOVED TO A SIDE PANEL.
               - Training page: the Target speed and Difficulty sliders, and the tuning note,

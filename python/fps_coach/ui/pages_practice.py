@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSizePolicy,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -485,6 +486,7 @@ class TrainingPage(QWidget):
         panel, panel_lay = _card("Target settings", "Applies to the next drill you start.")
         panel.setMinimumWidth(280)
         panel.setMaximumWidth(320)
+        panel.setVisible(False)  # collapsed: only the gear icon shows until it is opened
         settings = _settings()
         panel_lay.addWidget(_label("Target speed", "formLabel"))
         self.speed_slider = ValueSlider(
@@ -510,7 +512,25 @@ class TrainingPage(QWidget):
         panel_lay.addWidget(_label("Locked while a drill is running.", "cardSubtitle", wrap=True))
         self.settings_panel = panel
 
-        # Left: the drill or the analytics. Right: the settings panel.
+        # A gear icon opens and closes the panel. The gear shows the current values in its tooltip.
+        self.settings_toggle = QToolButton()
+        self.settings_toggle.setObjectName("iconButton")
+        self.settings_toggle.setCheckable(True)
+        self.settings_toggle.setChecked(False)
+        set_glyph(self.settings_toggle, "settings")
+        self.settings_toggle.setToolTip("Target settings")
+        self.settings_toggle.setAccessibleName("Target settings")
+        self.settings_toggle.toggled.connect(self.settings_panel.setVisible)
+
+        side = QWidget()
+        side_lay = QVBoxLayout(side)
+        side_lay.setContentsMargins(0, 0, 0, 0)
+        side_lay.setSpacing(10)
+        side_lay.addWidget(self.settings_toggle, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
+        side_lay.addWidget(panel, 0, Qt.AlignmentFlag.AlignTop)
+        side_lay.addStretch(1)
+
+        # Left: the drill or the analytics. Right: the gear, and the panel when opened.
         body = QHBoxLayout()
         body.setSpacing(20)
         left = QVBoxLayout()
@@ -518,7 +538,7 @@ class TrainingPage(QWidget):
         left.addWidget(self.view_switch, 0)
         left.addWidget(self.stack, 1)
         body.addLayout(left, 1)
-        body.addWidget(panel, 0, Qt.AlignmentFlag.AlignTop)
+        body.addWidget(side, 0, Qt.AlignmentFlag.AlignTop)
         outer.addLayout(body, 1)
 
         self.start_btn.clicked.connect(self._start)
@@ -559,6 +579,11 @@ class TrainingPage(QWidget):
         if not (sc.moving or sc.spawn_delay_ms):
             parts.append("speed setting applies to moving and reaction drills")
         self.tuning_note.setText(" · ".join(parts))
+        if hasattr(self, "settings_toggle"):
+            self.settings_toggle.setToolTip(
+                f"Target settings: speed {self.speed_slider.value() / 100:.2f}x, "
+                f"Level {self.difficulty_slider.value()}"
+            )
 
     def _set_running(self, running: bool) -> None:
         self.start_btn.setEnabled(not running)

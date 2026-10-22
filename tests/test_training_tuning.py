@@ -263,9 +263,37 @@ def test_settings_are_in_a_side_panel_outside_the_drill(qapp, saved) -> None:
 def test_side_panel_is_not_inside_the_analytics_view_either(qapp, saved) -> None:
     page = _training_page(qapp)
     assert not page.analytics_page.isAncestorOf(page.settings_panel)
+    page.settings_toggle.setChecked(True)  # open the panel from the gear
     page._show_analytics()
     # The panel is not hidden along with the drill, so it stays beside the analytics.
     assert not page.settings_panel.isHidden()
     assert page.drill_view.isHidden()
     page._show_training()
     assert not page.drill_view.isHidden()
+
+
+def test_settings_are_collapsed_behind_a_gear_icon(qapp, saved) -> None:
+    page = _training_page(qapp)
+    assert page.settings_panel.isHidden()  # collapsed by default
+    assert page.settings_toggle.isCheckable()
+    assert page.settings_toggle.toolTip().startswith("Target settings")
+    page.settings_toggle.setChecked(True)
+    assert not page.settings_panel.isHidden()
+    page.settings_toggle.setChecked(False)
+    assert page.settings_panel.isHidden()
+
+
+def test_gear_tooltip_shows_current_values(qapp, saved) -> None:
+    page = _training_page(qapp)
+    page.speed_slider.setValue(150)
+    page.difficulty_slider.setValue(4)
+    assert "speed 1.50x" in page.settings_toggle.toolTip()
+    assert "Level 4" in page.settings_toggle.toolTip()
+
+
+def test_gear_uses_the_drawn_settings_icon(qapp, saved) -> None:
+    from PySide6.QtWidgets import QToolButton
+
+    page = _training_page(qapp)
+    assert isinstance(page.settings_toggle, QToolButton)
+    assert not page.settings_toggle.icon().isNull()
