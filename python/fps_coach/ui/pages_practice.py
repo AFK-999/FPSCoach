@@ -452,6 +452,33 @@ class TrainingPage(QWidget):
         self.desc = _label("", "cardSubtitle", wrap=True)
         drill.addWidget(self.desc)
 
+        # Speed and difficulty of the targets. Changes apply to the next drill started.
+        tune = QGridLayout()
+        tune.setHorizontalSpacing(12)
+        tune.setVerticalSpacing(8)
+        settings = _settings()
+        tune.addWidget(_label("Target speed", "formLabel"), 0, 0)
+        self.speed_slider = ValueSlider(
+            scenario_defs.SPEED_MIN_PCT,
+            scenario_defs.SPEED_MAX_PCT,
+            fmt=lambda v: f"{v / 100:.2f}x",
+        )
+        self.speed_slider.setValue(int(settings.value(
+            "training/speed_pct", scenario_defs.SPEED_DEFAULT_PCT, type=int)))
+        tune.addWidget(self.speed_slider, 0, 1)
+        tune.addWidget(_label("Difficulty", "formLabel"), 1, 0)
+        self.difficulty_slider = ValueSlider(
+            scenario_defs.DIFFICULTY_MIN,
+            scenario_defs.DIFFICULTY_MAX,
+            fmt=lambda v: f"Level {v}",
+        )
+        self.difficulty_slider.setValue(int(settings.value(
+            "training/difficulty", scenario_defs.DIFFICULTY_DEFAULT, type=int)))
+        tune.addWidget(self.difficulty_slider, 1, 1)
+        drill.addLayout(tune)
+        self.tuning_note = _label("", "cardSubtitle", wrap=True)
+        drill.addWidget(self.tuning_note)
+
         self.canvas = TrainingCanvas()
         self.canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.canvas.progress.connect(self._on_progress)
@@ -485,6 +512,8 @@ class TrainingPage(QWidget):
 
         self.start_btn.clicked.connect(self._start)
         self.stop_btn.clicked.connect(self._stop)
+        self.speed_slider.valueChanged.connect(self._on_tuning_changed)
+        self.difficulty_slider.valueChanged.connect(self._on_tuning_changed)
         self._describe()
 
     def _on_view_changed(self, index: int) -> None:
@@ -493,17 +522,42 @@ class TrainingPage(QWidget):
         else:
             self._show_training()
 
+    def _drill_scenario(self):
+        """The selected drill with the speed and difficulty settings applied."""
+        return scenario_defs.tuned(
+            scenario_defs.get(self.scenario.currentData()),
+            self.speed_slider.value(),
+            self.difficulty_slider.value(),
+        )
+
+    def _on_tuning_changed(self, *_args) -> None:
+        settings = _settings()
+        settings.setValue("training/speed_pct", int(self.speed_slider.value()))
+        settings.setValue("training/difficulty", int(self.difficulty_slider.value()))
+        self._describe()
+
     def _describe(self, *_args) -> None:
-        sc = scenario_defs.get(self.scenario.currentData())
-        self.desc.setText(sc.description)
+        base = scenario_defs.get(self.scenario.currentData())
+        sc = self._drill_scenario()
+        self.desc.setText(base.description)
+        parts = [f"Target radius {sc.target_radius} px"]
+        if sc.moving:
+            parts.append(f"moving at {sc.speed:.0f} px/s")
+        if sc.spawn_delay_ms:
+            parts.append(f"appears after up to {sc.spawn_delay_ms} ms")
+        if not (sc.moving or sc.spawn_delay_ms):
+            parts.append("speed setting applies to moving and reaction drills")
+        self.tuning_note.setText(" · ".join(parts))
 
     def _set_running(self, running: bool) -> None:
         self.start_btn.setEnabled(not running)
         self.stop_btn.setEnabled(running)
         self.scenario.setEnabled(not running)
+        self.speed_slider.setEnabled(not running)
+        self.difficulty_slider.setEnabled(not running)
 
     def _start(self) -> None:
-        sc = scenario_defs.get(self.scenario.currentData())
+        sc = self._drill_scenario()
         self.result.setText("")
         self.progress.setRange(0, sc.target_count)
         self.progress.setValue(0)

@@ -145,6 +145,13 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     /home/user/workspace/FPSCoach   (clone of https://github.com/AFK-999/FPSCoach.git)
     Remote origin/main = e9e69a2   (the visual REDESIGN; based on 04e6b0f)
     Working branch     = fix/redesign-backend-wiring (from e9e69a2), NOT pushed.
+    REV55 STATUS: rev54 plus (1) Capture: a Frame rate row (30 / 60 / 120 FPS) is always
+    visible; choosing a preset sets its rate; the choice is saved and used at Start;
+    (2) Training: Target speed (0.50x-2.00x) and Difficulty (Level 1-5) sliders, applied to
+    the next drill started; (3) Training: a new "Precision" drill (medium targets), separate
+    from "Precision micro-aim". The four original drills were already in the app.
+    NOT verified on Windows: real capture at each FPS value (no native core in this sandbox).
+    Still NOT pushed.
     REV54 STATUS: rev53 plus (1) live speech controls: speed (0.5x-2.0x), volume, and voice,
     applied before the next sentence; (2) the coach prompt asks for answers specific to the
     app's own calibration and curve data. NOT BUILT: pitch (no engine here exposes it) and
@@ -1170,6 +1177,26 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
               slider and the new capture arguments); app.py quit run exit 0, no traceback.
               NOT verified: real display, Win32 window list, native capture, real Ollama,
               real game curve files, Windows build.
+
+  2026-10-22 (rev55)  CAPTURE FRAME RATE, TRAINING SPEED AND DIFFICULTY, PRECISION DRILL.
+              - Capture: 30 / 60 / 120 FPS selector is always visible (it had been shown only
+                for the Custom preset). Presets set it when chosen; the user can override it.
+                Saved as capture/fps. With no saved rate, a saved preset uses its own rate.
+                Regression caught by the wiring check: Performance reopened at 60 FPS.
+              - Training: Target speed (50%-200%, shown as 0.50x-2.00x) and Difficulty (Level
+                1-5, shown as Level n). Both save as training/speed_pct and training/difficulty
+                and apply to the next drill started; locked while a drill runs.
+                scenarios.tuned(): speed scales moving-target velocity and the reaction wait
+                (faster = shorter wait); difficulty scales target radius (level 1 = x1.4,
+                level 3 = drill default, level 5 = x0.7; minimum radius 4 px).
+              - Training: new "Precision" drill (key precision_steady, radius 18 px). The
+                existing "Precision micro-aim" drill (key precision, radius 12 px) is unchanged,
+                so saved analytics keep their key.
+              - Tests: tests/test_training_tuning.py (26). Full suite 220 passed. ruff F clean.
+                compileall OK. Wiring 32/32. Screenshots of Training and Capture checked.
+              - Sandbox note: PySide6 had to be reinstalled, and libxkbcommon was extracted
+                to ~/.local/xkb (not in the repo). Needed for the test run only.
+              - NOT verified: real capture at 30, 60 or 120 FPS; drill feel at each speed.
 
   2026-10-19 (rev54)  TTS SPEED, VOLUME, VOICE CONTROLS. COACH PROMPT. DECLINED PART.
               - AI Coach: Speed slider (0.5x-2.0x), Volume slider (0-100%), Voice list from the

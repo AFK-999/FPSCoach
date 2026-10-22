@@ -306,8 +306,9 @@ class CapturePage(QWidget):
         ("Quality", "quality", None, 120),
         ("Balanced", "balanced", (960, 540), 60),
         ("Performance", "low", (640, 360), 30),
-        ("Custom", "custom", None, None),  # region + FPS chosen manually below
+        ("Custom", "custom", None, None),  # region chosen manually below; FPS from the Frame rate row
     ]
+    FPS_CHOICES = (30, 60, 120)
 
     def __init__(self, backend: CoreBackend, parent=None):
         super().__init__(parent)
@@ -382,21 +383,28 @@ class CapturePage(QWidget):
         self.custom_region = QComboBox()
         self.custom_region.addItem("Center 640 × 360", (640, 360))
         self.custom_region.addItem("Center 960 × 540", (960, 540))
-        self.custom_region.addItem("Full output", None)
-        self.custom_fps = QComboBox()
-        for fps in (30, 60, 120):
-            self.custom_fps.addItem(f"{fps} FPS", fps)
-        self.custom_fps.setCurrentIndex(1)
         custom_row.addWidget(self.custom_region, 1)
-        custom_row.addWidget(self.custom_fps, 1)
         form.addWidget(self.custom_widget, 3, 1)
-        self._on_preset_changed(self.preset.currentIndex())
+
+        # Frame rate is always visible. A preset sets it when chosen; the user can change it.
+        form.addWidget(_label("Frame rate", "formLabel"), 4, 0)
+        self.fps_combo = QComboBox()
+        for fps in self.FPS_CHOICES:
+            self.fps_combo.addItem(f"{fps} FPS", fps)
+        # Without a saved choice, start from the saved preset's own frame rate.
+        preset_fps = self.PRESETS[max(0, self.preset.currentIndex())][3] or 60
+        saved_fps = int(s.value("capture/fps", preset_fps, type=int))
+        index = self.fps_combo.findData(saved_fps)
+        self.fps_combo.setCurrentIndex(index if index >= 0 else self.FPS_CHOICES.index(60))
+        self.fps_combo.currentIndexChanged.connect(self._on_fps_changed)
+        form.addWidget(self.fps_combo, 4, 1)
+        self._on_preset_changed(self.preset.currentIndex(), apply_fps=False)
 
         self.hwaccel = QCheckBox("GPU capture (D3D11)")
         self.hwaccel.setToolTip("Use the GPU (D3D11) for capture and scaling")
         self.hwaccel.setChecked(s.value("capture/hwaccel", True, type=bool))
         self.hwaccel.toggled.connect(lambda v: s.setValue("capture/hwaccel", bool(v)))
-        form.addWidget(self.hwaccel, 4, 1)
+        form.addWidget(self.hwaccel, 5, 1)
         lay.addLayout(form)
 
         btn_row = QHBoxLayout()
@@ -455,13 +463,23 @@ class CapturePage(QWidget):
             self.output_combo.addItem("No display output found", None)
         self._update_buttons()
 
-    def _on_preset_changed(self, index: int):
+    def _on_preset_changed(self, index: int, apply_fps: bool = True):
         value = self.preset.itemData(index)
         if value is not None:
             _settings().setValue("capture/preset", value)
         custom = value == "custom"
         self.custom_label.setVisible(custom)
         self.custom_widget.setVisible(custom)
+        preset_fps = self.PRESETS[max(0, index)][3]
+        if apply_fps and preset_fps is not None:
+            found = self.fps_combo.findData(preset_fps)
+            if found >= 0:
+                self.fps_combo.setCurrentIndex(found)
+
+    def _on_fps_changed(self, index: int):
+        value = self.fps_combo.itemData(index)
+        if value is not None:
+            _settings().setValue("capture/fps", int(value))
 
     def _load_windows(self):
         self.source_combo.clear()
@@ -483,10 +501,10 @@ class CapturePage(QWidget):
         if not isinstance(output, dict):
             self._show_error("No display output is available to capture.")
             return
-        _label_text, value, region, fps = self.PRESETS[max(0, self.preset.currentIndex())]
+        _label_text, value, region, _preset_fps = self.PRESETS[max(0, self.preset.currentIndex())]
         if value == "custom":
             region = self.custom_region.currentData()
-            fps = self.custom_fps.currentData()
+        fps = self.fps_combo.currentData()
         width, height = region if region else (int(output["width"]), int(output["height"]))
         left, top = -1, -1
         window_note = ""
