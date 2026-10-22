@@ -67,22 +67,18 @@ def _session(scenario: str = "flick"):
     return SessionResult.create(scenario, [300.0, 320.0, 340.0], 8, 2)
 
 
-# -- the toggles and the master switch -------------------------------------------
+# -- the three independent toggles -----------------------------------------------
 
-def test_everything_starts_off(page) -> None:
+def test_every_toggle_starts_off(page) -> None:
     assert all(not box.isChecked() for box in page.focus_boxes.values())
-    assert page.focus_master.isChecked() is False
 
 
-def test_master_turns_all_three_on_and_off(page, store) -> None:
-    page.focus_master.setChecked(True)
+def test_the_three_toggles_can_be_chosen_together(page, store) -> None:
+    for key in ("capture", "calibration", "training"):
+        page.focus_boxes[key].setChecked(True)
     assert all(box.isChecked() for box in page.focus_boxes.values())
     for key in ("capture", "calibration", "training"):
         assert store.value(f"coach/focus/{key}", type=bool) is True
-
-    page.focus_master.setChecked(False)
-    assert all(not box.isChecked() for box in page.focus_boxes.values())
-    assert store.value("coach/focus/training", type=bool) is False
 
 
 def test_one_toggle_leaves_the_others_alone(page, store) -> None:
@@ -94,14 +90,8 @@ def test_one_toggle_leaves_the_others_alone(page, store) -> None:
     assert store.value("coach/focus/capture", type=bool) is False
 
 
-def test_master_follows_the_individual_toggles(page) -> None:
-    page.focus_boxes["capture"].setChecked(True)
-    page.focus_boxes["calibration"].setChecked(True)
-    assert page.focus_master.isChecked() is False
-    page.focus_boxes["training"].setChecked(True)
-    assert page.focus_master.isChecked() is True
-    page.focus_boxes["calibration"].setChecked(False)
-    assert page.focus_master.isChecked() is False
+def test_no_master_toggle_is_offered(page) -> None:
+    assert not hasattr(page, "focus_master")
 
 
 def test_saved_focus_is_restored_when_the_page_opens(qapp, store) -> None:

@@ -68,6 +68,8 @@ class _TtsService(QThread):
     status = Signal(str)
     failed = Signal(str)
     voices_ready = Signal(list)  # voice names the engine offers, sent once it starts
+    utterance_started = Signal(str)  # the sentence being spoken now (the main window watches for stalls)
+    utterance_finished = Signal()
 
     def __init__(self, parent=None, options: SpeechOptions | None = None) -> None:
         super().__init__(parent)
@@ -94,6 +96,12 @@ class _TtsService(QThread):
     def stop(self) -> None:
         self._stop = True
         self._queue.put(None)
+
+    def abandon(self) -> None:
+        """Give up on this worker without waiting for it. Used when the engine has stalled:
+        its signals are blocked, and the thread exits as soon as it is able to."""
+        self.blockSignals(True)
+        self.stop()
 
     @staticmethod
     def _safe_voices(speaker) -> list[str]:
@@ -148,12 +156,15 @@ class _TtsService(QThread):
                         result.speaker.apply(self._options)
                     except Exception:  # noqa: BLE001 - keep speaking with the last good settings
                         pass
+                    self.utterance_started.emit(text)
                     try:
                         result.speaker.say(text)
                     except Exception as exc:  # noqa: BLE001 - one bad utterance must not kill the worker
                         # Say so in the chat; the next reply gets a fresh engine.
+                        self.utterance_finished.emit()
                         self.status.emit(f"Could not read that reply aloud: {exc or type(exc).__name__}")
                         continue
+                    self.utterance_finished.emit()
             finally:
                 try:
                     result.speaker.close()

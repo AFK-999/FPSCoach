@@ -138,10 +138,9 @@ class InitResult:
 class _Pyttsx3Speaker:
     """Speaks through pyttsx3.
 
-    pyttsx3 can refuse a second runAndWait() on the same engine: its loop flag stays set
-    after a run that raised, so every later sentence is lost. The first sentence uses the
-    engine made at start-up. Every later sentence gets a new engine from ``make_engine``,
-    configured with the same settings, so one bad run cannot silence the rest.
+    Each sentence after the first gets a new engine from ``make_engine``, configured with the
+    same settings. A shared engine can stop responding after one sentence (see _new_engine),
+    and a failed run can leave it refusing later runs. A new engine avoids both.
     """
 
     def __init__(self, engine, driver: str | None, make_engine=None) -> None:
@@ -389,14 +388,31 @@ def _pyttsx3_driver_chain(platform: str) -> list[str | None]:
     return [None, *names[1:]]
 
 
-def _speaker_from_pyttsx3(driver: str | None) -> Speaker:
+def _new_engine(driver: str | None):
+    """A pyttsx3 engine that nothing else shares.
+
+    pyttsx3.init() returns one cached engine per driver name. Once that engine has spoken a
+    sentence, a second run can stop responding for good: the driver's loop end is queued before
+    the loop starts and never runs, so runAndWait() never returns. Building the Engine class
+    directly gives each sentence its own driver. Falls back to pyttsx3.init() if that class is
+    not available (e.g. a stand-in module in tests).
+    """
     import pyttsx3  # lazy: keeps the module importable without the package
 
-    engine = pyttsx3.init(driverName=driver)
+    # Looked up on the imported module (not via a submodule import), so a stand-in module
+    # without an Engine class falls back to init() even if the real submodule is cached.
+    engine_class = getattr(pyttsx3, "Engine", None)
+    if engine_class is None:
+        return pyttsx3.init(driverName=driver)
+    return engine_class(driver)
+
+
+def _speaker_from_pyttsx3(driver: str | None) -> Speaker:
+    engine = _new_engine(driver)
     voices = engine.getProperty("voices")
     if not voices:
         raise RuntimeError("no voices are installed for this driver")
-    return _Pyttsx3Speaker(engine, driver, make_engine=lambda: pyttsx3.init(driverName=driver))
+    return _Pyttsx3Speaker(engine, driver, make_engine=lambda: _new_engine(driver))
 
 
 def _init_powershell() -> Speaker:

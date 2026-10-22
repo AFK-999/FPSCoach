@@ -1,7 +1,7 @@
 ================================================================================
 FPS COACH — CONTINUATION / HANDOFF DOCUMENT
 Copy-paste this whole file into a new agent chat to resume with zero context loss.
-Last updated: 2026-10-22 (rev 64)  (update after EVERY response)
+Last updated: 2026-10-22 (rev 65)  (update after EVERY response)
 
 *** IMPORTANT (rev4): The REAL repo was provided and differs a lot from the
 *** earlier scaffold. Work on the REAL repo at /home/user/workspace/FPSCoach
@@ -145,6 +145,21 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     /home/user/workspace/FPSCoach   (clone of https://github.com/AFK-999/FPSCoach.git)
     Remote origin/main = e9e69a2   (the visual REDESIGN; based on 04e6b0f)
     Working branch     = fix/redesign-backend-wiring (from e9e69a2), NOT pushed.
+    REV65 STATUS: rev64 plus (1) AI Coach Focus: the "All three" master toggle is REMOVED. Capture,
+    Calibration and Training are independent checkboxes and can be selected together freely (the
+    user's request). Their saved values (coach/focus/*) and their behaviour are unchanged. (2) Test
+    voice: root cause found and fixed in code. pyttsx3.init() returns one cached engine per driver
+    name. After the engine has spoken one sentence, the next runAndWait() on it can stop returning
+    (reproduced on pyttsx3's dummy driver: the second run hangs inside the driver's start-loop, so
+    the worker stops and nothing is spoken). This is the cause of "Test voice works once". Fix:
+    tts_service._new_engine(driver) builds pyttsx3.Engine(driver) directly, so each sentence gets its
+    own engine (falls back to init() if the Engine class is missing, for stand-in modules). Also:
+    the speech worker reports sentence start and finish (utterance_started / utterance_finished),
+    and a watchdog in main_window (500 ms timer) restarts the speech engine if one sentence takes
+    longer than 10 s + 0.15 s per character. The stuck sentence is read again once. If it stalls
+    again, the reply is skipped and the speech status says so. NOT verified on Windows (SAPI5) or
+    espeak: neither is in the sandbox. The dummy-driver result does not prove the Windows path.
+    Windows check: turn Read aloud on and press Test voice 5 times; each press must be heard.
     REV64 STATUS: rev63 plus AI Coach Focus (in the Settings block on AI Coach): toggles for Capture,
     Calibration and Training, plus an "All three" master. All off by default; saved as coach/focus/*.
     Calibration: the automatic note and AI recommendation after a calibration run only when Calibration
@@ -1221,6 +1236,31 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
               slider and the new capture arguments); app.py quit run exit 0, no traceback.
               NOT verified: real display, Win32 window list, native capture, real Ollama,
               real game curve files, Windows build.
+
+  2026-10-22 (rev65)  FOCUS: MASTER TOGGLE REMOVED. TEST VOICE: REAL CAUSE FIXED (FRESH ENGINE + WATCHDOG).
+              - pages_coach.py: "All three" checkbox, _sync_focus_master and _on_focus_master_toggled removed.
+                The three focus checkboxes are independent. Tests: tests/test_coach_focus.py (11): three
+                independent toggles, persistence, and no master exists.
+              - tts_service.py: _new_engine(driver) builds pyttsx3.Engine(driver) per sentence. It replaces
+                the rev63 pyttsx3.init() call, which returns the cached engine per driver name and
+                changed nothing (rev63's "_inLoop not reset" explanation was wrong and is superseded).
+                _speaker_from_pyttsx3 and the make_engine path both use _new_engine.
+              - threads.py: _TtsService emits utterance_started(str) and utterance_finished() around each
+                say. abandon() blocks signals and stops the worker without waiting.
+              - main_window.py: speech watchdog (500 ms QTimer). A sentence over 10 + 0.15 * len(text)
+                seconds restarts the speech engine (_restart_speech): old worker abandoned, _sync_tts
+                rebuilds it, and the sentence is re-enqueued once. A second stall on the same sentence
+                is skipped and reported. The speech status says the engine was restarted or skipped.
+              - Reproduction: /tmp/dummy_repeat.py. Naive pyttsx3.init() on the dummy driver: run 0 ok,
+                runs 1 and 2 hang (in dummy.startLoop). With Engine(driver) per sentence: 6/6 ok.
+              - Tests: tests/test_tts_engine_hang.py (7): distinct engines; 4 sentences on the real
+                dummy driver; Test voice 3 times through the real worker thread (skipped without pyttsx3);
+                watchdog restart, stall-twice skip, and timeout scaling. tests/test_tts_repeat_play.py
+                docstring updated to the new explanation.
+              - Full suite 287 passed. ruff F clean. compileall OK. Wiring 32/32.
+              - NOT verified: SAPI5 (Windows) or espeak (Linux). The dummy driver is not audio. Windows check
+                needed: Test voice pressed 5 times, each heard. Residual risk: a driver that hangs with
+                the watchdog's restart still hangs in its own thread (the watchdog does not wait on it. Turning Read aloud off still waits at most 3 s).
 
   2026-10-22 (rev64)  AI COACH FOCUS: CAPTURE / CALIBRATION / TRAINING TOGGLES.
               - pages_coach.py: FOCUS_AREAS, _build_focus_section (master "All three" + 3 checkboxes,

@@ -328,10 +328,6 @@ class AIChatPage(QWidget):
             "Choose which tabs the coach works with. Everything is off until you turn it on.",
             "cardSubtitle", wrap=True,
         ))
-        self.focus_master = QCheckBox("All three")
-        self.focus_master.setToolTip("Turns Capture, Calibration and Training on or off together.")
-        self.focus_master.toggled.connect(self._on_focus_master_toggled)
-        box.addWidget(self.focus_master)
         row = QHBoxLayout()
         row.setSpacing(16)
         self.focus_boxes: dict[str, QCheckBox] = {}
@@ -345,7 +341,6 @@ class AIChatPage(QWidget):
         box.addLayout(row)
         self.focus_note = _label("", "cardSubtitle", wrap=True)
         box.addWidget(self.focus_note)
-        self._sync_focus_master()
         self._update_focus_note()
         return box
 
@@ -353,21 +348,7 @@ class AIChatPage(QWidget):
         boxes = getattr(self, "focus_boxes", None)
         return bool(boxes and boxes[key].isChecked())
 
-    def _sync_focus_master(self) -> None:
-        all_on = all(box.isChecked() for box in self.focus_boxes.values())
-        self.focus_master.blockSignals(True)
-        self.focus_master.setChecked(all_on)
-        self.focus_master.blockSignals(False)
-
-    def _on_focus_master_toggled(self, checked: bool) -> None:
-        for box in self.focus_boxes.values():
-            box.blockSignals(True)
-            box.setChecked(bool(checked))
-            box.blockSignals(False)
-        self._focus_changed()
-
     def _on_focus_item_toggled(self, _checked: bool = False) -> None:
-        self._sync_focus_master()
         self._focus_changed()
 
     def _focus_changed(self) -> None:

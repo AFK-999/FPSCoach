@@ -1,11 +1,12 @@
 """Read-aloud keeps speaking: repeated Test voice clicks, and failed sentences are reported.
 
-Bug: the first sentence was spoken, and later ones were silently lost until read-aloud was
-turned off and on again. pyttsx3 keeps its run-loop flag set after a run that raised, so every
-later runAndWait() on the same engine raises "run loop already started", and the worker
-swallowed the error. The fix gives each later sentence a fresh engine.
+Bug: after the first sentence, later ones were silently lost until read-aloud was turned off and
+on again. A failed run inside pyttsx3 left the engine refusing later runs, and the worker
+swallowed the error. The fix gives each later sentence a fresh engine and reports failures.
 
-These tests use a fake engine that behaves the same way (sticky flag, no audio).
+These tests use a fake engine that behaves the same way (refuses a run after a failed one, no
+audio). The real-driver regression (a second run hangs on pyttsx3's dummy driver) is covered in
+tests/test_tts_engine_hang.py.
 """
 
 from __future__ import annotations

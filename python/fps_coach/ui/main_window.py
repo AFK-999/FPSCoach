@@ -21,9 +21,10 @@ Functional wiring (restored to the original backend behavior):
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtCore import QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QFontMetrics, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -144,6 +145,12 @@ class MainWindow(QMainWindow):
         self._util_buttons: dict[str, QToolButton] = {}
         self._voice_service = None
         self._tts_service = None
+        # Speech watchdog: (started at, sentence) while a sentence is being spoken.
+        self._speech_watch: tuple[float, str] | None = None
+        self._speech_retry_text: str | None = None
+        self._speech_timer = QTimer(self)
+        self._speech_timer.setInterval(500)
+        self._speech_timer.timeout.connect(self._check_speech_watchdog)
         self._last_recommendation: dict | None = None
         self._last_summary: dict | None = None
 
@@ -475,11 +482,61 @@ class MainWindow(QMainWindow):
             self._tts_service.voices_ready.connect(self.chat_page.set_voices)
             self._tts_service.failed.connect(self._on_tts_failed)
             self._tts_service.status.connect(self.chat_page.set_speech_status)
+            self._tts_service.utterance_started.connect(self._on_utterance_started)
+            self._tts_service.utterance_finished.connect(self._on_utterance_finished)
             self._tts_service.start()
         elif not enabled and self._tts_service is not None:
             self._tts_service.stop()
             self._tts_service.wait(3000)
             self._tts_service = None
+
+    # -- speech watchdog ---------------------------------------------------------
+    @staticmethod
+    def _speech_timeout(text: str) -> float:
+        """Seconds a sentence may take before the engine is treated as stalled. Generous:
+        normal speech runs well under 0.1 s per character."""
+        return 10.0 + 0.15 * len(text)
+
+    def _on_utterance_started(self, text: str) -> None:
+        self._speech_watch = (time.monotonic(), text)
+        if not self._speech_timer.isActive():
+            self._speech_timer.start()
+
+    def _on_utterance_finished(self) -> None:
+        self._speech_watch = None
+        self._speech_timer.stop()
+
+    def _check_speech_watchdog(self) -> None:
+        if self._speech_watch is None:
+            self._speech_timer.stop()
+            return
+        started, text = self._speech_watch
+        if time.monotonic() - started > self._speech_timeout(text):
+            self._restart_speech(text)
+
+    def _restart_speech(self, text: str) -> None:
+        """The engine has not finished a sentence in time. Drop that worker, start a new one,
+        and read the sentence again once. If it stalls again, say so and move on."""
+        old = self._tts_service
+        self._speech_watch = None
+        self._speech_timer.stop()
+        self._tts_service = None
+        if old is not None:
+            old.abandon()
+        if text == self._speech_retry_text:
+            self._speech_retry_text = None
+            self.chat_page.set_speech_status(
+                "The speech engine stopped responding again, so this reply was skipped."
+            )
+            self._sync_tts()
+            return
+        self._speech_retry_text = text
+        self._sync_tts()
+        if self._tts_service is not None:
+            self._tts_service.enqueue(text)
+        self.chat_page.set_speech_status(
+            "The speech engine stopped responding, so it was restarted and the reply is read again."
+        )
 
     def _speak_response(self, text: str):
         if self._tts_service is not None:
