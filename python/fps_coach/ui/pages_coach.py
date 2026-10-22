@@ -169,9 +169,12 @@ class AIChatPage(QWidget):
         body.setSpacing(20)
 
         card, lay = _card()
+        # Settings at the top: Replies (read aloud, stop, reply text size), then Voice.
+        lay.addWidget(_label("Replies", "formLabel"))
         lay.addLayout(self._build_speech_bar())
-        lay.addLayout(self._build_voice_bar())
         lay.addLayout(self._build_text_size_bar())
+        lay.addWidget(_label("Voice", "formLabel"))
+        lay.addLayout(self._build_voice_bar())
         self.transcript = QTextEdit()
         self.transcript.setObjectName("transcript")
         self.transcript.setReadOnly(True)

@@ -145,6 +145,10 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     /home/user/workspace/FPSCoach   (clone of https://github.com/AFK-999/FPSCoach.git)
     Remote origin/main = e9e69a2   (the visual REDESIGN; based on 04e6b0f)
     Working branch     = fix/redesign-backend-wiring (from e9e69a2), NOT pushed.
+    REV59 STATUS: rev58 plus AI Coach top settings: a "Replies" section (Read aloud, Stop
+    speaking, reply text size) sits first, then a "Voice" section (speed, volume, voice, Test
+    voice, pitch note). The transcript and quick actions stay below. Answers from the user:
+    "Replies" = reply display controls; speech bar stays visible. Still NOT pushed.
     REV58 STATUS: rev57 plus Training: the Target settings card is collapsed behind a drawn gear
     icon (settings glyph, checkable). Clicking the gear opens the card; the gear tooltip shows the
     current speed and level. AI Coach: NOT changed yet. The request is ambiguous ("Replies"), so
@@ -1190,6 +1194,16 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
               slider and the new capture arguments); app.py quit run exit 0, no traceback.
               NOT verified: real display, Win32 window list, native capture, real Ollama,
               real game curve files, Windows build.
+
+  2026-10-22 (rev59)  AI COACH TOP SETTINGS.
+              - Answers to the questions: "Replies" means the reply display controls (text size
+                moved up to the top). The speech bar stays visible at the top.
+              - Layout: "Replies" heading, then Read aloud, Stop speaking, and the reply text size
+                (with Reset). Then a "Voice" heading, then the speech bar and pitch note.
+              - Attributes and behaviour are unchanged. The transcript and the quick actions
+                stay below.
+              - Tests: tests/test_chat_top_settings.py (5). Full suite 238 passed. ruff F clean.
+                compileall OK. Wiring 32/32. Screenshot checked.
 
   2026-10-22 (rev58)  TRAINING GEAR ICON.
               - Training: the Target settings card is collapsed by default. A drawn gear icon
