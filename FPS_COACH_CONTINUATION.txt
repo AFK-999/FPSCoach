@@ -1,7 +1,7 @@
 ================================================================================
 FPS COACH — CONTINUATION / HANDOFF DOCUMENT
 Copy-paste this whole file into a new agent chat to resume with zero context loss.
-Last updated: 2026-10-19 (rev 36)  (update after EVERY response)
+Last updated: 2026-10-23 (rev 71)  (update after EVERY response)
 
 *** IMPORTANT (rev4): The REAL repo was provided and differs a lot from the
 *** earlier scaffold. Work on the REAL repo at /home/user/workspace/FPSCoach
@@ -145,9 +145,174 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     /home/user/workspace/FPSCoach   (clone of https://github.com/AFK-999/FPSCoach.git)
     Remote origin/main = e9e69a2   (the visual REDESIGN; based on 04e6b0f)
     Working branch     = fix/redesign-backend-wiring (from e9e69a2), NOT pushed.
-    REV45 STATUS: full visual redesign committed on the working branch (see
-    changelog rev45), including drawn training figures and the top-bar and
-    capture fixes. Still NOT pushed. Push needs GitHub credentials that this
+    REV71 STATUS: Serious mode. The Dashboard has a "Serious mode" checkbox. When it is on, the six
+    dashboard tiles leave the grid and bounce around the dashboard like the DVD screensaver: each starts at
+    its grid cell with a random direction (20 to 70 degrees), turns at the edges of the stage, and can
+    overlap. Clicking a moving tile still opens it. While the tiles move, their reorder and hide buttons
+    are hidden. Turning the mode off puts the tiles back in the grid. The mode is saved (dashboard/serious_mode)
+    and comes back on restart. Speed: Settings > Interface > "Serious mode speed", a slider from 25% to
+    300% (default 100%, shown exactly and updated while dragged). 100% is 150 px/s. The speed is saved as
+    dashboard/bounce_speed and applies on the next frame. The movement uses the real frame time, capped at
+    50 ms, so a stall never makes a tile jump. The timer runs only while the Dashboard is on screen.
+    Theme changes rebuild the tiles, and the tiles keep bouncing (the old tiles are hidden before Qt deletes
+    them). DECISIONS TO CHECK: (a) "application's shortcuts" was read as the dashboard tiles, the clickable
+    shortcuts to each page. The top navigation bar and the other cards do not move. (b) Serious mode runs
+    even when Settings > Interface > "Enable animations" is off: the explicit toggle wins. (c) The stage is
+    420 px tall at least, and tiles keep their size from when the mode starts. A window resize does not
+    resize them. (d) Tiles pass through each other, as DVD logos do. NOT verified on Windows (no GPU or
+    display check). Still NOT pushed.
+    REV70 STATUS: Capture preview cause found and fixed; window capture changed to record only the
+    selected window. (1) Cause of the visual delay, in order of size: the native worker slept after each
+    copy, so a frame that arrived during the sleep waited up to one frame interval; the UI polled for new
+    frames every 16 ms; and the copy was timed from the end of the last copy. Fixes: the worker now waits
+    before the acquire, only until 0.9 frame intervals have passed since the last frame arrived; the UI
+    polls every 4 ms (cheap: it copies nothing). Measured on the fake desktop, desktop change to screen,
+    median / p95: balanced 960x540 at 60 FPS 17.3 / 28.1 ms before, 11.4 / 18.5 ms after; quality 1080p
+    at 60 FPS 20.0 / 30.6 ms before, 14.6 / 21.2 ms after; low 640x360 at 30 FPS 25.2 / 42.1 ms before,
+    17.6 / 30.5 ms after. Capture rate: 60.0 FPS at 60 (both presets); at 30 FPS it runs at about 33
+    FPS, because of the 0.9 pacing margin. (2) Window capture: selecting a window used to crop the
+    whole-screen Desktop Duplication output to the window's rectangle, so any window on top of it
+    appeared (including Vantage). Now a window selection calls start_window, which uses Windows Graphics
+    Capture (WGC) on Windows 10 1903+ and records only that window. It is independent of what covers it.
+    On Linux, and wherever WGC cannot start, it falls back to the screen area behind the window and says
+    so in a notice ("Showing the screen area behind the window instead..."). The WGC code is compiled
+    only on Windows (FPSCOACH_HAS_WGC); it is NOT compiled or run here and is UNVERIFIED on Windows.
+    A stall note appears in window mode when no frame has come for 1.5 s (a minimised window, or one
+    whose content is not changing, sends no frames). Capture stats now carry capture_mode
+    (output / region / window), notice, and each frame carries arrival_us.
+    NOT verified on Windows: WGC behaviour, the border, minimised windows, cross-adapter capture, and
+    the GPU readback stall under game load (not addressed; needs a GPU-side downscale and a Windows
+    measurement). Still NOT pushed.
+    REV69 STATUS: Capture preview pipeline optimised for 60 FPS. The preview now shows the newest frame
+    within about one frame (measured median 17 ms old, previously 130-140 ms; the old 4 Hz poll is gone).
+    Changes: (1) native worker publishes frames as shared pointers, so a pull copies pixels once (not twice),
+    reuses its pixel buffer instead of allocating and zeroing one per frame, copies packed rows in one
+    memcpy, and exposes latest_sequence() (no pixel copy). (2) Python: FramePreview paints the QImage
+    directly (no per-frame QPixmap conversion or smooth scaling); the frame timer runs at 16 ms only while
+    capture runs and the Capture tab is visible; the stats timer stays at 250 ms. An older native build
+    without latest_sequence keeps the 250 ms poll. NOT verified on Windows: the native edits compile and run
+    on Linux against a fake DXGI layer (native/tests/fake_dxgi), not against real Desktop Duplication.
+    NOT measured on low-end hardware (the sandbox has 2 vCPUs). Next step if still slow on low-end machines:
+    downscale on the GPU before readback (the Quality preset reads back full 1080p at 120 FPS).
+    REV68 STATUS: rev67 plus Calibration chart: the handles are chosen from the curve. The line still runs
+    through every point. Handles are the bends the curve needs (Ramer-Douglas-Peucker, tolerance 0.005 of
+    the 0..1 chart, about 1.4 px). A straight run has 2 handles; a wiggly curve has many; any length. Up to
+    64 handles are drawn as dots. A drag moves one handle and scales only the points between its
+    neighbouring handles. Handles are cached, so a drag keeps them. Points with equal speed keep their
+    file order. CHANGE FROM REV67: drag now scales the neighbouring points (rev67 moved one point). NOT done: the recommendation's point count is still fixed by the analyzer (7 points);
+    making it depend on the player's trial data is a model change, awaiting the user's answer. The
+    per-point smoothness and corner flags in .cc4/.ccurve files are NOT drawn (the line is straight
+    between points). NOT verified on Windows. Still NOT pushed.
+    REV67 STATUS: rev66 plus Calibration chart: every point of a curve is drawn at its own speed
+    position (no five-point summary). An imported custom curve (up to 256 points per axis, any range)
+    shows its real shape. Handle dots appear for curves of up to 32 points; longer curves are drawn as a
+    line, and a press on the line still grabs the nearest point. A drag changes only the dragged point.
+    Undo/redo keep the positions and scale. The AI-adjusted overlay (dashed previous curve) and the
+    recommendation curves also use full point lists. The Recommendation tab's chart also shows every point
+    (7 for the analyzer's output, previously 5). The AI Coach quick-preview chart is UNCHANGED (still five
+    points). NOT verified on Windows. Still NOT pushed.
+    REV66 STATUS: rev65 plus Privacy > Local data: a new button "Clear calibration and recommendation
+    history". It empties .fpscoach_calibration_history.json (the rev14 file, the only saved calibration
+    record; it currently holds 4 records from 2026-10-19), resets the analyzer's trials, the Calibration
+    page's last recommendation and Undo/Redo steps (the curve on the chart is kept), and the Recommendation
+    page's shown result (back to "Awaiting calibration"). It asks for confirmation first. The training
+    clear button and the chat are unchanged. NOTE: the app adds no new calibration results to the file
+    (rev15), so the saved count stays at zero after a clear. Not reintroduced: the button only empties a
+    file. Still NOT pushed.
+    REV65 STATUS: rev64 plus (1) AI Coach Focus: the "All three" master toggle is REMOVED. Capture,
+    Calibration and Training are independent checkboxes and can be selected together freely (the
+    user's request). Their saved values (coach/focus/*) and their behaviour are unchanged. (2) Test
+    voice: root cause found and fixed in code. pyttsx3.init() returns one cached engine per driver
+    name. After the engine has spoken one sentence, the next runAndWait() on it can stop returning
+    (reproduced on pyttsx3's dummy driver: the second run hangs inside the driver's start-loop, so
+    the worker stops and nothing is spoken). This is the cause of "Test voice works once". Fix:
+    tts_service._new_engine(driver) builds pyttsx3.Engine(driver) directly, so each sentence gets its
+    own engine (falls back to init() if the Engine class is missing, for stand-in modules). Also:
+    the speech worker reports sentence start and finish (utterance_started / utterance_finished),
+    and a watchdog in main_window (500 ms timer) restarts the speech engine if one sentence takes
+    longer than 10 s + 0.15 s per character. The stuck sentence is read again once. If it stalls
+    again, the reply is skipped and the speech status says so. NOT verified on Windows (SAPI5) or
+    espeak: neither is in the sandbox. The dummy-driver result does not prove the Windows path.
+    Windows check: turn Read aloud on and press Test voice 5 times; each press must be heard.
+    REV64 STATUS: rev63 plus AI Coach Focus (in the Settings block on AI Coach): toggles for Capture,
+    Calibration and Training, plus an "All three" master. All off by default; saved as coach/focus/*.
+    Calibration: the automatic note and AI recommendation after a calibration run only when Calibration
+    is on (this changes the old always-on behaviour). Training: a note and AI recommendation after each
+    drill when Training is on (app drill results only). Capture: the coach sees capture settings
+    (preset, FPS) only. NOT BUILT, declined category: any screen or gameplay access, real-time feedback
+    from gameplay, and curves generated from capture. Automatic answers are shown but never applied to
+    the curve. Still NOT pushed.
+    REV63 STATUS: rev62 plus (1) AI Coach: the Replies controls (Read replies aloud, Stop speaking,
+    reply text size) moved from the top of the tab into the gear-opened Settings block, above Voice.
+    The gear is the only control at the top, and the block is collapsed by default. This reverses the
+    rev59/rev60 placement, as the user asked. (2) Test voice: fixed. Each sentence now gets a fresh
+    pyttsx3 engine, so later sentences are no longer lost after the first. A failed sentence is shown
+    in the speech status. The exact Windows cause is NOT reproduced here: the user must confirm on
+    Windows. The Settings-tab Replies card from rev62 is kept, and the user should confirm whether
+    to remove it. Still NOT pushed.
+    REV62 STATUS: rev61 plus Settings > Replies: a new card with Read replies aloud, Stop speaking,
+    and Reply text size (12-24 px, with Reset). It uses the same saved values as the AI Coach tab,
+    and the two places stay in step in both directions. The Voice card's "Speak responses aloud"
+    stays and shares the same value. Still NOT pushed.
+    REV61 STATUS: rev60 plus Recommendation: Generate recommendation now opens the Calibration tab
+    and draws the generated curve on its chart (solid line, previous curve dashed). The change can
+    be undone. The calibration-finished path still opens the Recommendation tab. Still NOT pushed.
+    REV60 STATUS: rev59 plus AI Coach: the speech bar (Speed, Volume, Voice, Test voice) and the
+    pitch note are in their own collapsible "Voice settings" block, opened from a gear on the
+    Voice heading. The gear tooltip shows speed and volume. Read aloud, Stop speaking and text
+    size stay at the top. Still NOT pushed.
+    REV59 STATUS: rev58 plus AI Coach top settings: a "Replies" section (Read aloud, Stop
+    speaking, reply text size) sits first, then a "Voice" section (speed, volume, voice, Test
+    voice, pitch note). The transcript and quick actions stay below. Answers from the user:
+    "Replies" = reply display controls; speech bar stays visible. Still NOT pushed.
+    REV58 STATUS: rev57 plus Training: the Target settings card is collapsed behind a drawn gear
+    icon (settings glyph, checkable). Clicking the gear opens the card; the gear tooltip shows the
+    current speed and level. AI Coach: NOT changed yet. The request is ambiguous ("Replies"), so
+    the question was asked before any change. Still NOT pushed.
+    REV57 STATUS: rev56 plus Training layout: Target speed and Difficulty moved out of the
+    drill area into a "Target settings" side panel on the right of the Training page. The panel
+    stays visible in both Drill and Analytics views. Nothing else changed in behaviour.
+    Still NOT pushed.
+    REV56 STATUS: rev55 plus crosshair overlay focus: the overlay is a top-level window with
+    no owner (it was a child of the main window), carries the no-focus window flag, and
+    answers WM_MOUSEACTIVATE with MA_NOACTIVATE on Windows, so clicks and drags do not
+    activate it. NOT verified on Windows: the real focus behaviour (see report 1I checklist).
+    Still NOT pushed.
+    REV55 STATUS: rev54 plus (1) Capture: a Frame rate row (30 / 60 / 120 FPS) is always
+    visible; choosing a preset sets its rate; the choice is saved and used at Start;
+    (2) Training: Target speed (0.50x-2.00x) and Difficulty (Level 1-5) sliders, applied to
+    the next drill started; (3) Training: a new "Precision" drill (medium targets), separate
+    from "Precision micro-aim". The four original drills were already in the app.
+    NOT verified on Windows: real capture at each FPS value (no native core in this sandbox).
+    Still NOT pushed.
+    REV54 STATUS: rev53 plus (1) live speech controls: speed (0.5x-2.0x), volume, and voice,
+    applied before the next sentence; (2) the coach prompt asks for answers specific to the
+    app's own calibration and curve data. NOT BUILT: pitch (no engine here exposes it) and
+    gameplay analysis from screen capture (declined category; see the rev54 changelog).
+    Still NOT pushed.
+    REV53 STATUS: rev52 plus (1) the Vosk model is loaded once and reused, and one
+    model is held at a time (vosk_service.load_model / release_model; released when voice
+    is turned off); (2) spoken replies are cleaned before speech (tts_service.speakable_text;
+    the transcript keeps the original text). Not run here: real Vosk models and real
+    audio. Still NOT pushed.
+    REV52 STATUS: rev51 plus no code change. Answered a question on Vosk model size,
+    memory, and punctuation (see the rev52 changelog entry). Still NOT pushed.
+    REV51 STATUS: rev50 plus (1) a "Read replies aloud" switch in AI Coach, sharing the
+    Settings > Voice setting, and a "Stop speaking" button that clears queued replies;
+    (2) a transcript text-size slider (12-24 px, saved, with Reset). Speech engine is the
+    existing pyttsx3 path with fallbacks (tts_service.py); not changed. Not run here:
+    real audio. Still NOT pushed.
+    REV50 STATUS: rev49 plus (1) Calibration Undo and Redo for the sensitivity curve
+    (Ctrl+Z / Ctrl+Y, in-session only, not the reverted calibration history), (2) a
+    current/older curve key above the chart, (3) a "Coach is thinking" animation in
+    AI Coach while a request runs. Still NOT pushed (no credentials here). Open: the
+    1120 px top-bar overlap.
+    REV49 STATUS: visual redesign on the working branch (changelog rev45), plus
+    rev46 (drawn training figures), rev47 (top bar fits, core status is a dot,
+    slider readouts), rev48 (crosshair overlay, off by default, user-approved
+    reversal of the no-draw-over-game boundary) and rev49 (overlay edit mode and
+    lock, privacy policy in app and docs/PRIVACY.md; gameplay feedback and target
+    detection DECLINED, not built). Still NOT pushed. Push needs GitHub credentials that this
     sandbox does not have. Exact command for a machine with access:
         git push origin fix/redesign-backend-wiring:main
                          Commits on it (newest first): f6af4b9 rev43, 9b2c551 rev42,
@@ -1145,6 +1310,492 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
               slider and the new capture arguments); app.py quit run exit 0, no traceback.
               NOT verified: real display, Win32 window list, native capture, real Ollama,
               real game curve files, Windows build.
+
+  2026-10-23 (rev69)  CAPTURE PREVIEW: 60 FPS PIPELINE.
+              - native/include/fpscoach/capture.hpp, native/src/capture.cpp, native/src/bindings.cpp:
+                latest_frame() returns shared_ptr<const CapturedFrame> (no C++ copy under the lock);
+                new latest_sequence(); worker reuses its pixel buffer (recycled_pixels_, worker thread
+                only; a buffer is reused only when use_count()==1); packed rows copied in one memcpy.
+              - python/fps_coach/backend.py: fast_frame_sequence (property), latest_sequence().
+              - python/fps_coach/ui/pages_setup.py: FramePreview widget (paints QImage, aspect fit,
+                no per-frame pixmap or smooth scaling); CapturePage._pump_frame on FRAME_INTERVAL_MS (16)
+                while capturing and visible (showEvent/hideEvent); _refresh_stats now stats only.
+              - tests/test_capture_preview.py (13): widget, no-copy-when-unchanged, hidden tab, old-build
+                fallback, backend wrapper.
+              - native/tests/fake_dxgi/: Linux stand-in for DXGI/D3D11 (synthetic 60 Hz desktop) with
+                smoke and stress scripts. Used to build and run the real worker on Linux.
+              - verify_mainwindow_wiring.py (outside repo): preview checks use has_frame() and open the
+                Capture tab first. 32/32.
+              - Measured (same machine, real native worker on the fake desktop, 5 s, 60 FPS capture):
+                  balanced 960x540: before 4.0 pulls/s, frame on screen median 134 ms (max 264);
+                                    after 59.6 pulls/s, median 16.6 ms (max 33).
+                  quality 1080p:    before pull median 5.2 ms, 19 UI passes over 8 ms (worst 25 ms),
+                                    median age 143 ms; after pull median 1.5 ms, 0 passes over 8 ms, median 18 ms.
+                  low 640x360:      before pull median 0.39 ms, age 130 ms; after 0.15 ms, age 17 ms.
+              - Native stress: 23,832 pulls in tight loops and 3 start/stop rounds, 0 torn frames.
+              - Full suite 342 passed. ruff F clean. Wiring 32/32.
+              - Harness used for the baseline: committed HEAD built with the same fake layer.
+
+  2026-10-23 (rev71c) WINDOWS BUILD FIX: native/src/capture.cpp line 801-803 (WGC window path) failed to
+              compile on MSVC (C3536 'access' cannot be used before it is initialized). The IDirect3DDxgiInterfaceAccess
+              name was unqualified; the cast now uses Windows::Graphics::DirectX::Direct3D11::IDirect3DDxgiInterfaceAccess
+              (as in Microsoft's capture sample) and the local is renamed dxgi_access. NOT compiled on Windows here (no
+              SDK in the sandbox). The WGC path has never compiled on Windows before, so further errors in it are possible.
+              Linux suite unaffected (WGC code is Windows-only).
+
+  2026-10-23 (rev71b) REQUEST DECLINED, NO CODE CHANGE: record gameplay at 720p for offline AI aim
+              analysis, plus auto-clearing cache and temp recordings on close. Gameplay analysis from screen
+              capture is a declined feature (re-requested and declined again). The cache-clearing part was not
+              built because it only serves that recording. Offered alternatives: post-session analytics from
+              the app's own drills; a coach grounded in the app's own calibration and curve data.
+
+  2026-10-23 (rev71)  SERIOUS MODE: DASHBOARD TILES BOUNCE; SPEED IN SETTINGS.
+              - python/fps_coach/dashboard_config.py: BOUNCE_SPEED_MIN/MAX/DEFAULT (25/300/100),
+                BOUNCE_BASE_SPEED (150 px/s), clamp_bounce_speed().
+              - python/fps_coach/ui/pages_setup.py: DashboardPage: "Serious mode" QCheckBox, set_serious_mode(),
+                set_bounce_speed(), _enter_bounce/_leave_bounce, _bounce_step (QTimer 16 ms, QElapsedTimer
+                frame time capped at 50 ms), showEvent/hideEvent start and stop the timer, _rebuild_tiles keeps
+                bouncing and hides old tiles before deleteLater. _Tile.edit_buttons + set_editing().
+              - python/fps_coach/ui/pages_coach.py: SettingsPage "Serious mode speed" ValueSlider in the
+                Interface card; bounce_speed_changed(int) signal; saves dashboard/bounce_speed.
+              - python/fps_coach/ui/main_window.py: settings_page.bounce_speed_changed -> dashboard_page.set_bounce_speed.
+              - tests/test_serious_mode.py (16): clamping, enter/leave, saved mode across restart, theme rebuild
+                without duplicates, hidden page does not move, bounds over a long run, speed scaling, stall cap,
+                clicks while moving, edit buttons hidden, Settings slider readout and save, main-window wiring.
+              - Full suite 367 passed, 2 skipped. ruff F clean. Wiring 32/32.
+              - Found, NOT fixed (pre-existing on HEAD): deleting a parentless SettingsPage from Python prints
+                "shared QObject was deleted directly" and once corrupted the heap on teardown (malloc_consolidate).
+                The app keeps its pages for its whole run, so this affects shutdown only, in tests. Tests keep
+                the page alive (_KEEP_ALIVE).
+
+  2026-10-23 (rev70)  CAPTURE: PREVIEW LATENCY AND WINDOW-ONLY CAPTURE.
+              - native/include/fpscoach/capture.hpp: CapturedFrame.arrival_us; CaptureStats.capture_mode,
+                notice; DesktopCapture.start_window().
+              - native/src/capture.cpp: DD worker waits before acquire (0.9 interval since last arrival),
+                not after the copy; arrival stamped right after AcquireNextFrame; window path via
+                Windows Graphics Capture under FPSCOACH_HAS_WGC (Windows only): pool of 2, free-threaded,
+                border off where supported, cursor off, newest frame kept, staging copy, paced copy,
+                pool rebuilt on resize, falls back to the screen area with a notice.
+              - native/src/bindings.cpp: start_window(hwnd, adapter, output, x, y, width, height, target_fps);
+                latest_frame adds arrival_us; stats add capture_mode and notice.
+              - CMakeLists.txt: WindowsApp linked (WinRT capture).
+              - native/tests/fake_dxgi/fake_win.cpp: exports fake_desktop_frame_count() and
+                fake_desktop_frame_time_us(n) for the latency benchmark. bench_desktop_age.py added;
+                README updated (Linux runs fall back to the screen area; the WGC block is not compiled).
+              - python/fps_coach/backend.py: start_window() (native, or start_capture with a note on
+                older builds); OLD_NATIVE_WINDOW_NOTE.
+              - python/fps_coach/ui/pages_setup.py: FRAME_INTERVAL_MS 16 -> 4; window selection uses
+                start_window with the window's bounds; status text follows capture_mode; notice label
+                (separate from errors) for fallbacks and the 1.5 s stall note in window mode; notice
+                cleared on stop.
+              - tests/test_window_capture.py (11; 2 native checks run only with the fake build).
+              - Measured: see STATUS above. Full suite 351 passed, 2 skipped (no native build).
+                With the fake build on PYTHONPATH: 12 errors in tests/test_recommendation_apply.py
+                (same on HEAD; the test expects the Python analyzer). ruff F clean. Wiring 32/32.
+              - Harness: HEAD built from git archive, not a worktree.
+
+  2026-10-23 (rev69)  CAPTURE PREVIEW: 60 FPS PIPELINE.
+              - NEW python/fps_coach/curve_sampling.py (Qt-free): KEY_TOLERANCE = 0.005; key_indices(xs, ys,
+                tolerance) = Ramer-Douglas-Peucker with distance to the segment (the first version measured to
+                the infinite line, which broke the tolerance guarantee; caught by tests).
+              - widgets.py CurveChart: points and xs are properties; setting them clears the handle cache.
+                handle_indices() (cached), handles_visible() (<= HANDLE_DOT_LIMIT = 64). Line through all points.
+                Hit test and drag work on handles only. _move_handle() scales points between neighbouring
+                handles from the press-time snapshot (no compounding). A handle at zero gain cannot be
+                moved by a ratio, so it stays put (existing limit of ratio edits). _curve_points() uses a
+                stable sort by x.
+              - Tests: tests/test_curve_sampling.py (15): short inputs, straight line -> ends, ends kept,
+                every dropped point within tolerance (property test), tighter tolerance keeps more, zero
+                tolerance keeps every bend, vertical step, identical points, 2000-point curve, length
+                mismatch. tests/test_calibration_chart_full.py rewritten for handles (19): straight run ->
+                2 handles, wiggly -> many, zig-zag -> no dots, cache, drag a handle changes only points between
+                its neighbours, smooth factor between handles, undo exact, overlay drag, recommendation points.
+              - Results: long 60-point test curve -> 43 handles; 200-point sine -> 42; straight 60 -> 2.
+                Screenshot /tmp/shots16/calibration_adaptive.png: 160-point demo (flat then wiggly) -> 25 handles.
+              - Full suite 329 passed. ruff F clean. compileall OK. Wiring 32/32.
+              - Environment reset again: PySide6 6.12.0, pytest, ruff and pyttsx3 reinstalled with pip;
+                libxkbcommon0 re-extracted to /home/user/.local/xkb.
+
+  2026-10-23 (rev67)  CALIBRATION CHART: REAL CURVES, NOT A FIVE-POINT SUMMARY.
+              - widgets.py: DOT_LIMIT = 32. _positions() (real x or even spacing when the lengths do
+                not match). CurveChart keeps points (y, 0..1) and adds xs (x per point), previous_xs,
+                x_positions(), handles_visible(). Drawing uses each point's own x. Nearest-point hit test
+                (14 px). _curve_points(points) returns every point, sorted and clamped (fallback = the old
+                five-point default for fewer than two points). _curve_samples kept for the AI Coach quick
+                preview. _apply_chart_edit(profile, baseline, edited, xs=None, scale=None) maps each drag
+                onto the profile at real positions.
+              - pages_setup.py: CalibrationPage._set_chart(points, previous, xs, previous_xs, scale),
+                _set_overlay(), _shared_speed(); _chart_scale kept, and saved in undo snapshots with the
+                xs. apply_recommendation, set_adjusted, _import_curve and _on_curve_adjusted use full point
+                lists. RECOMMENDATION_MAX_SPEED = 100.0 (matches recommendation_profile). RecommendationPage
+                chart uses every point.
+              - Mouse handlers use event.position() (pos() is deprecated).
+              - Tests: tests/test_calibration_chart_full.py (14): sorting/clamping/fallback, handle limit,
+                even-spacing fallback, import of a 60-point .cc4 (every point, real positions), no dots on a
+                long curve, a real press/move/release on one point changes only that point, undo restores
+                the long curve exactly, an overlay edit changes only the dragged point, overlay positions,
+                7-point recommendation on both tabs, chart render.
+              - verify_mainwindow_wiring.py (outside the repo): the check "chart updated from recommendation
+                points" expected 5 points. It now expects len(rec["points"]), because the chart shows every
+                point. Result 32/32.
+              - Full suite 314 passed. ruff F clean. compileall OK.
+              - Screenshot /tmp/shots15/calibration_long.png: a 120-point imported curve drawn smoothly.
+              - Environment: the sandbox was reset again. PySide6 6.12.0, pytest, ruff and pyttsx3 were
+                reinstalled with pip; libxkbcommon0 was re-extracted to /home/user/.local/xkb.
+
+  2026-10-22 (rev66)  PRIVACY > LOCAL DATA: CLEAR CALIBRATION AND RECOMMENDATION HISTORY.
+              - NEW python/fps_coach/local_data.py (Qt-free): CALIBRATION_HISTORY_NAME,
+                count_calibration_records(path), clear_calibration_history(path) (writes "[]", keeps the
+                file; a missing file is not created). calibration_history.py is NOT changed (left as
+                the user asked).
+              - pages_coach.py PrivacyPage: new calibration_path argument; second block in the Local data
+                card: note on the file, saved-count label, "Clear calibration and recommendation history"
+                button, confirmation, status. Emits calibration_cleared. The training clear is unchanged.
+              - pages_setup.py: CalibrationPage.clear_recommendation_state() (forgets last recommendation and
+                Undo/Redo; keeps the curve). RecommendationPage.clear_result() (back to "Awaiting calibration").
+              - main_window.py: passes the project-folder path; _on_calibration_cleared() resets the analyzer
+                (backend.analyzer.reset()), _last_summary, _last_recommendation, both pages, and the dashboard.
+              - Tests: tests/test_clear_calibration_history.py (13): helper (missing, none, clear, unreadable),
+                button placement in the Local data card, Yes/No paths, page resets, main-window clear of real
+                analyzer trials. Tests use temp paths only; the repo's real history file is not touched.
+              - Full suite 300 passed. ruff F clean. compileall OK. Wiring 32/32. Screenshot /tmp/shots14/privacy.png.
+              - Environment note: PySide6 6.12.0, pytest, ruff, pyttsx3 reinstalled with pip; libxkbcommon0
+                re-extracted to /home/user/.local/xkb (apt-get download + dpkg-deb -x).
+
+  2026-10-22 (rev65)  FOCUS: MASTER TOGGLE REMOVED. TEST VOICE: REAL CAUSE FIXED (FRESH ENGINE + WATCHDOG).
+              - pages_coach.py: "All three" checkbox, _sync_focus_master and _on_focus_master_toggled removed.
+                The three focus checkboxes are independent. Tests: tests/test_coach_focus.py (11): three
+                independent toggles, persistence, and no master exists.
+              - tts_service.py: _new_engine(driver) builds pyttsx3.Engine(driver) per sentence. It replaces
+                the rev63 pyttsx3.init() call, which returns the cached engine per driver name and
+                changed nothing (rev63's "_inLoop not reset" explanation was wrong and is superseded).
+                _speaker_from_pyttsx3 and the make_engine path both use _new_engine.
+              - threads.py: _TtsService emits utterance_started(str) and utterance_finished() around each
+                say. abandon() blocks signals and stops the worker without waiting.
+              - main_window.py: speech watchdog (500 ms QTimer). A sentence over 10 + 0.15 * len(text)
+                seconds restarts the speech engine (_restart_speech): old worker abandoned, _sync_tts
+                rebuilds it, and the sentence is re-enqueued once. A second stall on the same sentence
+                is skipped and reported. The speech status says the engine was restarted or skipped.
+              - Reproduction: /tmp/dummy_repeat.py. Naive pyttsx3.init() on the dummy driver: run 0 ok,
+                runs 1 and 2 hang (in dummy.startLoop). With Engine(driver) per sentence: 6/6 ok.
+              - Tests: tests/test_tts_engine_hang.py (7): distinct engines; 4 sentences on the real
+                dummy driver; Test voice 3 times through the real worker thread (skipped without pyttsx3);
+                watchdog restart, stall-twice skip, and timeout scaling. tests/test_tts_repeat_play.py
+                docstring updated to the new explanation.
+              - Full suite 287 passed. ruff F clean. compileall OK. Wiring 32/32.
+              - NOT verified: SAPI5 (Windows) or espeak (Linux). The dummy driver is not audio. Windows check
+                needed: Test voice pressed 5 times, each heard. Residual risk: a driver that hangs with
+                the watchdog's restart still hangs in its own thread (the watchdog does not wait on it. Turning Read aloud off still waits at most 3 s).
+
+  2026-10-22 (rev64)  AI COACH FOCUS: CAPTURE / CALIBRATION / TRAINING TOGGLES.
+              - pages_coach.py: FOCUS_AREAS, _build_focus_section (master "All three" + 3 checkboxes,
+                saved coach/focus/<area>, default off), _focus_changed, _update_focus_note,
+                _with_capture_focus (capture preset and FPS only in context).
+              - notify_new_calibration: note + AI recommendation only when Calibration is on (context
+                still refreshed). notify_new_training (new): note + AI recommendation when Training is on.
+              - _maybe_proactive_ai now takes the instruction text. _proactive_received no longer
+                applies a curve change: automatic answers are shown only.
+              - main_window._on_session_recorded calls chat_page.notify_new_training.
+              - DECLINED, NOT BUILT: Capture screen/gameplay access, real-time gameplay feedback, curves
+                generated from capture. Gameplay analysis from screen capture is a declined category.
+              - Tests: tests/test_coach_focus.py (11). Full suite 280 passed. ruff F clean. compileall OK.
+                Wiring 32/32. Screenshot /tmp/shots13/focus_open.png checked.
+
+  2026-10-22 (rev63)  AI COACH REPLIES MOVED INTO SETTINGS; TEST VOICE PLAYS EVERY TIME.
+              - pages_coach.py: the top of AI Coach is now a "Settings" header with the gear. The gear
+                block (collapsed by default) holds Replies (Read replies aloud, Stop speaking, reply
+                text size) and then Voice (speed, volume, voice, Test voice, pitch note). Gear tooltip
+                shows read aloud, speed, volume and text size.
+              - tts_service.py: _Pyttsx3Speaker takes make_engine. The start-up engine speaks the first
+                sentence; each later sentence gets a new engine with the same settings. Reason (from
+                pyttsx3 engine.py): runAndWait() sets _inLoop and only clears it when the run returns,
+                so after one failed run every later runAndWait() on that engine is refused.
+              - threads.py: a sentence that fails emits status "Could not read that reply aloud: ...",
+                shown in the speech status (was silently dropped). main_window connects it.
+              - Tests: tests/test_tts_repeat_play.py (6, incl. a Test-voice x3 run through the speaker
+                thread). tests/test_chat_top_settings.py updated to the new placement (+1 tooltip test).
+                Full suite 269 passed. ruff F clean. compileall OK. Wiring 32/32.
+              - NOT verified: real SAPI5 or espeak (none in this sandbox). Windows test needed: turn read
+                aloud on, press Test voice 3+ times, and check each play is heard. Residual risk: a
+                driver call that hangs (not raises) would still block the speaker thread.
+
+  2026-10-22 (rev62)  SETTINGS > REPLIES: READ ALOUD, STOP SPEAKING, REPLY TEXT SIZE.
+              - SettingsPage: new "Replies" card (right column, under Interface). Controls: Read
+                replies aloud (ui/tts_enabled), Stop speaking, Reply text size slider (chat/font_px,
+                12-24 px, exact readout, Reset).
+              - Sync: AIChatPage.replies_changed -> SettingsPage.refresh_replies; SettingsPage.
+                text_size_changed -> AIChatPage.set_text_size (no echo); SettingsPage.stop_speaking_requested
+                -> the same stop handler as the chat. Voice card checkbox and Replies checkbox stay in step.
+              - Tests: tests/test_settings_replies.py (13). Full suite 261 passed. ruff F clean.
+                compileall OK. Wiring 32/32. Screenshot of Settings checked (/tmp/shots13/settings.png).
+              - Interpretation flagged: "settings" was read as the app Settings tab. The AI Coach
+                controls are unchanged.
+
+  2026-10-22 (rev61)  GENERATE RECOMMENDATION APPLIES THE CURVE ON CALIBRATION.
+              - CalibrationPage.apply_recommendation(rec): draws the curve on the chart with the
+                previous curve kept for comparison, records undo, and sets the hint. The
+                calibration-finished path uses the same method.
+              - RecommendationPage: new signal apply_requested(dict), emitted only by the
+                Generate button (not by calibration results).
+              - MainWindow._on_apply_recommendation: applies the curve, shows a coach message,
+                and switches to Calibration.
+              - Tests: tests/test_recommendation_apply.py (6). Full suite 248 passed. ruff F clean.
+                compileall OK. Wiring 32/32. Screenshot of Calibration after Generate checked.
+
+  2026-10-22 (rev60)  AI COACH VOICE SETTINGS BLOCK.
+              - The speech bar (Speed, Volume, Voice, Test voice) and the pitch note moved into
+                a "Voice settings" block that is collapsed by default. A gear on the Voice
+                heading opens and closes it. The gear tooltip shows speed and volume.
+              - Read aloud, Stop speaking and text size stay visible at the top.
+              - Behaviour and saved keys unchanged.
+              - Tests: tests/test_chat_top_settings.py now 9. Full suite 242 passed. ruff F clean.
+                Wiring 32/32. Collapsed-state screenshot checked.
+              - Environment: PySide6 and libxkbcommon were reinstalled after a sandbox reset.
+
+  2026-10-22 (rev59)  AI COACH TOP SETTINGS.
+              - Answers to the questions: "Replies" means the reply display controls (text size
+                moved up to the top). The speech bar stays visible at the top.
+              - Layout: "Replies" heading, then Read aloud, Stop speaking, and the reply text size
+                (with Reset). Then a "Voice" heading, then the speech bar and pitch note.
+              - Attributes and behaviour are unchanged. The transcript and the quick actions
+                stay below.
+              - Tests: tests/test_chat_top_settings.py (5). Full suite 238 passed. ruff F clean.
+                compileall OK. Wiring 32/32. Screenshot checked.
+
+  2026-10-22 (rev58)  TRAINING GEAR ICON.
+              - Training: the Target settings card is collapsed by default. A drawn gear icon
+                (existing "settings" glyph, checkable tool button) opens and closes it. Its
+                tooltip shows the current speed and level.
+              - AI Coach: no change in this revision. The "Replies" control request is
+                ambiguous, so a question was asked first.
+              - Tests: tests/test_training_tuning.py now 32. Full suite 233 passed. ruff F clean.
+                compileall OK. Wiring 32/32. Screenshot of the collapsed state checked.
+
+  2026-10-22 (rev57)  TRAINING SETTINGS MOVED TO A SIDE PANEL.
+              - Training page: the Target speed and Difficulty sliders, and the tuning note,
+                moved out of the drill column into a "Target settings" card on the right
+                (about 280-320 px wide). The card stays visible in Drill and Analytics views.
+              - Option chosen: side panel (the user's first option). The dropdown was not built.
+              - Behaviour unchanged: same sliders, same saved keys (training/speed_pct,
+                training/difficulty), same lock while a drill runs.
+              - Tests: tests/test_training_tuning.py now 28. Full suite 230 passed. ruff F clean.
+                compileall OK. Wiring 32/32. Screenshots of Drill and Analytics views checked.
+
+  2026-10-22 (rev56)  CROSSHAIR OVERLAY FOCUS.
+              - Cause: the overlay was created with parent=MainWindow, so it was an owned
+                window. On Windows an owned window can pull activation back to its owner.
+              - Fix (ui/crosshair_overlay.py): no parent or owner. Added the
+                WindowDoesNotAcceptFocus flag in both modes. nativeEvent answers
+                WM_MOUSEACTIVATE with MA_NOACTIVATE (native_reply), so a click delivers
+                the mouse events but does not activate the overlay. Other messages are not
+                handled there.
+              - ui/main_window.py: the overlay is created without parent.
+              - Tests: tests/test_crosshair_focus.py (8). Full suite 228 passed. ruff F clean.
+                compileall OK. Wiring 32/32.
+              - NOT verified: real Windows focus. The offscreen test platform does not model
+                activation, so the focus check there is only a smoke test. Manual Windows
+                checklist in report section 1I.
+
+  2026-10-22 (rev55)  CAPTURE FRAME RATE, TRAINING SPEED AND DIFFICULTY, PRECISION DRILL.
+              - Capture: 30 / 60 / 120 FPS selector is always visible (it had been shown only
+                for the Custom preset). Presets set it when chosen; the user can override it.
+                Saved as capture/fps. With no saved rate, a saved preset uses its own rate.
+                Regression caught by the wiring check: Performance reopened at 60 FPS.
+              - Training: Target speed (50%-200%, shown as 0.50x-2.00x) and Difficulty (Level
+                1-5, shown as Level n). Both save as training/speed_pct and training/difficulty
+                and apply to the next drill started; locked while a drill runs.
+                scenarios.tuned(): speed scales moving-target velocity and the reaction wait
+                (faster = shorter wait); difficulty scales target radius (level 1 = x1.4,
+                level 3 = drill default, level 5 = x0.7; minimum radius 4 px).
+              - Training: new "Precision" drill (key precision_steady, radius 18 px). The
+                existing "Precision micro-aim" drill (key precision, radius 12 px) is unchanged,
+                so saved analytics keep their key.
+              - Tests: tests/test_training_tuning.py (26). Full suite 220 passed. ruff F clean.
+                compileall OK. Wiring 32/32. Screenshots of Training and Capture checked.
+              - Sandbox note: PySide6 had to be reinstalled, and libxkbcommon was extracted
+                to ~/.local/xkb (not in the repo). Needed for the test run only.
+              - NOT verified: real capture at 30, 60 or 120 FPS; drill feel at each speed.
+
+  2026-10-19 (rev54)  TTS SPEED, VOLUME, VOICE CONTROLS. COACH PROMPT. DECLINED PART.
+              - AI Coach: Speed slider (0.5x-2.0x), Volume slider (0-100%), Voice list from the
+                installed engine, and a Test voice button. Changes apply to the next sentence
+                spoken, without restarting the speaker. Saved as tts/speed, tts/volume, tts/voice.
+              - Engine mapping: pyttsx3 rate = 200 wpm x speed; volume 0.0-1.0. Windows
+                System.Speech (fallback) Rate = round((speed-1) x 10), clamped to -10..10
+                (approximate); volume 0-100; voice by name (ignored if missing).
+              - NOT BUILT: pitch. Neither pyttsx3 nor System.Speech exposes a pitch setting.
+                The chat page says so. Options for later: SAPI5 SSML <pitch> (Windows, untested
+                here) or a second engine (espeak-ng command line on Linux).
+              - Coach prompt (ai_chat.SYSTEM_PROMPT): answers must address the specific question
+                using the calibration summary and curve data in the conversation, name the values
+                used, say what is missing rather than guess, and state that it cannot see the
+                user's screen or game. Safety rules unchanged.
+              - DECLINED (part 3): screen capture that continuously analyses gameplay, gives
+                voice feedback on aim at set intervals, and recommends aim adjustments. This is
+                the declined category of rev49 part 2 (gameplay-derived feedback, target and
+                shooting detection from game capture). NOT built. Offered alternatives: post-
+                session analytics from the app's own drills, the coach panel, in-app calibration.
+              - Tests: tests/test_tts_controls.py (20). Full suite 194 passed. ruff F clean.
+                compileall OK. Wiring 32/32. Offscreen screenshot of the AI Coach page checked.
+              - NOT verified: real audio on any engine; Windows SAPI5 or System.Speech voices;
+                how the rate mapping sounds to a listener.
+
+  2026-10-19 (rev53)  VOSK MODEL CACHE AND SPOKEN-TEXT CLEANING.
+              - vosk_service.load_model(path): loads the Vosk model once and reuses it. Used by
+                recognize_once() and listen(), which previously each loaded a fresh model.
+                Only one model is held; a different path drops the previous one first.
+              - vosk_service.release_model(): called when voice commands are turned off in
+                main_window._apply_voice_commands, so the memory is returned.
+              - tts_service.speakable_text(): strips markdown, replaces fenced code with
+                "(code example omitted)", speaks % as "percent", and drops other symbols and
+                markup. Applied in _TtsService.enqueue, so the engine never receives them.
+                The transcript keeps the original reply.
+              - Tests: tests/test_speakable_text.py (25), tests/test_vosk_model_cache.py (5).
+                Full suite 174 passed. ruff F clean. compileall OK. Wiring 32/32.
+              - NOT verified: a real Vosk model loaded and run (none downloaded here); real
+                speech output; whether Vosk allows one model to be shared by a listener
+                thread and a one-shot call at the same time (the code does this; check on
+                hardware); the peak RAM saving on a real machine.
+
+  2026-10-19 (rev52)  NO CODE CHANGE. VOSK MODEL AND PUNCTUATION QUESTION.
+              - Vosk recognition outputs lowercase words with no punctuation. Punctuation
+                read aloud comes from the TTS path, which speaks AI replies as raw text
+                (tts_service / _TtsService.enqueue). Sanitising reply text before speaking
+                is the candidate fix. Not built yet.
+              - Speech-to-text model: the default is vosk-model-small-en-us-0.15 (40 MB).
+                The Settings > Voice > Vosk model path field (voice/vosk_model_path) points
+                the app at another unzipped model folder. Candidates: vosk-model-en-us-0.22-lgraph
+                (128 MB, dynamic graph) and vosk-model-en-us-0.22 (1.8 GB). Not tested here.
+              - Code observation: vosk_service.recognize_once loads the model on every call.
+                Caching the loaded model is the main speed and memory fix for a larger model.
+                Not changed in this rev.
+
+  2026-10-19 (rev51)  AI COACH: READ ALOUD SWITCH, STOP SPEAKING, TEXT SIZE.
+              - Read aloud: the AI Coach page has a "Read replies aloud" switch above the
+                transcript. It uses the same saved setting as Settings > Voice > Speak
+                responses aloud (ui/tts_enabled), so either place changes both.
+                The engine is the existing tts_service.py (pyttsx3 first, then fallbacks);
+                it was not changed.
+              - Stop speaking: clears replies waiting in the speech queue. The sentence being
+                read finishes, because pyttsx3 is not safe to stop from another thread.
+              - Text size: a slider (12-24 px, default 14) changes the transcript text only.
+                The value is saved as chat/font_px. Reset returns to 14 px.
+              - Fixed during this rev: the app stylesheet sets font-size on every widget, which
+                overrides setFont(). The size is now set with a widget-level font-size rule.
+                The tests now load the real app stylesheet so this regression is caught.
+              - Also: the speaker glyph ("speaker") is drawn in icons.py but is not placed yet.
+              - Tests: tests/test_chat_speech_zoom.py (16). Full suite 148 passed. ruff F
+                clean. compileall OK. Wiring 32/32. Offscreen screenshots at 14 px and 20 px.
+              - NOT verified: real speech output (no audio, no espeak in the sandbox; the
+                engine is a fake in tests), Windows SAPI5, live keyboard use.
+
+  2026-10-19 (rev50)  CURVE UNDO/REDO, CURRENT VS OLDER KEY, CHAT THINKING ANIMATION.
+              - Calibration: Undo and Redo buttons for the sensitivity curve, with Ctrl+Z
+                and Ctrl+Y. They step back through curve changes made in this session:
+                calibration results, imported curves, AI-adjusted curves, and chart drags.
+                Up to 50 steps. This is NOT the saved calibration history, which was
+                reverted in rev15 and is not back. Undo does not reset the calibration
+                task or the progress bar; it only restores the curve.
+              - Calibration: a key above the chart. Solid line = "Current curve". Dashed
+                amber = "Older curve", or "Older curve (none yet)" before there is one.
+                The card subtitle now explains both lines.
+              - AI Coach: a "Coach is thinking" pill with three pulsing dots, in a strip
+                under the transcript text while a request runs (a chat message or the
+                post-calibration note). It hides on reply or error. In performance mode
+                the dots are drawn still.
+              - Files: ui/pages_setup.py (history, legend, buttons), ui/pages_coach.py
+                (ThinkingIndicator, request counting), ui/widgets.py (CurveLegend),
+                ui/icons.py (undo, redo glyphs), tests/test_curve_history.py (15 tests).
+              - Tests: pytest 132/132. ruff F clean. compileall OK. Wiring script 32/32.
+                Offscreen screenshots checked (calibration key and buttons, chat pill).
+              - NOT verified: live display, Windows focus, Ctrl+Z with real keyboard focus
+                (the shortcut is registered and tested, not pressed), a live AI provider
+                reply (the indicator is driven by its start and stop calls).
+              - OPEN: 1120 px top-bar overlap (unchanged).
+
+  2026-10-19 (rev49)  CROSSHAIR EDIT MODE, LOCK, PRIVACY POLICY. DECLINED PART 2.
+              - Crosshair tab: "Edit position..." turns into "Lock position" while
+                editing. Edit mode shows a dashed frame and the overlay takes the mouse,
+                so you can drag the crosshair. Lock makes the overlay click-through again
+                and fixed. "Reset to centre" moves it back and clears the saved position.
+              - Position is saved on each drag (crosshair/overlay_x, crosshair/overlay_y)
+                and restored on start-up. Edit mode is never saved; it always starts
+                locked. The overlay is clamped to the primary display.
+              - Click-through is the WindowTransparentForInput window flag. Qt ties the
+                WA_TransparentForMouseEvents attribute to that flag, so the attribute is
+                no longer set separately (setting both kept click-through on).
+              - Privacy: the in-app Privacy page and new docs/PRIVACY.md state that the
+                active crosshair overlay does not interact with or inject into any game
+                processes. The window list reads window titles and process names only
+                (window_enum.py opens processes with query-only rights).
+              - Tests: tests/test_crosshair_edit.py (7). pytest 117/117 (drag test uses
+                QTest and runs). ruff F clean. Wiring script 32/32.
+              - NOT verified: real display, Windows behaviour, whether a Tool window
+                takes focus when clicked in edit mode, multi-monitor, exclusive
+                fullscreen (a Qt window does not appear above it).
+              DECLINED (part 2): the user asked for gameplay-based feedback and target
+              detection, and for an in-game overlay that gives such feedback. NOT built.
+              Reason: target detection from game capture plus live on-screen feedback
+              during play is an aim-assist tool. It breaks anti-cheat rules and gives an
+              unfair advantage over other players. The earlier decline (rev16/18/19 and
+              the rev21 note) still stands. Offered instead: post-session analytics from
+              the app's own drills (already built, Training page), and the coach panel.
+              The overlay that remains draws only a static crosshair the user placed.
+
+  2026-10-19 (rev48)  CROSSHAIR ACTIVATION (on-screen overlay).
+              - Crosshair tab: "Crosshair overlay: On/Off" switch at the top of
+                Parameters. Off by default; the choice is saved under
+                crosshair/overlay_active. A note under the switch says what it does.
+              - When On, ui/crosshair_overlay.py draws the crosshair at the centre of
+                the PRIMARY display: frameless, click-through
+                (WindowTransparentForInput), always on top, never takes focus. It is
+                sized to the crosshair and redraws on every config change.
+              - BOUNDARY REVERSED ON USER INSTRUCTION. The project previously said the
+                app does not draw on any game (crosshair.py docstring, Crosshair page
+                docstring, rev21 anti-cheat note). The user asked for the overlay and
+                confirmed it after I flagged the conflict. Those docstrings and the
+                Privacy page now describe the overlay as off by default, drawn on the
+                user's own screen only, and not reading, attaching to, or injecting into
+                any game. Still declined and NOT built: gameplay-derived feedback,
+                target or shooting detection.
+              - Wiring: CrosshairPage.activation_changed(bool) and config_changed(object)
+                are new signals. config_changed is emitted from _refresh, because the
+                existing "edited" signal is still a no-op. MainWindow creates the
+                overlay lazily, shows it at start-up if saved On, and closes it in
+                closeEvent. The dashboard crosshair tile shows "Overlay on/off".
+              - Tests: tests/test_crosshair_overlay.py (5). pytest 110/110. ruff F clean.
+                Wiring script 32/32.
+              - Screenshots (sandbox): Crosshair page with Activation On; overlay on a
+                grey backdrop (transparent around the cross).
+              - NOT verified: live display, Windows behaviour, click-through in a real
+                window, multi-monitor, exclusive-fullscreen games (a Qt window will not
+                appear above exclusive fullscreen; borderless or windowed works).
+
+  2026-10-19 (rev47)  TOP BAR AND SLIDER READOUTS.
+              - AI Coach tab fully visible. The core status is now a 10 px dot in the
+                bar (green = Native core, amber = Preview mode). Its full text is in the
+                tooltip and the accessible name, and the Capture page still states it.
+                This frees the room the old pill took.
+              - The window cannot be narrower than the top bar needs. Its minimum width
+                is measured from the layout (1244 px in the sandbox; this changes with
+                the font). Before this, at 1120 px the tab strip ran under the status dot
+                and utility buttons.
+              - Tab padding: label width (bold) + 60 px. This leaves room for the active
+                (bold) label. A +48 setting clipped "Dashboard" and "Crosshair".
+              - Every slider shows its exact value live, while dragging. New widget
+                ValueSlider (ui/widgets.py) wraps a QSlider and forwards value,
+                setValue and valueChanged. Crosshair sliders show px and %. Settings
+                Temperature shows the stored 0.00-1.50 value (the slider works in
+                hundredths). Readout width is fixed to the widest value in range.
+              - build_info.py: BOM-only change from the build script reverted, not
+                committed.
+              - Tests: tests/test_value_slider.py (4 checks). pytest 105/105. ruff F
+                clean. compileall ok. Wiring script 32/32.
+              - Screenshot checks (sandbox): AI Coach visible at 1244, 1280, 1360 and
+                1600 px. Crosshair readouts rendered. Settings temperature readout
+                checked by value (not by eye).
+              - Not checked: the Settings page at full size after the change, and the
+                Dashboard tile border artifact (still open from rev45).
 
   2026-10-19 (rev45)  FULL VISUAL REDESIGN ("Vantage"), on top of rev44 features.
               - Navigation: horizontal top bar. Seven working tabs (Dashboard, Capture,

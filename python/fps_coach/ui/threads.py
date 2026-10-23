@@ -6,6 +6,7 @@ from __future__ import annotations
 from PySide6.QtCore import QThread, Signal
 
 from fps_coach.ai_chat import AIChatClient, ChatProviderError, ChatSettings, check_ollama, pull_model
+from fps_coach.tts_service import SpeechOptions, speakable_text
 
 
 class _OllamaStatusCheck(QThread):
@@ -66,21 +67,65 @@ class _TtsService(QThread):
 
     status = Signal(str)
     failed = Signal(str)
+    voices_ready = Signal(list)  # voice names the engine offers, sent once it starts
+    utterance_started = Signal(str)  # the sentence being spoken now (the main window watches for stalls)
+    utterance_finished = Signal()
 
-    def __init__(self, parent=None) -> None:
+    def __init__(self, parent=None, options: SpeechOptions | None = None) -> None:
         super().__init__(parent)
         import queue
 
         self._queue: queue.Queue = queue.Queue()
         self._stop = False
+        self._options = (options or SpeechOptions()).clamped()
+
+    def set_options(self, options: SpeechOptions) -> None:
+        """Change speed, volume, or voice. Takes effect on the next sentence spoken.
+
+        The reference is swapped in one step and read only by the speaker thread, so the
+        engine itself is never touched from the UI thread.
+        """
+        self._options = options.clamped()
 
     def enqueue(self, text: str) -> None:
-        if text and text.strip():
-            self._queue.put(text.strip())
+        # Clean markdown and symbols here, so the engine never reads them out.
+        spoken = speakable_text(text)
+        if spoken:
+            self._queue.put(spoken)
 
     def stop(self) -> None:
         self._stop = True
         self._queue.put(None)
+
+    def abandon(self) -> None:
+        """Give up on this worker without waiting for it. Used when the engine has stalled:
+        its signals are blocked, and the thread exits as soon as it is able to."""
+        self.blockSignals(True)
+        self.stop()
+
+    @staticmethod
+    def _safe_voices(speaker) -> list[str]:
+        try:
+            return [str(name) for name in speaker.voices()]
+        except Exception:  # noqa: BLE001
+            return []
+
+    def clear(self) -> int:
+        """Drop replies that are queued but not yet spoken. Returns how many were dropped.
+
+        The sentence being read right now is not interrupted: pyttsx3 is not safe to
+        call from another thread, so it finishes first.
+        """
+        import queue
+
+        cleared = 0
+        while True:
+            try:
+                item = self._queue.get_nowait()
+            except queue.Empty:
+                return cleared
+            if item is not None:
+                cleared += 1
 
     def run(self) -> None:
         import queue
@@ -95,6 +140,10 @@ class _TtsService(QThread):
                 return
             self.status.emit("Text-to-speech ready.")
             try:
+                self.voices_ready.emit(self._safe_voices(result.speaker))
+            except Exception:  # noqa: BLE001 - a voice list is optional
+                pass
+            try:
                 while not self._stop:
                     try:
                         text = self._queue.get(timeout=0.3)
@@ -103,9 +152,19 @@ class _TtsService(QThread):
                     if text is None:
                         break
                     try:
+                        # Re-read the options for every sentence so changes apply at once.
+                        result.speaker.apply(self._options)
+                    except Exception:  # noqa: BLE001 - keep speaking with the last good settings
+                        pass
+                    self.utterance_started.emit(text)
+                    try:
                         result.speaker.say(text)
-                    except Exception:  # noqa: BLE001 - one bad utterance must not kill the worker
+                    except Exception as exc:  # noqa: BLE001 - one bad utterance must not kill the worker
+                        # Say so in the chat; the next reply gets a fresh engine.
+                        self.utterance_finished.emit()
+                        self.status.emit(f"Could not read that reply aloud: {exc or type(exc).__name__}")
                         continue
+                    self.utterance_finished.emit()
             finally:
                 try:
                     result.speaker.close()

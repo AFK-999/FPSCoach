@@ -163,6 +163,12 @@ QLabel#pill {
     background: $surface2; border: 1px solid $line; border-radius: 11px;
     padding: 3px 10px; color: $text2; font-size: 12px;
 }
+QLabel#coreDot { border-radius: 5px; background: $warn; }
+QLabel#coreDot[state="good"] { background: $good; }
+QLabel#coreDot[state="warn"] { background: $warn; }
+QLabel#sliderValue {
+    color: $text; font-size: 12px; font-family: "Cascadia Mono", "Consolas", monospace;
+}
 QLabel#pill[state="good"] { color: $good; border-color: $line2; }
 QLabel#pill[state="warn"] { color: $warn; border-color: $line2; }
 QLabel#stepBadge {
@@ -188,6 +194,12 @@ QPushButton#primary {
 }
 QPushButton#primary:hover { background: $accent_hover; border-color: $accent_hover; }
 QPushButton#primary:disabled { background: $surface2; color: $text3; border-color: $line; }
+QPushButton#activation {
+    background: $surface2; color: $text2; border: 1px solid $line; border-radius: 8px;
+    padding: 10px 14px; font-size: 13px; font-weight: 600; text-align: left;
+}
+QPushButton#activation:hover { border-color: $line2; color: $text; }
+QPushButton#activation:checked { background: $accent_soft; color: $accent; border-color: $accent; }
 QPushButton#secondary { background: $raised; }
 QPushButton#chip {
     background: transparent; color: $text2; border: 1px solid $line;

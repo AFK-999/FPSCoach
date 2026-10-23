@@ -4,8 +4,9 @@ Holds a validated :class:`CrosshairConfig` (shape, size, thickness, gap, dot,
 color, outline, opacity) plus presets and (de)serialization. The UI renders it to
 a live preview and can export a PNG; this module is the pure data/validation layer.
 
-A crosshair image/config is something the user applies themselves - FPS Coach does
-not draw on or inject into any game.
+The optional on-screen overlay (ui/crosshair_overlay.py) is off by default and draws
+the crosshair on the user's primary screen only. FPS Coach does not read, attach to,
+or inject into any game process.
 """
 
 from __future__ import annotations

@@ -5,13 +5,15 @@ logic is carried over unchanged from the previous window.
 """
 from __future__ import annotations
 
+import math
+import random
 from copy import deepcopy
 from dataclasses import replace  # noqa: F401  (kept for parity with curve helpers)
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtCore import QElapsedTimer, QRect, QSignalBlocker, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QImage, QKeySequence, QPainter, QShortcut
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -30,6 +32,11 @@ from PySide6.QtWidgets import (
 )
 
 from fps_coach.ai_chat import AIChatClient  # noqa: F401  (re-exported for tests that patch this module)
+from fps_coach.dashboard_config import (
+    BOUNCE_BASE_SPEED,
+    BOUNCE_SPEED_DEFAULT,
+    clamp_bounce_speed,
+)
 from fps_coach.curve_adjust import adjust_from_recommendation, normalized_overlay
 from fps_coach.curve_io import (
     CurveFormatError,
@@ -39,15 +46,17 @@ from fps_coach.curve_io import (
     save_curve,
 )
 from fps_coach.window_enum import get_window_rect, list_windows
+from .styles import STAGE
 
 from .calibration import CalibrationCanvas
 from .widgets import (
     CurveChart,
+    CurveLegend,
     _apply_chart_edit,
     set_glyph,
     _card,
     _content_page,
-    _curve_samples,
+    _curve_points,
     _divider,
     _label,
     _page_header,
@@ -71,8 +80,13 @@ class _Tile(QFrame):
     def __init__(self, key: str, parent=None):
         super().__init__(parent)
         self.key = key
+        self.edit_buttons: list[QWidget] = []  # reorder and hide buttons, hidden in serious mode
         self.setObjectName("tile")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def set_editing(self, on: bool) -> None:
+        for button in self.edit_buttons:
+            button.setVisible(on)
 
     def mouseReleaseEvent(self, event):  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton and self.rect().contains(event.position().toPoint()):
@@ -80,8 +94,33 @@ class _Tile(QFrame):
         super().mouseReleaseEvent(event)
 
 
+class _Bouncer:
+    """One tile while serious mode moves it: its position (floats) and unit direction."""
+
+    __slots__ = ("tile", "x", "y", "ux", "uy")
+
+    def __init__(self, tile: "_Tile", x: float, y: float, ux: float, uy: float):
+        self.tile = tile
+        self.x = x
+        self.y = y
+        self.ux = ux
+        self.uy = uy
+
+
+BOUNCE_FRAME_MS = 16  # about 60 frames a second
+BOUNCE_MAX_STEP_S = 0.05  # a long stall moves tiles at most this far, so they never jump
+BOUNCE_MIN_TILE_W = 220
+BOUNCE_MIN_STAGE_H = 420
+_NO_LIMIT = 16777215  # Qt's QWIDGETSIZE_MAX
+
+
 class DashboardPage(QWidget):
-    """Six module tiles. Click to open; reorder and hide them; values are live."""
+    """Six module tiles. Click to open; reorder and hide them; values are live.
+
+    Serious mode: the tiles leave the grid and bounce around the dashboard, like the DVD screensaver.
+    While they move, reordering and hiding are paused (their buttons are hidden). Turning the mode off
+    puts the tiles back in the grid. Clicking a moving tile still opens it.
+    """
 
     TILES = [
         ("capture", "Capture", "Live source status"),
@@ -92,6 +131,7 @@ class DashboardPage(QWidget):
         ("chat", "AI Coach", "Conversation history"),
     ]
     COLUMNS = 3
+    GRID_GAP = 14
 
     navigate = Signal(str)
 
@@ -111,12 +151,32 @@ class DashboardPage(QWidget):
         self._value_labels: dict[str, QLabel] = {}
         self._caption_labels: dict[str, QLabel] = {}
         self._titles = {t[0]: t for t in self.TILES}
+        self._tiles: list[_Tile] = []  # visible tiles in display order, in the grid or bouncing
+
+        self._serious = bool(self.s.value("dashboard/serious_mode", False, type=bool))
+        self._bounce_speed = clamp_bounce_speed(self.s.value("dashboard/bounce_speed", BOUNCE_SPEED_DEFAULT))
+        self._bouncers: list[_Bouncer] = []
+        self._rng = random.Random()
+        self._frame_clock = QElapsedTimer()
+        self._bounce_timer = QTimer(self)
+        self._bounce_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._bounce_timer.setInterval(BOUNCE_FRAME_MS)
+        self._bounce_timer.timeout.connect(self._bounce_step)
+
+        self.serious_check = QCheckBox("Serious mode")
+        self.serious_check.setToolTip(
+            "Tiles bounce around the dashboard like the DVD screensaver. Click a tile to open it. "
+            "Speed is set in Settings > Interface."
+        )
+        self.serious_check.setChecked(self._serious)
+        self.serious_check.toggled.connect(self.set_serious_mode)
+        outer.addWidget(self.serious_check, 0, Qt.AlignmentFlag.AlignLeft)
 
         self.grid_host = QWidget()
         self.grid = QGridLayout(self.grid_host)
         self.grid.setContentsMargins(0, 0, 0, 0)
-        self.grid.setHorizontalSpacing(14)
-        self.grid.setVerticalSpacing(14)
+        self.grid.setHorizontalSpacing(self.GRID_GAP)
+        self.grid.setVerticalSpacing(self.GRID_GAP)
         outer.addWidget(self.grid_host)
 
         self.restore_btn = QPushButton(" Show hidden tiles")
@@ -155,13 +215,130 @@ class DashboardPage(QWidget):
         self.s.setValue("dashboard/order", ",".join(self._order))
         self.s.setValue("dashboard/enabled", ",".join(k for k, v in self._enabled.items() if v))
 
+    # --- serious mode --------------------------------------------------------
+    @property
+    def serious_mode(self) -> bool:
+        return self._serious
+
+    @property
+    def bounce_speed(self) -> int:
+        """Current speed as a percentage (the Settings slider value)."""
+        return self._bounce_speed
+
+    def set_serious_mode(self, on: bool) -> None:
+        on = bool(on)
+        self._serious = on
+        self.s.setValue("dashboard/serious_mode", on)
+        with QSignalBlocker(self.serious_check):
+            self.serious_check.setChecked(on)
+        self._sync_bounce()
+
+    def set_bounce_speed(self, percent: int) -> None:
+        """Takes effect on the next frame. The Settings page saves the value."""
+        self._bounce_speed = clamp_bounce_speed(percent)
+
+    def _sync_bounce(self) -> None:
+        """Bring the layout and the timer in line with the mode and with whether the page is on screen."""
+        if not self._serious:
+            self._leave_bounce()
+        elif not self._bouncers and self.isVisible():
+            self._enter_bounce()
+        self._update_timer()
+
+    def _enter_bounce(self) -> None:
+        if self._bouncers or not self._tiles:
+            return
+        width = self.grid_host.width()
+        if width <= 0:
+            return  # not laid out yet; showEvent tries again
+        gap = self.GRID_GAP
+        tile_w = max(BOUNCE_MIN_TILE_W, (width - gap * (self.COLUMNS - 1)) // self.COLUMNS)
+        tile_h = max(tile.sizeHint().height() for tile in self._tiles)
+        rows = -(-len(self._tiles) // self.COLUMNS)
+        stage_h = max(rows * tile_h + (rows - 1) * gap, BOUNCE_MIN_STAGE_H)
+        self.grid_host.setFixedHeight(stage_h)
+        for index, tile in enumerate(self._tiles):
+            self.grid.removeWidget(tile)
+            tile.setFixedSize(tile_w, tile_h)
+            tile.set_editing(False)
+            x = (index % self.COLUMNS) * (tile_w + gap)
+            y = (index // self.COLUMNS) * (tile_h + gap)
+            tile.move(x, y)
+            tile.show()
+            # Random starting direction between 20 and 70 degrees off the horizontal, in any quadrant.
+            angle = self._rng.uniform(0.35, 1.2)
+            ux = math.cos(angle) * self._rng.choice((-1.0, 1.0))
+            uy = math.sin(angle) * self._rng.choice((-1.0, 1.0))
+            self._bouncers.append(_Bouncer(tile, float(x), float(y), ux, uy))
+
+    def _drop_bouncers(self) -> None:
+        """Stop moving the tiles and give back the size limits and fixed stage height."""
+        self._bounce_timer.stop()
+        for bouncer in self._bouncers:
+            bouncer.tile.setMinimumSize(0, 0)
+            bouncer.tile.setMaximumSize(_NO_LIMIT, _NO_LIMIT)
+        self._bouncers = []
+        self.grid_host.setMinimumHeight(0)
+        self.grid_host.setMaximumHeight(_NO_LIMIT)
+
+    def _leave_bounce(self) -> None:
+        if not self._bouncers:
+            return
+        self._drop_bouncers()
+        for index, tile in enumerate(self._tiles):
+            self.grid.addWidget(tile, index // self.COLUMNS, index % self.COLUMNS)
+            tile.set_editing(True)
+            tile.show()
+
+    def _update_timer(self) -> None:
+        if self._bouncers and self.isVisible():
+            if not self._bounce_timer.isActive():
+                self._frame_clock.restart()
+                self._bounce_timer.start()
+        else:
+            self._bounce_timer.stop()
+
+    def _bounce_step(self) -> None:
+        """Move each tile by its speed times the frame time, and turn it at the edges."""
+        dt = min(BOUNCE_MAX_STEP_S, self._frame_clock.restart() / 1000.0)
+        step = BOUNCE_BASE_SPEED * (self._bounce_speed / 100.0) * dt
+        width, height = self.grid_host.width(), self.grid_host.height()
+        for bouncer in self._bouncers:
+            tile = bouncer.tile
+            max_x = max(0, width - tile.width())
+            max_y = max(0, height - tile.height())
+            bouncer.x += bouncer.ux * step
+            bouncer.y += bouncer.uy * step
+            if bouncer.x <= 0:
+                bouncer.x, bouncer.ux = 0.0, abs(bouncer.ux)
+            elif bouncer.x >= max_x:
+                bouncer.x, bouncer.ux = float(max_x), -abs(bouncer.ux)
+            if bouncer.y <= 0:
+                bouncer.y, bouncer.uy = 0.0, abs(bouncer.uy)
+            elif bouncer.y >= max_y:
+                bouncer.y, bouncer.uy = float(max_y), -abs(bouncer.uy)
+            tile.move(round(bouncer.x), round(bouncer.y))
+
+    def showEvent(self, event):  # noqa: N802 - Qt naming
+        super().showEvent(event)
+        self._sync_bounce()
+        if self._serious and not self._bouncers:
+            # The grid may not have its final width yet; try again once the event loop has run.
+            QTimer.singleShot(0, self._sync_bounce)
+
+    def hideEvent(self, event):  # noqa: N802 - Qt naming
+        super().hideEvent(event)
+        self._update_timer()
+
     # --- tiles -------------------------------------------------------------
     def _rebuild_tiles(self):
+        self._drop_bouncers()
         while self.grid.count():
-            item = self.grid.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
+            self.grid.takeAt(0)
+        for tile in self._tiles:
+            tile.hide()  # deleteLater runs later; a hidden old tile cannot show at its old position
+            tile.deleteLater()
+        self._tiles = []
         self._value_labels.clear()
         self._caption_labels.clear()
 
@@ -169,10 +346,12 @@ class DashboardPage(QWidget):
         for index, key in enumerate(visible):
             _kind, title, subtitle = self._titles[key]
             tile = self._build_tile(key, title, subtitle)
+            self._tiles.append(tile)
             self.grid.addWidget(tile, index // self.COLUMNS, index % self.COLUMNS)
         for col in range(self.COLUMNS):
             self.grid.setColumnStretch(col, 1)
         self.restore_btn.setVisible(len(visible) < len(self.TILES))
+        self._sync_bounce()
 
     def _build_tile(self, key, title, subtitle):
         tile = _Tile(key)
@@ -195,12 +374,14 @@ class DashboardPage(QWidget):
             btn.setToolTip("Move tile " + ("up" if step < 0 else "down"))
             btn.clicked.connect(lambda _c=False, k=key, d=step: self._move(k, d))
             head.addWidget(btn)
+            tile.edit_buttons.append(btn)
         hide_btn = QToolButton()
         set_glyph(hide_btn, "close")
         hide_btn.setObjectName("iconButton")
         hide_btn.setToolTip("Hide tile")
         hide_btn.clicked.connect(lambda _c=False, k=key: self._hide(k))
         head.addWidget(hide_btn)
+        tile.edit_buttons.append(hide_btn)
         lay.addLayout(head)
 
         value = QLabel("\u2014")
@@ -290,6 +471,62 @@ class GuidePage(QWidget):
 # Capture
 # ---------------------------------------------------------------------------
 
+FRAME_INTERVAL_MS = 4  # the check copies nothing, so a short poll shows each new frame almost at once
+# In window mode, no new frame for this long is worth a note (a static or minimised window sends none).
+WINDOW_STALL_MS = 1500
+
+
+class FramePreview(QWidget):
+    """Shows the newest captured frame, scaled to fit, painted straight from its pixels.
+
+    The frame is wrapped as a QImage without a second copy, and painted on demand. There is no
+    per-frame QPixmap conversion or smooth scaling: the preview is for watching a live feed, and
+    that work is what costs the most on low-end machines. Only the newest frame is kept.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._image: QImage | None = None
+        self._data: bytes | None = None  # keeps the bytes behind the QImage alive
+        self.setMinimumSize(520, 292)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+    def has_frame(self) -> bool:
+        return self._image is not None
+
+    def set_frame(self, data, width: int, height: int, stride: int) -> bool:
+        """Show a BGRA frame. Returns False (and keeps the old frame) if the buffer is too short."""
+        if width <= 0 or height <= 0 or stride < width * 4:
+            return False
+        if not isinstance(data, bytes):
+            data = bytes(data)
+        if len(data) < stride * height:
+            return False
+        self._data = data
+        self._image = QImage(data, width, height, stride, QImage.Format.Format_ARGB32)
+        self.update()
+        return True
+
+    def clear_frame(self) -> None:
+        self._image = None
+        self._data = None
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        if self._image is None or self._image.isNull():
+            painter.setPen(QColor(STAGE["stage_text"]))
+            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "No frame yet")
+            painter.end()
+            return
+        iw, ih = self._image.width(), self._image.height()
+        scale = min(self.width() / iw, self.height() / ih)
+        w, h = max(1, int(iw * scale)), max(1, int(ih * scale))
+        target = QRect((self.width() - w) // 2, (self.height() - h) // 2, w, h)
+        painter.drawImage(target, self._image)
+        painter.end()
+
+
 class CapturePage(QWidget):
     """Capture controls wired to the native backend (CoreBackend).
 
@@ -305,8 +542,9 @@ class CapturePage(QWidget):
         ("Quality", "quality", None, 120),
         ("Balanced", "balanced", (960, 540), 60),
         ("Performance", "low", (640, 360), 30),
-        ("Custom", "custom", None, None),  # region + FPS chosen manually below
+        ("Custom", "custom", None, None),  # region chosen manually below; FPS from the Frame rate row
     ]
+    FPS_CHOICES = (30, 60, 120)
 
     def __init__(self, backend: CoreBackend, parent=None):
         super().__init__(parent)
@@ -332,11 +570,7 @@ class CapturePage(QWidget):
         stage.setObjectName("stage")
         stage_lay = QVBoxLayout(stage)
         stage_lay.setContentsMargins(12, 12, 12, 12)
-        self.preview = QLabel("No frame yet")
-        self.preview.setObjectName("stageText")
-        self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview.setMinimumSize(520, 292)
-        self.preview.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.preview = FramePreview()
         stage_lay.addWidget(self.preview, 1)
         left.addWidget(stage, 1)
         self.stats_label = _label("", "cardSubtitle")
@@ -381,21 +615,28 @@ class CapturePage(QWidget):
         self.custom_region = QComboBox()
         self.custom_region.addItem("Center 640 × 360", (640, 360))
         self.custom_region.addItem("Center 960 × 540", (960, 540))
-        self.custom_region.addItem("Full output", None)
-        self.custom_fps = QComboBox()
-        for fps in (30, 60, 120):
-            self.custom_fps.addItem(f"{fps} FPS", fps)
-        self.custom_fps.setCurrentIndex(1)
         custom_row.addWidget(self.custom_region, 1)
-        custom_row.addWidget(self.custom_fps, 1)
         form.addWidget(self.custom_widget, 3, 1)
-        self._on_preset_changed(self.preset.currentIndex())
+
+        # Frame rate is always visible. A preset sets it when chosen; the user can change it.
+        form.addWidget(_label("Frame rate", "formLabel"), 4, 0)
+        self.fps_combo = QComboBox()
+        for fps in self.FPS_CHOICES:
+            self.fps_combo.addItem(f"{fps} FPS", fps)
+        # Without a saved choice, start from the saved preset's own frame rate.
+        preset_fps = self.PRESETS[max(0, self.preset.currentIndex())][3] or 60
+        saved_fps = int(s.value("capture/fps", preset_fps, type=int))
+        index = self.fps_combo.findData(saved_fps)
+        self.fps_combo.setCurrentIndex(index if index >= 0 else self.FPS_CHOICES.index(60))
+        self.fps_combo.currentIndexChanged.connect(self._on_fps_changed)
+        form.addWidget(self.fps_combo, 4, 1)
+        self._on_preset_changed(self.preset.currentIndex(), apply_fps=False)
 
         self.hwaccel = QCheckBox("GPU capture (D3D11)")
         self.hwaccel.setToolTip("Use the GPU (D3D11) for capture and scaling")
         self.hwaccel.setChecked(s.value("capture/hwaccel", True, type=bool))
         self.hwaccel.toggled.connect(lambda v: s.setValue("capture/hwaccel", bool(v)))
-        form.addWidget(self.hwaccel, 4, 1)
+        form.addWidget(self.hwaccel, 5, 1)
         lay.addLayout(form)
 
         btn_row = QHBoxLayout()
@@ -425,6 +666,13 @@ class CapturePage(QWidget):
         self.error_label.setWordWrap(True)
         self.error_label.setVisible(False)
         lay.addWidget(self.error_label)
+
+        # Fallbacks and stall notes. Kept apart from errors so a fallback is never mistaken for a failure.
+        self.notice_label = QLabel("")
+        self.notice_label.setObjectName("statusLabel")
+        self.notice_label.setWordWrap(True)
+        self.notice_label.setVisible(False)
+        lay.addWidget(self.notice_label)
         lay.addStretch(1)
 
         card.setMinimumWidth(340)
@@ -440,6 +688,15 @@ class CapturePage(QWidget):
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._refresh_stats)
         self._timer.start(250)
+
+        # Frames are pulled at display rate, but only while this tab is visible and capture runs.
+        # An older native build cannot report the frame number cheaply, so it keeps the 250 ms poll.
+        self._fast_frames = bool(getattr(backend, "fast_frame_sequence", False))
+        self._start_note = ""  # set when the chosen mode fell back (for example, an older native build)
+        self._frame_timer = QTimer(self)
+        self._frame_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._frame_timer.setInterval(FRAME_INTERVAL_MS if self._fast_frames else 250)
+        self._frame_timer.timeout.connect(self._pump_frame)
         self._load_outputs()
         self._load_windows()
 
@@ -454,13 +711,23 @@ class CapturePage(QWidget):
             self.output_combo.addItem("No display output found", None)
         self._update_buttons()
 
-    def _on_preset_changed(self, index: int):
+    def _on_preset_changed(self, index: int, apply_fps: bool = True):
         value = self.preset.itemData(index)
         if value is not None:
             _settings().setValue("capture/preset", value)
         custom = value == "custom"
         self.custom_label.setVisible(custom)
         self.custom_widget.setVisible(custom)
+        preset_fps = self.PRESETS[max(0, index)][3]
+        if apply_fps and preset_fps is not None:
+            found = self.fps_combo.findData(preset_fps)
+            if found >= 0:
+                self.fps_combo.setCurrentIndex(found)
+
+    def _on_fps_changed(self, index: int):
+        value = self.fps_combo.itemData(index)
+        if value is not None:
+            _settings().setValue("capture/fps", int(value))
 
     def _load_windows(self):
         self.source_combo.clear()
@@ -482,33 +749,47 @@ class CapturePage(QWidget):
         if not isinstance(output, dict):
             self._show_error("No display output is available to capture.")
             return
-        _label_text, value, region, fps = self.PRESETS[max(0, self.preset.currentIndex())]
+        _label_text, value, region, _preset_fps = self.PRESETS[max(0, self.preset.currentIndex())]
         if value == "custom":
             region = self.custom_region.currentData()
-            fps = self.custom_fps.currentData()
+        fps = self.fps_combo.currentData()
         width, height = region if region else (int(output["width"]), int(output["height"]))
-        left, top = -1, -1
         window_note = ""
+        start_note = ""
         hwnd = self.source_combo.currentData()
-        if hwnd:
-            rect = get_window_rect(int(hwnd))
-            if rect:
-                left, top, width, height = rect
-            else:
-                window_note = "Could not read that window's bounds; capturing the full output instead."
+        window_rect = get_window_rect(int(hwnd)) if hwnd else None
+        if hwnd and not window_rect:
+            window_note = "Could not read that window's bounds; capturing the full output instead."
+            hwnd = None
         try:
-            self._backend.start_capture(
-                int(output["adapter_index"]),
-                int(output["output_index"]),
-                int(width),
-                int(height),
-                int(fps),
-                int(left),
-                int(top),
-            )
+            if hwnd:
+                # Window mode: only that window is recorded, even when other windows cover it.
+                # The window's bounds are the screen-area fallback.
+                left, top, width, height = window_rect
+                start_note = self._backend.start_window(
+                    int(hwnd),
+                    int(output["adapter_index"]),
+                    int(output["output_index"]),
+                    int(width),
+                    int(height),
+                    int(fps),
+                    int(left),
+                    int(top),
+                )
+            else:
+                self._backend.start_capture(
+                    int(output["adapter_index"]),
+                    int(output["output_index"]),
+                    int(width),
+                    int(height),
+                    int(fps),
+                    -1,
+                    -1,
+                )
         except RuntimeError as exc:  # NativeCoreUnavailable is a RuntimeError
             self._show_error(str(exc))
             return
+        self._start_note = start_note
         self._last_sequence = -1
         self._show_error(window_note)
         self._set_running(True)
@@ -524,9 +805,41 @@ class CapturePage(QWidget):
         else:
             self._set_status("Idle", "")
             self.stats_label.setText("")
-            self.preview.clear()
-            self.preview.setText("No frame yet")
+            self._show_notice("")
+            self._start_note = ""
+            self.preview.clear_frame()
+            self._last_sequence = -1
+        self._sync_frame_timer()
         self._update_buttons()
+
+    def _sync_frame_timer(self) -> None:
+        """Pull frames only while capture runs and this tab is on screen."""
+        if self.stop_btn.isEnabled() and self.isVisible():
+            if not self._frame_timer.isActive():
+                self._frame_timer.start()
+        else:
+            self._frame_timer.stop()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._sync_frame_timer()
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self._sync_frame_timer()
+
+    def _pump_frame(self) -> None:
+        """Show the newest frame if it is new. Cheap when nothing changed (no pixels are copied)."""
+        if self._fast_frames:
+            sequence = self._backend.latest_sequence()
+            if not sequence or sequence == self._last_sequence:
+                return
+        frame = self._backend.latest_frame()
+        if not frame or int(frame["sequence"]) == self._last_sequence:
+            return
+        if self.preview.set_frame(frame["bgra"], int(frame["width"]), int(frame["height"]),
+                                  int(frame["stride"])):
+            self._last_sequence = int(frame["sequence"])
 
     def _set_status(self, text, state):
         self.status_label.setText(text)
@@ -537,6 +850,18 @@ class CapturePage(QWidget):
     def _show_error(self, message):
         self.error_label.setText(message)
         self.error_label.setVisible(bool(message))
+
+    def _show_notice(self, message):
+        self.notice_label.setText(message)
+        self.notice_label.setVisible(bool(message))
+
+    @staticmethod
+    def _status_text(mode: str) -> str:
+        return {
+            "window": "Capturing this window only",
+            "region": "Capturing screen area",
+            "output": "Capturing full display",
+        }.get(mode, "Capturing…")
 
     def _refresh_stats(self):
         stats = self._backend.capture_stats()
@@ -549,6 +874,13 @@ class CapturePage(QWidget):
             self._show_error(error)
         if not running:
             return
+        mode = str(stats.get("capture_mode") or "")
+        self._set_status(self._status_text(mode), "good")
+        notices = [str(stats.get("notice") or ""), self._start_note]
+        if mode == "window" and int(stats.get("last_frame_age_ms", 0)) > WINDOW_STALL_MS:
+            notices.append("No new frames from this window for a while. It may be minimised, "
+                           "or nothing in it is changing.")
+        self._show_notice(" ".join(note for note in notices if note))
         fps = float(stats.get("capture_fps", 0.0))
         frames = int(stats.get("frames_captured", 0))
         width = int(stats.get("capture_width", 0))
@@ -556,27 +888,21 @@ class CapturePage(QWidget):
         adapter = str(stats.get("adapter_name", ""))
         self.stats_label.setText(f"{fps:.1f} FPS · {frames:,} frames · {width}×{height} · {adapter}")
 
-        frame = self._backend.latest_frame()
-        if not frame or int(frame["sequence"]) == self._last_sequence:
-            return
-        self._last_sequence = int(frame["sequence"])
-        image = QImage(
-            bytes(frame["bgra"]),
-            int(frame["width"]),
-            int(frame["height"]),
-            int(frame["stride"]),
-            QImage.Format.Format_ARGB32,
-        ).copy()
-        pixmap = QPixmap.fromImage(image).scaled(
-            self.preview.size(),
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
-        self.preview.setPixmap(pixmap)
-
 # ---------------------------------------------------------------------------
 # Calibration
 # ---------------------------------------------------------------------------
+
+# recommendation_profile() builds gains over this top speed; the chart uses the same scale for them.
+RECOMMENDATION_MAX_SPEED = 100.0
+
+
+def _shared_speed(previous, current) -> float:
+    """The speed normalized_overlay() scales both curves by (the larger of their top speeds)."""
+    return max(
+        max((p.speed for p in previous.horizontal), default=1.0) or 1.0,
+        max((p.speed for p in current.horizontal), default=1.0) or 1.0,
+    )
+
 
 class CalibrationPage(QWidget):
     """Calibration task (CalibrationCanvas on backend.analyzer) plus the curve view.
@@ -595,6 +921,11 @@ class CalibrationPage(QWidget):
         self._profile = None         # the curve Export writes (imported, calibrated, or edited)
         self._base_profile = None    # imported curve that calibration adjusts
         self._chart_baseline = None  # chart values before the latest drag
+        # Undo/redo history for the curve. Each entry is a full snapshot taken before a change.
+        self._undo: list[dict] = []
+        self._redo: list[dict] = []
+        # Speed the chart's x positions are scaled by (None: the curve's own top speed).
+        self._chart_scale: float | None = None
 
         scroll, outer = _content_page(1240)
         _page_root(self, scroll)
@@ -639,14 +970,27 @@ class CalibrationPage(QWidget):
         # Right: the curve.
         curve_card, curve_lay = _card(
             "Sensitivity curve",
-            "Previous curve in amber for comparison. Drag points to fine-tune.",
+            "Solid line: current curve. Dashed amber: older curve. Drag points to fine-tune.",
         )
+        self.legend = CurveLegend()
+        curve_lay.addWidget(self.legend)
         self.chart = CurveChart()
         self.chart.setMinimumHeight(260)
         curve_lay.addWidget(self.chart, 1)
 
         btn_row = QHBoxLayout()
         btn_row.setSpacing(8)
+        self.undo_btn = QPushButton(" Undo")
+        self.undo_btn.setObjectName("secondary")
+        set_glyph(self.undo_btn, "undo")
+        self.undo_btn.setToolTip("Undo the last curve change (Ctrl+Z)")
+        self.redo_btn = QPushButton(" Redo")
+        self.redo_btn.setObjectName("secondary")
+        set_glyph(self.redo_btn, "redo")
+        self.redo_btn.setToolTip("Redo the change you undid (Ctrl+Y)")
+        btn_row.addWidget(self.undo_btn)
+        btn_row.addWidget(self.redo_btn)
+        btn_row.addStretch(1)
         self.import_btn = QPushButton(" Import")
         self.import_btn.setObjectName("secondary")
         set_glyph(self.import_btn, "upload")
@@ -668,52 +1012,164 @@ class CalibrationPage(QWidget):
         self.chart.curve_adjusted.connect(self._on_curve_adjusted)
         self.save_btn.clicked.connect(self._save)
         self.import_btn.clicked.connect(self._import_curve)
+        self.undo_btn.clicked.connect(self.undo)
+        self.redo_btn.clicked.connect(self.redo)
+        # Keyboard: Ctrl+Z / Ctrl+Y (and Ctrl+Shift+Z), active while this page has focus.
+        for seq, handler in ((QKeySequence(QKeySequence.StandardKey.Undo), self.undo),
+                             (QKeySequence(QKeySequence.StandardKey.Redo), self.redo)):
+            shortcut = QShortcut(seq, self)
+            shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(handler)
+        self._update_history_buttons()
+
+    def clear_recommendation_state(self) -> None:
+        """Forget the last recommendation and the Undo/Redo steps (Privacy > Local data).
+
+        The curve on the chart and the curve Export writes are kept: they are the current curve,
+        not history.
+        """
+        self._last_recommendation = None
+        self._undo.clear()
+        self._redo.clear()
+        self._update_history_buttons()
 
     def _on_progress(self, completed: int, total: int):
         self.progress.setRange(0, max(1, total))
         self.progress.setValue(completed)
 
-    def _set_chart(self, points, previous=None):
-        self.chart.set_previous(previous)
+    def _set_chart(self, points, previous=None, xs=None, previous_xs=None, scale=None):
+        """Show ``points`` at x positions ``xs`` (evenly spaced when None). See CurveChart."""
+        self.chart.set_previous(previous, xs=previous_xs)
+        self.legend.set_has_older(bool(previous))
         self.chart.points = list(points)
+        self.chart.xs = list(xs) if xs is not None else None
+        self._chart_scale = scale
         self._chart_baseline = list(points)
         self.chart.update()
 
+    def _set_overlay(self, current_pts, previous_pts, scale: float) -> None:
+        """Draw the current curve (solid) and the previous one (dashed), each at its real positions."""
+        cur_xs, cur_ys = _curve_points(current_pts)
+        prev_xs, prev_ys = _curve_points(previous_pts)
+        self._set_chart(cur_ys, previous=prev_ys, xs=cur_xs, previous_xs=prev_xs, scale=scale)
+
+    # -- undo / redo ----------------------------------------------------------
+    _HISTORY_LIMIT = 50
+
+    def _snapshot(self, points=None) -> dict:
+        """Everything that shows or drives the curve, so it can be put back exactly."""
+        return {
+            "points": list(points if points is not None else self.chart.points),
+            "previous": list(self.chart.previous_points) if self.chart.previous_points else None,
+            "previous_xs": list(self.chart.previous_xs) if self.chart.previous_xs is not None else None,
+            "xs": list(self.chart.xs) if self.chart.xs is not None else None,
+            "scale": self._chart_scale,
+            "profile": deepcopy(self._profile),
+            "base": deepcopy(self._base_profile),
+            "baseline": list(self._chart_baseline) if self._chart_baseline is not None else None,
+            "hint": self.hint.text(),
+        }
+
+    def _checkpoint(self, points=None) -> None:
+        """Record the state before a change. Call this before mutating the curve."""
+        self._undo.append(self._snapshot(points))
+        del self._undo[:-self._HISTORY_LIMIT]
+        self._redo.clear()
+        self._update_history_buttons()
+
+    def _restore(self, snap: dict, message: str) -> None:
+        self._profile = deepcopy(snap["profile"])
+        self._base_profile = deepcopy(snap["base"])
+        self._chart_baseline = list(snap["baseline"]) if snap["baseline"] is not None else None
+        self.chart.previous_points = list(snap["previous"]) if snap["previous"] else None
+        self.chart.previous_xs = list(snap["previous_xs"]) if snap.get("previous_xs") is not None else None
+        self.legend.set_has_older(bool(self.chart.previous_points))
+        self.chart.points = list(snap["points"])
+        self.chart.xs = list(snap["xs"]) if snap.get("xs") is not None else None
+        self._chart_scale = snap.get("scale")
+        self.chart.update()
+        self.hint.setText(message)
+        self.profile_changed.emit({"restored": True})
+        if self._base_profile is not None:
+            self.base_profile_changed.emit(deepcopy(self._base_profile))
+        self._update_history_buttons()
+
+    def undo(self) -> None:
+        if not self._undo:
+            return
+        self._redo.append(self._snapshot())
+        self._restore(self._undo.pop(), "Undid the last change.")
+
+    def redo(self) -> None:
+        if not self._redo:
+            return
+        self._undo.append(self._snapshot())
+        self._restore(self._redo.pop(), "Redid the change.")
+
+    def _update_history_buttons(self) -> None:
+        self.undo_btn.setEnabled(bool(self._undo))
+        self.redo_btn.setEnabled(bool(self._redo))
+        self.undo_btn.setToolTip(
+            f"Undo the last curve change (Ctrl+Z){' - ' + str(len(self._undo)) + ' saved' if self._undo else ' - nothing to undo'}"
+        )
+        self.redo_btn.setToolTip(
+            f"Redo the change you undid (Ctrl+Y){' - nothing to redo' if not self._redo else ''}"
+        )
+
     def _on_complete(self, summary: dict, recommendation: dict):
         self._last_recommendation = recommendation
+        self.apply_recommendation(recommendation)
+        self.recommendation_ready.emit(summary, recommendation)
+
+    def apply_recommendation(self, recommendation: dict) -> None:
+        """Draw a recommendation's curve on the chart, before/after, and make it the curve Export writes.
+
+        Used when a calibration finishes and when Generate recommendation is clicked. The
+        change is recorded for Undo.
+        """
+        self._checkpoint()  # a recommendation is a change: the old curve can be undone
         try:
             if self._base_profile is not None:
                 # An imported curve is adjusted by the result instead of replaced.
                 adjusted, note = adjust_from_recommendation(self._base_profile, recommendation)
                 prev_pts, cur_pts = normalized_overlay(self._base_profile, adjusted)
                 self._profile = adjusted
-                self._set_chart(_curve_samples(cur_pts), previous=_curve_samples(prev_pts))
+                self._set_overlay(cur_pts, prev_pts, _shared_speed(self._base_profile, adjusted))
                 self.hint.setText(note)
             else:
                 self._profile = recommendation_profile(recommendation)
+                xs, ys = _curve_points(recommendation.get("points") or [])
                 self._set_chart(
-                    _curve_samples(recommendation.get("points") or []),
+                    ys,
                     previous=list(self.chart.points),
+                    xs=xs,
+                    previous_xs=self.chart.x_positions(),
+                    scale=RECOMMENDATION_MAX_SPEED,
                 )
         except CurveFormatError as exc:
             self._profile = None
             self.hint.setText(f"Could not build a curve from this run: {exc}")
-        self.recommendation_ready.emit(summary, recommendation)
 
     def _on_curve_adjusted(self, points):
         points = [float(v) for v in points]
         baseline = self._chart_baseline or points
+        # The drag has already moved the chart points, so record the pre-drag baseline.
+        # A click that moved nothing is not a change, so it gets no history entry.
+        if baseline != points:
+            self._checkpoint(points=baseline)
+        xs = self.chart.x_positions()
         if self._profile is None:
             # No curve yet: treat the chart values as the curve's output-speed shape.
-            n = len(points)
             try:
                 self._profile = recommendation_profile(
-                    {"points": [(i / (n - 1), y) for i, y in enumerate(points)], "sensitivity_multiplier": 1.0}
+                    {"points": list(zip(xs, points)), "sensitivity_multiplier": 1.0},
+                    max_speed=RECOMMENDATION_MAX_SPEED,
                 )
+                self._chart_scale = RECOMMENDATION_MAX_SPEED
             except CurveFormatError:
                 pass
         else:
-            self._profile = _apply_chart_edit(self._profile, baseline, points)
+            self._profile = _apply_chart_edit(self._profile, baseline, points, xs=xs, scale=self._chart_scale)
         self._chart_baseline = list(points)
         self.hint.setText("Curve edited. Export curve to save the edited version.")
         self.profile_changed.emit({"points": points})
@@ -729,10 +1185,12 @@ class CalibrationPage(QWidget):
         except (CurveFormatError, OSError) as exc:
             self.hint.setText(f"Import failed: {exc}")
             return
+        self._checkpoint()
         self._base_profile = deepcopy(profile)
         self._profile = deepcopy(profile)
         self.base_profile_changed.emit(deepcopy(profile))
-        self._set_chart(_curve_samples(chart_points(profile)))
+        xs, ys = _curve_points(chart_points(profile))
+        self._set_chart(ys, xs=xs, scale=max((p.speed for p in profile.horizontal), default=1.0) or 1.0)
         self.hint.setText(
             f"Imported {Path(path).name}. Run calibration to adjust it, or drag points to edit it."
         )
@@ -740,9 +1198,10 @@ class CalibrationPage(QWidget):
 
     def set_adjusted(self, previous, current, note: str) -> None:
         """Show an AI-adjusted curve as before/after and make it the curve Export writes."""
+        self._checkpoint()
         self._profile = deepcopy(current)
         prev_pts, cur_pts = normalized_overlay(previous, current)
-        self._set_chart(_curve_samples(cur_pts), previous=_curve_samples(prev_pts))
+        self._set_overlay(cur_pts, prev_pts, _shared_speed(previous, current))
         self.hint.setText(f"{note} Export curve to save it.")
 
     def _save(self):
@@ -776,9 +1235,12 @@ class RecommendationPage(QWidget):
     Neither column is stacked on resize or minimize.
 
     recommendation_ready(dict) is emitted for every new recommendation.
+    apply_requested(dict) is emitted only by the Generate button. The main window
+    uses it to show the curve on the Calibration chart.
     """
 
     recommendation_ready = Signal(dict)
+    apply_requested = Signal(dict)
 
     def __init__(self, backend: CoreBackend, parent=None):
         super().__init__(parent)
@@ -870,11 +1332,28 @@ class RecommendationPage(QWidget):
         self.reasons_label.setText("\n".join(f"\u2022  {r}" for r in reasons))
 
         self.chart.previous_points = None
-        self.chart.points = _curve_samples(recommendation.get("points") or [])
+        xs, ys = _curve_points(recommendation.get("points") or [])
+        self.chart.xs = xs
+        self.chart.points = ys
         self.chart.setVisible(True)
         self.empty_label.setVisible(False)
         self.chart.update()
         self.recommendation_ready.emit(recommendation)
+
+    def clear_result(self) -> None:
+        """Show the empty "awaiting calibration" state again (Privacy > Local data)."""
+        self.title_label.setText("Awaiting calibration")
+        self.multiplier_value.setText("\u2014")
+        self.confidence_value.setText("\u2014")
+        self.trials_value.setText("\u2014")
+        self.summary.setText("No recommendation yet. Run the calibration task first.")
+        self.reasons_label.setText("")
+        self.chart.previous_points = None
+        self.chart.points = []
+        self.chart.xs = None
+        self.chart.setVisible(False)
+        self.empty_label.setVisible(True)
+        self.chart.update()
 
     def _generate(self):
         summary = dict(self._backend.analyzer.summary())
@@ -883,3 +1362,4 @@ class RecommendationPage(QWidget):
             return
         recommendation = dict(self._backend.analyzer.recommend())
         self.update_result(summary, recommendation)
+        self.apply_requested.emit(recommendation)

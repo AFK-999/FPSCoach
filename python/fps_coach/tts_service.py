@@ -19,9 +19,11 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import os
+import re
 import shutil
 import subprocess
 import sys
+import unicodedata
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -44,6 +46,9 @@ PYTTSX3_DRIVERS: dict[str, tuple[str, ...]] = {
 }
 
 POWERSHELL_TEXT_ENV = "FPSCOACH_TTS_TEXT"
+POWERSHELL_RATE_ENV = "FPSCOACH_TTS_RATE"
+POWERSHELL_VOLUME_ENV = "FPSCOACH_TTS_VOLUME"
+POWERSHELL_VOICE_ENV = "FPSCOACH_TTS_VOICE"
 # Exit code 3 means "System.Speech works but no voices are installed".
 POWERSHELL_PROBE = (
     "Add-Type -AssemblyName System.Speech; "
@@ -54,8 +59,49 @@ POWERSHELL_PROBE = (
 POWERSHELL_SPEAK = (
     "Add-Type -AssemblyName System.Speech; "
     "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+    f"$s.Rate = [int]$env:{POWERSHELL_RATE_ENV}; "
+    f"$s.Volume = [int]$env:{POWERSHELL_VOLUME_ENV}; "
+    f"if ($env:{POWERSHELL_VOICE_ENV}) {{ try {{ $s.SelectVoice($env:{POWERSHELL_VOICE_ENV}) }} catch {{ }} }}; "
     f"$s.Speak($env:{POWERSHELL_TEXT_ENV}); $s.Dispose()"
 )
+POWERSHELL_VOICES = (
+    "Add-Type -AssemblyName System.Speech; "
+    "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+    "$s.GetInstalledVoices() | ForEach-Object { $_.VoiceInfo.Name }; $s.Dispose()"
+)
+
+# --- speech options (rate, volume, voice) -----------------------------------
+# Pitch is not offered: neither pyttsx3 nor System.Speech exposes a pitch setting.
+
+SPEED_MIN, SPEED_MAX = 0.5, 2.0  # multiples of normal speaking rate
+VOLUME_MIN, VOLUME_MAX = 0, 100  # percent
+PYTTSX3_BASE_RATE = 200  # words per minute at 1.0x
+
+
+@dataclass(frozen=True)
+class SpeechOptions:
+    """What the speech engine should sound like. Applied before each utterance."""
+
+    speed: float = 1.0
+    volume: int = 100
+    voice: str = ""  # a voice name from the engine; "" means the engine's default
+
+    def clamped(self) -> "SpeechOptions":
+        return SpeechOptions(
+            speed=min(SPEED_MAX, max(SPEED_MIN, float(self.speed))),
+            volume=int(min(VOLUME_MAX, max(VOLUME_MIN, round(float(self.volume))))),
+            voice=str(self.voice or ""),
+        )
+
+
+def pyttsx3_rate(speed: float) -> int:
+    """pyttsx3 rate is words per minute."""
+    return int(round(PYTTSX3_BASE_RATE * speed))
+
+
+def powershell_rate(speed: float) -> int:
+    """System.Speech rate runs from -10 (slowest) to 10. 1.0x is 0. The mapping is approximate."""
+    return int(max(-10, min(10, round((speed - 1.0) * 10))))
 
 _HINTS = {
     "win32": (
@@ -73,6 +119,10 @@ Progress = Callable[[str], None] | None
 class Speaker(Protocol):
     name: str
 
+    def voices(self) -> list[str]: ...
+
+    def apply(self, options: SpeechOptions) -> None: ...
+
     def say(self, text: str) -> None: ...
 
     def close(self) -> None: ...
@@ -86,17 +136,80 @@ class InitResult:
 
 
 class _Pyttsx3Speaker:
-    def __init__(self, engine, driver: str | None) -> None:
-        self._engine = engine
+    """Speaks through pyttsx3.
+
+    Each sentence after the first gets a new engine from ``make_engine``, configured with the
+    same settings. A shared engine can stop responding after one sentence (see _new_engine),
+    and a failed run can leave it refusing later runs. A new engine avoids both.
+    """
+
+    def __init__(self, engine, driver: str | None, make_engine=None) -> None:
+        self._engine = engine  # used for voices() and for the first sentence
+        self._make_engine = make_engine
+        self._spent = False  # True once the start-up engine has spoken
+        self._current = engine
         self.name = f"pyttsx3 {driver or 'default'} driver"
+        self._voice_ids: dict[str, str] = {}
+        self._default_voice_id = None
+        self._applied: SpeechOptions | None = None
+        self._options = SpeechOptions()
+
+    def voices(self) -> list[str]:
+        """Voice names this engine can use. Also remembers the engine's default voice."""
+        names: list[str] = []
+        self._voice_ids = {}
+        try:
+            self._default_voice_id = self._engine.getProperty("voice")
+        except Exception:  # noqa: BLE001 - not every driver reports a default
+            self._default_voice_id = None
+        for voice in self._engine.getProperty("voices") or []:
+            voice_id = str(getattr(voice, "id", "") or "")
+            name = str(getattr(voice, "name", "") or voice_id)
+            if name and voice_id:
+                names.append(name)
+                self._voice_ids[name] = voice_id
+        return names
+
+    def apply(self, options: SpeechOptions) -> None:
+        """Remember rate, volume, and voice. They are set on the engine before each sentence."""
+        options = options.clamped()
+        if options == self._options and self._applied is not None:
+            return
+        self._options = options
+        if not self._spent:
+            # The start-up engine is set now; later engines are set when they speak.
+            self._configure(self._engine)
+
+    def _configure(self, engine) -> None:
+        options = self._options
+        engine.setProperty("rate", pyttsx3_rate(options.speed))
+        engine.setProperty("volume", options.volume / 100.0)
+        if options.voice:
+            voice_id = self._voice_ids.get(options.voice)
+            if voice_id is not None:
+                engine.setProperty("voice", voice_id)
+        elif self._default_voice_id is not None:
+            engine.setProperty("voice", self._default_voice_id)
+        self._applied = options
+
+    def _next_engine(self):
+        if not self._spent:
+            self._spent = True
+            return self._engine
+        if self._make_engine is None:
+            return self._engine
+        return self._make_engine()
 
     def say(self, text: str) -> None:
-        self._engine.say(text)
-        self._engine.runAndWait()
+        engine = self._next_engine()
+        self._current = engine
+        self._configure(engine)
+        engine.say(text)
+        engine.runAndWait()
 
     def close(self) -> None:
         try:
-            self._engine.stop()
+            self._current.stop()
         except Exception:  # noqa: BLE001 - shutdown must never raise
             pass
 
@@ -106,11 +219,34 @@ class _PowerShellSpeaker:
 
     def __init__(self, exe: str) -> None:
         self._exe = exe
+        self._options = SpeechOptions()
+
+    def voices(self) -> list[str]:
+        try:
+            probe = subprocess.run(
+                [self._exe, "-NoProfile", "-NonInteractive", "-Command", POWERSHELL_VOICES],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+        except Exception:  # noqa: BLE001 - voice list is optional
+            return []
+        return [line.strip() for line in probe.stdout.splitlines() if line.strip()]
+
+    def apply(self, options: SpeechOptions) -> None:
+        self._options = options.clamped()
 
     def say(self, text: str) -> None:
         # Text goes through an environment variable, so quotes or '$' in the
         # reply cannot break or inject into the PowerShell command.
-        env = {**os.environ, POWERSHELL_TEXT_ENV: text}
+        opts = self._options
+        env = {
+            **os.environ,
+            POWERSHELL_TEXT_ENV: text,
+            POWERSHELL_RATE_ENV: str(powershell_rate(opts.speed)),
+            POWERSHELL_VOLUME_ENV: str(opts.volume),
+            POWERSHELL_VOICE_ENV: opts.voice,
+        }
         subprocess.run(
             [self._exe, "-NoProfile", "-NonInteractive", "-Command", POWERSHELL_SPEAK],
             env=env,
@@ -252,14 +388,31 @@ def _pyttsx3_driver_chain(platform: str) -> list[str | None]:
     return [None, *names[1:]]
 
 
-def _speaker_from_pyttsx3(driver: str | None) -> Speaker:
+def _new_engine(driver: str | None):
+    """A pyttsx3 engine that nothing else shares.
+
+    pyttsx3.init() returns one cached engine per driver name. Once that engine has spoken a
+    sentence, a second run can stop responding for good: the driver's loop end is queued before
+    the loop starts and never runs, so runAndWait() never returns. Building the Engine class
+    directly gives each sentence its own driver. Falls back to pyttsx3.init() if that class is
+    not available (e.g. a stand-in module in tests).
+    """
     import pyttsx3  # lazy: keeps the module importable without the package
 
-    engine = pyttsx3.init(driverName=driver)
+    # Looked up on the imported module (not via a submodule import), so a stand-in module
+    # without an Engine class falls back to init() even if the real submodule is cached.
+    engine_class = getattr(pyttsx3, "Engine", None)
+    if engine_class is None:
+        return pyttsx3.init(driverName=driver)
+    return engine_class(driver)
+
+
+def _speaker_from_pyttsx3(driver: str | None) -> Speaker:
+    engine = _new_engine(driver)
     voices = engine.getProperty("voices")
     if not voices:
         raise RuntimeError("no voices are installed for this driver")
-    return _Pyttsx3Speaker(engine, driver)
+    return _Pyttsx3Speaker(engine, driver, make_engine=lambda: _new_engine(driver))
 
 
 def _init_powershell() -> Speaker:
@@ -314,6 +467,81 @@ def init_engine(platform: str | None = None, progress: Progress = None) -> InitR
             if progress and index + 1 < len(attempts):
                 progress(f"{label} failed; trying the next option...")
     return result
+
+
+# --- text cleaning ----------------------------------------------------------
+
+# Symbols with a spoken form. Other symbols are dropped rather than read out.
+_SPOKEN_SYMBOLS = {
+    "%": " percent ",
+    "&": " and ",
+    "+": " plus ",
+    "\u00d7": " times ",
+    "\u00f7": " divided by ",
+    "=": " equals ",
+    "/": " ",
+    "_": " ",
+}
+# Punctuation that helps the speech engine pause and intonate. Everything else is dropped.
+_KEPT_PUNCTUATION = set(".,;:!?'\"()-\u2013\u2014\u2026")
+
+
+def speakable_text(text: str | None) -> str:
+    """Turn an AI reply into text a speech engine can read aloud cleanly.
+
+    Removes markdown (headings, bold, bullets, links, inline code), replaces fenced code
+    with a short note, speaks a few symbols as words (% becomes "percent"), and drops
+    other symbols such as emoji, arrows, and stray markup characters, which speech
+    engines otherwise read out by name. The text shown in the transcript is not changed.
+    Returns "" when nothing speakable is left.
+    """
+    if not text:
+        return ""
+    out = text.replace("\r\n", "\n").replace("\r", "\n")
+    out = re.sub(r"```.*?```", " (code example omitted) ", out, flags=re.DOTALL)
+    out = re.sub(r"`([^`\n]*)`", r"\1", out)
+    out = re.sub(r"!\[([^\]]*)\]\([^)]*\)", r"\1", out)
+    out = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", out)
+    out = re.sub(r"https?://\S+", "link", out)
+    out = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", out)
+    out = re.sub(r"(?m)^\s*(?:[-*+\u2022]|\u25e6)\s+", "", out)
+    out = re.sub(r"(\*\*|__)(.+?)\1", r"\2", out)
+    out = re.sub(r"(?m)^\s*[-=_*|]{3,}\s*$", "", out)
+    out = re.sub(r"\s+-\s+", ", ", out)
+    out = out.replace("|", ", ")
+
+    # One sentence per line: a line break becomes a full stop so the engine pauses.
+    lines = []
+    for raw in out.split("\n"):
+        line = raw.strip()
+        if not line:
+            continue
+        if line[-1] not in ".!?:;,":
+            line += "."
+        lines.append(line)
+    out = " ".join(lines)
+
+    for symbol, spoken in _SPOKEN_SYMBOLS.items():
+        out = out.replace(symbol, spoken)
+
+    # Allow-list: letters, digits, spaces, combining accents, and the pause punctuation.
+    # Every other character (markup such as * # { } [ ] < > ^ \ ~, symbols, emoji,
+    # control characters) becomes a space, so no engine reads it out by name.
+    kept = []
+    for ch in out:
+        if ch.isalnum() or ch.isspace() or ch in _KEPT_PUNCTUATION:
+            kept.append(ch)
+        elif unicodedata.category(ch).startswith("M"):
+            kept.append(ch)
+        else:
+            kept.append(" ")
+    out = "".join(kept)
+    out = re.sub(r"\s+([.,;:!?])", r"\1", out)
+    out = re.sub(r"([.,;:!?])(?:\s*[.,;:!?])+", r"\1", out)
+    out = re.sub(r"\s+", " ", out).strip()
+    if not any(ch.isalnum() for ch in out):
+        return ""
+    return out
 
 
 def format_unavailable(result: InitResult, platform: str | None = None) -> str:

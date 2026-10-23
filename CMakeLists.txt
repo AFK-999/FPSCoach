@@ -26,7 +26,8 @@ if(WIN32)
         native/src/capture.cpp
     )
     target_include_directories(fpscoach_native PRIVATE native/include)
-    target_link_libraries(fpscoach_native PRIVATE fpscoach_analysis d3d11 dxgi dxguid)
+    # WindowsApp: Windows Graphics Capture (C++/WinRT) for window-only capture.
+    target_link_libraries(fpscoach_native PRIVATE fpscoach_analysis d3d11 dxgi dxguid WindowsApp)
     target_compile_definitions(fpscoach_native PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     if(MSVC)
         target_compile_options(fpscoach_native PRIVATE /W4 /permissive- /EHsc)

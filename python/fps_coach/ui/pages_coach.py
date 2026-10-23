@@ -5,9 +5,11 @@ previous window. The layout is new: the transcript sits beside the tuning panel.
 """
 from __future__ import annotations
 
+import math
 from copy import deepcopy
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -19,31 +21,143 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
-    QSlider,
     QTextEdit,
     QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
+from fps_coach import scenarios as scenario_defs
 from fps_coach.ai_chat import ChatSettings, curve_context
+from fps_coach.tts_service import SPEED_MAX, SPEED_MIN, VOLUME_MAX, VOLUME_MIN, SpeechOptions
 from fps_coach.ai_curve_actions import apply_adjustment, parse_adjustment
 from fps_coach.analytics import AnalyticsStore
+from fps_coach.local_data import clear_calibration_history, count_calibration_records
 from fps_coach.chat_suggestions import suggest
+from fps_coach.dashboard_config import (
+    BOUNCE_SPEED_DEFAULT,
+    BOUNCE_SPEED_MAX,
+    BOUNCE_SPEED_MIN,
+    clamp_bounce_speed,
+)
 from fps_coach.curve_adjust import apply_preset, normalized_overlay
 
+from .styles import active_palette, fx_enabled
 from .threads import _ChatRequest, _ModelPullThread, _OllamaStatusCheck, _VoiceListenThread
 from .widgets import (
     CurveChart,
+    ValueSlider,
     _card,
     _content_page,
     _curve_samples,
+    _divider,
     _label,
     _page_header,
     _page_root,
     _settings,
     set_glyph,
 )
+
+
+class ThinkingIndicator(QWidget):
+    """A small "Coach is thinking" pill with three pulsing dots.
+
+    It sits in a strip reserved at the bottom of the transcript, so it never covers the
+    text. With effects off (performance mode) the dots are drawn still.
+    """
+
+    _STEPS = 10  # frames per pulse cycle
+    _INTERVAL_MS = 120
+
+    def __init__(self, host: QWidget, animate: bool = True):
+        super().__init__(host)
+        self._host = host
+        self._animate = animate
+        self._phase = 0
+        self.setFixedSize(176, 28)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._timer = QTimer(self)
+        self._timer.setInterval(self._INTERVAL_MS)
+        self._timer.timeout.connect(self._tick)
+        host.installEventFilter(self)
+        self.hide()
+
+    def start(self) -> None:
+        self._phase = 0
+        self._place()
+        self.show()
+        self.raise_()
+        if self._animate:
+            self._timer.start()
+        self.update()
+
+    def stop(self) -> None:
+        self._timer.stop()
+        self.hide()
+
+    def _tick(self) -> None:
+        self._phase = (self._phase + 1) % self._STEPS
+        self.update()
+
+    def _place(self) -> None:
+        self.move(12, max(0, self._host.height() - self.height() - 8))
+
+    def eventFilter(self, obj, event):  # noqa: N802 - Qt naming
+        if obj is self._host and event.type() == QEvent.Type.Resize:
+            self._place()
+        return False
+
+    def paintEvent(self, event):  # noqa: N802 - Qt naming
+        pal = active_palette()
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = QRectF(0.5, 0.5, self.width() - 1, self.height() - 1)
+        p.setPen(QPen(QColor(pal["line"]), 1))
+        p.setBrush(QColor(pal["surface2"]))
+        p.drawRoundedRect(rect, 14, 14)
+        accent = QColor(pal["accent"])
+        cy = self.height() / 2
+        for i in range(3):
+            if self._animate:
+                wave = 0.5 + 0.5 * math.sin(2 * math.pi * self._phase / self._STEPS - i * 1.1)
+            else:
+                wave = 0.6
+            radius = 2.6 + 1.6 * wave
+            color = QColor(accent)
+            color.setAlpha(int(110 + 145 * wave))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(color)
+            p.drawEllipse(QPointF(16 + i * 11, cy), radius, radius)
+        p.setPen(QColor(pal["text2"]))
+        p.drawText(QRectF(52, 0, self.width() - 58, self.height()),
+                   Qt.AlignmentFlag.AlignVCenter, "Coach is thinking")
+        p.end()
+
+
+# AI Coach Focus: the tabs the coach works with. Capture gives settings only (no screen, no gameplay).
+FOCUS_AREAS = (("capture", "Capture"), ("calibration", "Calibration"), ("training", "Training"))
+
+_CALIBRATION_INSTRUCTION = (
+    "The user just completed a new calibration. Using the calibration summary "
+    "and current curve already in your context, give a brief (2-3 sentence) "
+    "proactive assessment and one concrete next step. Do not ask questions."
+)
+
+
+def _training_instruction(name: str, result) -> str:
+    return (
+        f"The user just finished a training drill: {name}, accuracy {result.accuracy * 100:.0f}%, "
+        f"average reaction {result.avg_reaction_ms:.0f} ms, best {result.best_reaction_ms:.0f} ms. "
+        "Using these results and your context, give a brief (2-3 sentence) assessment. "
+        "If a curve change would help, name one concrete adjustment. Do not ask questions."
+    )
+
+
+def _scenario_label(key: str) -> str:
+    try:
+        return scenario_defs.get(key).name
+    except KeyError:
+        return key
 
 
 class AIChatPage(QWidget):
@@ -56,6 +170,14 @@ class AIChatPage(QWidget):
 
     assistant_said = Signal(str)  # emitted with each AI response (coach strip, TTS)
     curve_adjusted = Signal(object, object, str)  # (previous, current, note)
+    read_aloud_changed = Signal(bool)  # the chat's "Read replies aloud" switch was flipped
+    stop_speaking_requested = Signal()
+    speech_options_changed = Signal(object)  # SpeechOptions, sent on every slider or voice change
+    voice_test_requested = Signal()
+    replies_changed = Signal()  # the reply text size changed here; Settings > Replies follows
+
+    _THINKING_STRIP = 44  # px reserved under the transcript text while a request runs
+    TEXT_MIN, TEXT_DEFAULT, TEXT_MAX = 12, 14, 24  # transcript font size range, in px
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -83,11 +205,47 @@ class AIChatPage(QWidget):
         body.setSpacing(20)
 
         card, lay = _card()
+        # Settings: a gear at the top opens the block with Replies (read aloud, stop, reply
+        # text size) and Voice (speed, volume, voice, test, pitch note).
+        settings_head = QHBoxLayout()
+        settings_head.setSpacing(8)
+        settings_head.addWidget(_label("Settings", "formLabel"))
+        settings_head.addStretch(1)
+        self.voice_settings_toggle = QToolButton()
+        self.voice_settings_toggle.setObjectName("iconButton")
+        self.voice_settings_toggle.setCheckable(True)
+        self.voice_settings_toggle.setChecked(False)
+        set_glyph(self.voice_settings_toggle, "settings")
+        self.voice_settings_toggle.setAccessibleName("Settings")
+        self.voice_settings_toggle.toggled.connect(self._on_voice_settings_toggled)
+        settings_head.addWidget(self.voice_settings_toggle)
+        lay.addLayout(settings_head)
+        self.voice_settings = QWidget()
+        voice_lay = QVBoxLayout(self.voice_settings)
+        voice_lay.setContentsMargins(0, 0, 0, 0)
+        voice_lay.setSpacing(8)
+        voice_lay.addLayout(self._build_focus_section())
+        voice_lay.addWidget(_label("Replies", "formLabel"))
+        voice_lay.addLayout(self._build_speech_bar())
+        voice_lay.addLayout(self._build_text_size_bar())
+        voice_lay.addWidget(_label("Voice", "formLabel"))
+        voice_lay.addLayout(self._build_voice_bar())
+        self.voice_settings.setVisible(False)  # collapsed until the gear is opened
+        lay.addWidget(self.voice_settings)
         self.transcript = QTextEdit()
         self.transcript.setObjectName("transcript")
         self.transcript.setReadOnly(True)
         self.transcript.setMinimumHeight(380)
         lay.addWidget(self.transcript, 1)
+        # Visible while a request is running, so the transcript is never blank-looking.
+        self._pending_requests = 0
+        self._voice_name = ""  # the chosen voice; kept even before the engine's voice list arrives
+        self._thinking = ThinkingIndicator(
+            self.transcript,
+            animate=fx_enabled(str(self._settings.value("ui/mode", "luxurious"))),
+        )
+        self.refresh_from_settings()
+        self._update_voice_tooltip()
 
         self.suggestion_bar = QHBoxLayout()
         self.suggestion_bar.setSpacing(8)
@@ -147,11 +305,94 @@ class AIChatPage(QWidget):
         self._refresh_context()
 
     def notify_new_calibration(self, summary: dict, recommendation: dict) -> None:
-        """Called when a calibration completes: refresh the coach's context and post
-        a proactive note without waiting for the user."""
+        """Called when a calibration completes. The coach's context is always refreshed. An
+        automatic note and AI recommendation are posted only when Calibration focus is on."""
         self.set_calibration_context(summary, recommendation)
+        if not self._focus_on("calibration"):
+            return
         self._append("Coach (auto)", self._local_proactive_note(summary, recommendation))
-        self._maybe_proactive_ai(summary, recommendation)
+        self._maybe_proactive_ai(_CALIBRATION_INSTRUCTION)
+
+    def notify_new_training(self, result) -> None:
+        """Called when a training drill finishes. Posts a note and an AI recommendation only
+        when Training focus is on. Uses the app's own drill result; no screen is read."""
+        if not self._focus_on("training"):
+            return
+        name = _scenario_label(result.scenario)
+        self._append(
+            "Coach (auto)",
+            f"Training drill finished: {name}. Accuracy {result.accuracy * 100:.0f}%, "
+            f"average reaction {result.avg_reaction_ms:.0f} ms, best {result.best_reaction_ms:.0f} ms. "
+            "Ask for a curve adjustment, or use a suggested action.",
+        )
+        self._maybe_proactive_ai(_training_instruction(name, result))
+
+    # -- AI Coach Focus ---------------------------------------------------------
+    def _build_focus_section(self) -> QVBoxLayout:
+        box = QVBoxLayout()
+        box.setSpacing(6)
+        box.addWidget(_label("AI Coach Focus", "formLabel"))
+        box.addWidget(_label(
+            "Choose which tabs the coach works with. Everything is off until you turn it on.",
+            "cardSubtitle", wrap=True,
+        ))
+        row = QHBoxLayout()
+        row.setSpacing(16)
+        self.focus_boxes: dict[str, QCheckBox] = {}
+        for key, label in FOCUS_AREAS:
+            check = QCheckBox(label)
+            check.setChecked(self._settings.value(f"coach/focus/{key}", False, type=bool))
+            check.toggled.connect(self._on_focus_item_toggled)
+            self.focus_boxes[key] = check
+            row.addWidget(check)
+        row.addStretch(1)
+        box.addLayout(row)
+        self.focus_note = _label("", "cardSubtitle", wrap=True)
+        box.addWidget(self.focus_note)
+        self._update_focus_note()
+        return box
+
+    def _focus_on(self, key: str) -> bool:
+        boxes = getattr(self, "focus_boxes", None)
+        return bool(boxes and boxes[key].isChecked())
+
+    def _on_focus_item_toggled(self, _checked: bool = False) -> None:
+        self._focus_changed()
+
+    def _focus_changed(self) -> None:
+        for key, box in self.focus_boxes.items():
+            self._settings.setValue(f"coach/focus/{key}", box.isChecked())
+        self._update_focus_note()
+        self._refresh_context()
+
+    def _update_focus_note(self) -> None:
+        if not any(self._focus_on(key) for key, _ in FOCUS_AREAS):
+            self.focus_note.setText(
+                "Off. The coach posts no automatic notes after calibration or training."
+            )
+            return
+        parts = []
+        if self._focus_on("calibration"):
+            parts.append("After each calibration: a note and a curve recommendation.")
+        if self._focus_on("training"):
+            parts.append("After each training drill: a note and a recommendation.")
+        if self._focus_on("capture"):
+            parts.append(
+                "Capture: the coach sees capture settings (preset, FPS) only. "
+                "It cannot see the screen or gameplay."
+            )
+        self.focus_note.setText(" ".join(parts))
+
+    def _with_capture_focus(self, context: str) -> str:
+        if not self._focus_on("capture"):
+            return context
+        preset = str(self._settings.value("capture/preset", "balanced"))
+        fps = self._settings.value("capture/fps", 60, type=int)
+        line = (
+            f"Capture settings: preset '{preset}', {fps} FPS. The coach cannot see the "
+            "screen or gameplay; this is configuration only."
+        )
+        return f"{context}\n\n{line}" if context else line
 
     def set_base_profile(self, profile) -> None:
         """Receive the imported curve so suggestions and AI adjustments can build on it."""
@@ -181,7 +422,7 @@ class AIChatPage(QWidget):
                 f"({self._base_profile.source_format}); horizontal speed,gain points: {pts}. "
                 "When asked for adjustments, modify THIS curve rather than designing a new one."
             )
-        self._calibration_context = context
+        self._calibration_context = self._with_capture_focus(context)
 
     def _local_proactive_note(self, summary: dict, recommendation: dict) -> str:
         title = str(recommendation.get("title", "Recommendation"))
@@ -203,7 +444,7 @@ class AIChatPage(QWidget):
         parts.append("Ask me anything about these results, or use a suggested action.")
         return " ".join(parts)
 
-    def _maybe_proactive_ai(self, summary: dict, recommendation: dict) -> None:
+    def _maybe_proactive_ai(self, instruction: str) -> None:
         # Never trigger a surprise download or a paid API call without user action.
         if str(self._settings.value("ai/provider", "ollama")) != "ollama":
             return
@@ -212,7 +453,7 @@ class AIChatPage(QWidget):
         settings = self._chat_settings()
         if not settings.base_url or not settings.model:
             return
-        self._proactive_pending = (summary, recommendation)
+        self._proactive_pending = instruction
         self._proactive_check = _OllamaStatusCheck(settings.base_url, settings.model, self)
         self._proactive_check.status_ready.connect(self._on_proactive_status)
         self._proactive_check.finished.connect(self._proactive_check_finished)
@@ -228,23 +469,22 @@ class AIChatPage(QWidget):
             return
         if self._proactive_request is not None:
             return
-        instruction = (
-            "The user just completed a new calibration. Using the calibration summary "
-            "and current curve already in your context, give a brief (2-3 sentence) "
-            "proactive assessment and one concrete next step. Do not ask questions."
-        )
+        instruction = self._proactive_pending
         messages = list(self._messages) + [{"role": "user", "content": instruction}]
         self._proactive_request = _ChatRequest(self._chat_settings(), messages, self._calibration_context, self)
         self._proactive_request.response_ready.connect(self._proactive_received)
         self._proactive_request.request_failed.connect(self._proactive_quiet_fail)
         self._proactive_request.finished.connect(self._proactive_finished)
+        self._proactive_request.finished.connect(self._request_finished)
+        self._request_started()
         self._proactive_request.start()
 
     def _proactive_received(self, answer: str) -> None:
         self._messages.append({"role": "assistant", "content": answer})
         self._append("Coach", answer)
         self.assistant_said.emit(answer)
-        self._apply_ai_adjustment(answer)
+        # Automatic answers are recommendations only. A curve change is applied from the chat,
+        # by the user, never from this path.
 
     def _proactive_quiet_fail(self, _message: str) -> None:
         # The instant local note already covered the user; stay silent on failure.
@@ -332,6 +572,205 @@ class AIChatPage(QWidget):
             if thread is not None and thread.isRunning():
                 thread.wait(2000)
 
+    # -- read aloud and text size ----------------------------------------------
+    def _build_speech_bar(self) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        self.read_aloud = QCheckBox("Read replies aloud")
+        self.read_aloud.setToolTip(
+            "Speaks each AI reply with the text-to-speech engine. "
+            "Same setting as Settings > Replies > Read replies aloud."
+        )
+        self.read_aloud.toggled.connect(self._on_read_aloud_toggled)
+        row.addWidget(self.read_aloud)
+        self.stop_speaking_btn = QPushButton(" Stop speaking")
+        self.stop_speaking_btn.setObjectName("secondary")
+        set_glyph(self.stop_speaking_btn, "stop")
+        self.stop_speaking_btn.setToolTip(
+            "Clears replies waiting to be read. The sentence being read finishes."
+        )
+        self.stop_speaking_btn.clicked.connect(self.stop_speaking_requested.emit)
+        row.addWidget(self.stop_speaking_btn)
+        self.speech_status = _label("", wrap=True)
+        row.addWidget(self.speech_status, 1)
+        return row
+
+    def _build_voice_bar(self) -> QVBoxLayout:
+        box = QVBoxLayout()
+        box.setSpacing(8)
+        sliders = QHBoxLayout()
+        sliders.setSpacing(10)
+        sliders.addWidget(_label("Speed", "formLabel"))
+        self.speed_slider = ValueSlider(
+            round(SPEED_MIN * 100), round(SPEED_MAX * 100), fmt=lambda v: f"{v / 100:.2f}x"
+        )
+        self.speed_slider.setToolTip("Speaking speed. Changes apply to the next sentence spoken.")
+        self.speed_slider.valueChanged.connect(lambda _v: self._emit_speech_options())
+        sliders.addWidget(self.speed_slider, 1)
+        sliders.addWidget(_label("Volume", "formLabel"))
+        self.volume_slider = ValueSlider(VOLUME_MIN, VOLUME_MAX, fmt=lambda v: f"{v}%")
+        self.volume_slider.setToolTip("Speech volume. Changes apply to the next sentence spoken.")
+        self.volume_slider.valueChanged.connect(lambda _v: self._emit_speech_options())
+        sliders.addWidget(self.volume_slider, 1)
+        box.addLayout(sliders)
+
+        voice_row = QHBoxLayout()
+        voice_row.setSpacing(10)
+        voice_row.addWidget(_label("Voice", "formLabel"))
+        self.voice_combo = QComboBox()
+        self.voice_combo.setToolTip("Voices this system's speech engine offers.")
+        self.voice_combo.addItem("Engine default", "")
+        self.voice_combo.currentIndexChanged.connect(lambda _i: self._on_voice_chosen())
+        voice_row.addWidget(self.voice_combo, 1)
+        self.test_voice_btn = QPushButton(" Test voice")
+        self.test_voice_btn.setObjectName("secondary")
+        set_glyph(self.test_voice_btn, "speaker")
+        self.test_voice_btn.clicked.connect(self._on_test_voice)
+        voice_row.addWidget(self.test_voice_btn)
+        box.addLayout(voice_row)
+
+        box.addWidget(_label(
+            "Pitch is not available: the speech engines this app uses do not expose a pitch setting."
+        ))
+        return box
+
+    def speech_options(self) -> SpeechOptions:
+        return SpeechOptions(
+            speed=self.speed_slider.value() / 100,
+            volume=self.volume_slider.value(),
+            voice=self._voice_name,
+        ).clamped()
+
+    def set_voices(self, names: list[str]) -> None:
+        """Fill the voice list from the speech engine, selecting the saved voice if present."""
+        self.voice_combo.blockSignals(True)
+        self.voice_combo.clear()
+        self.voice_combo.addItem("Engine default", "")
+        for name in names:
+            self.voice_combo.addItem(name, name)
+        index = self.voice_combo.findData(self._voice_name) if self._voice_name else -1
+        self.voice_combo.setCurrentIndex(index if index >= 0 else 0)
+        self.voice_combo.blockSignals(False)
+
+    def _on_voice_settings_toggled(self, checked: bool) -> None:
+        self.voice_settings.setVisible(bool(checked))
+
+    def _update_voice_tooltip(self) -> None:
+        self.voice_settings_toggle.setToolTip(
+            f"Settings: read aloud {'on' if self.read_aloud.isChecked() else 'off'}, "
+            f"speed {self.speed_slider.value() / 100:.2f}x, "
+            f"volume {self.volume_slider.value()}%, "
+            f"text {self.font_slider.value()} px"
+        )
+
+    def _emit_speech_options(self) -> None:
+        options = self.speech_options()
+        self._settings.setValue("tts/speed", options.speed)
+        self._settings.setValue("tts/volume", options.volume)
+        self._update_voice_tooltip()
+        self.speech_options_changed.emit(options)
+
+    def _on_voice_chosen(self) -> None:
+        self._voice_name = str(self.voice_combo.currentData() or "")
+        self._settings.setValue("tts/voice", self._voice_name)
+        self._emit_speech_options()
+
+    def _on_test_voice(self) -> None:
+        if not self.read_aloud.isChecked():
+            self.speech_status.setText("Turn on Read replies aloud to hear the voice test.")
+            return
+        self.voice_test_requested.emit()
+
+    def _build_text_size_bar(self) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        row.addWidget(_label("Text size", "formLabel"))
+        self.font_slider = ValueSlider(self.TEXT_MIN, self.TEXT_MAX, fmt=lambda v: f"{v} px")
+        self.font_slider.setToolTip("Makes the chat transcript text larger or smaller.")
+        self.font_slider.valueChanged.connect(self._on_font_size_changed)
+        row.addWidget(self.font_slider, 1)
+        self.font_reset_btn = QPushButton("Reset")
+        self.font_reset_btn.setObjectName("secondary")
+        self.font_reset_btn.setToolTip(f"Back to {self.TEXT_DEFAULT} px")
+        self.font_reset_btn.clicked.connect(lambda: self.font_slider.setValue(self.TEXT_DEFAULT))
+        row.addWidget(self.font_reset_btn)
+        return row
+
+    def refresh_from_settings(self) -> None:
+        """Show the saved read-aloud and text-size values. Signals stay quiet."""
+        enabled = self._settings.value("ui/tts_enabled", False, type=bool)
+        px = self._settings.value("chat/font_px", self.TEXT_DEFAULT, type=int)
+        px = max(self.TEXT_MIN, min(self.TEXT_MAX, int(px)))
+        self.read_aloud.blockSignals(True)
+        self.read_aloud.setChecked(bool(enabled))
+        self.read_aloud.blockSignals(False)
+        self.font_slider.blockSignals(True)
+        self.font_slider.setValue(px)
+        self.font_slider.blockSignals(False)
+        # Speech controls: saved values, shown without emitting.
+        saved = SpeechOptions(
+            speed=self._settings.value("tts/speed", 1.0, type=float),
+            volume=self._settings.value("tts/volume", 100, type=int),
+            voice=str(self._settings.value("tts/voice", "") or ""),
+        ).clamped()
+        self._voice_name = saved.voice
+        self.speed_slider.blockSignals(True)
+        self.speed_slider.setValue(round(saved.speed * 100))
+        self.speed_slider.blockSignals(False)
+        self.volume_slider.blockSignals(True)
+        self.volume_slider.setValue(saved.volume)
+        self.volume_slider.blockSignals(False)
+        self._apply_text_size(px)
+        self._show_default_speech_text()
+
+    def _on_read_aloud_toggled(self, checked: bool) -> None:
+        self._settings.setValue("ui/tts_enabled", bool(checked))
+        self._show_default_speech_text()
+        self._update_voice_tooltip()
+        self.read_aloud_changed.emit(bool(checked))
+
+    def _show_default_speech_text(self) -> None:
+        if self.read_aloud.isChecked():
+            self.speech_status.setText("Replies are read aloud.")
+        else:
+            self.speech_status.setText("Replies are shown as text only.")
+
+    def set_speech_status(self, text: str) -> None:
+        self.speech_status.setText(text)
+
+    def set_speech_failed(self) -> None:
+        self.speech_status.setText(
+            "Read-aloud is unavailable on this system. See the message in the transcript."
+        )
+
+    def _on_font_size_changed(self, px: int) -> None:
+        self._apply_text_size(px)
+        self._settings.setValue("chat/font_px", int(px))
+        self._update_voice_tooltip()
+        self.replies_changed.emit()
+
+    def set_text_size(self, px: int) -> None:
+        """Set the reply text size from Settings > Replies. Does not emit replies_changed."""
+        px = max(self.TEXT_MIN, min(self.TEXT_MAX, int(px)))
+        self.font_slider.blockSignals(True)
+        self.font_slider.setValue(px)
+        self.font_slider.blockSignals(False)
+        self._apply_text_size(px)
+        self._settings.setValue("chat/font_px", px)
+        self._update_voice_tooltip()
+
+    def _apply_text_size(self, px: int) -> None:
+        px = int(px)
+        # The app stylesheet sets font-size on every QWidget, and a stylesheet overrides
+        # setFont(). A widget-level font-size rule wins over it; the other transcript
+        # styles (background, padding, colour) still come from the app stylesheet.
+        self.transcript.setStyleSheet(f"font-size: {px}px;")
+        font = self.transcript.font()
+        font.setPixelSize(px)
+        self.transcript.setFont(font)
+        # The transcript's HTML sets no sizes of its own, so the document default decides.
+        self.transcript.document().setDefaultFont(font)
+
     def _append(self, who, text):
         self.transcript.append(f"<b>{who}:</b> {text}")
 
@@ -356,7 +795,23 @@ class AIChatPage(QWidget):
         self._thread.request_failed.connect(self._on_failed)
         self.send_btn.setEnabled(False)
         self._thread.finished.connect(lambda: self.send_btn.setEnabled(True))
+        self._thread.finished.connect(self._request_finished)
+        self._request_started()
         self._thread.start()
+
+    def _request_started(self) -> None:
+        """Show the thinking indicator. Requests can overlap, so this is counted."""
+        self._pending_requests += 1
+        if self._pending_requests == 1:
+            self.transcript.setViewportMargins(0, 0, 0, self._THINKING_STRIP)
+            self._thinking.start()
+
+    def _request_finished(self) -> None:
+        """Hide the indicator once every pending request has finished (reply or error)."""
+        self._pending_requests = max(0, self._pending_requests - 1)
+        if self._pending_requests == 0:
+            self._thinking.stop()
+            self.transcript.setViewportMargins(0, 0, 0, 0)
 
     def _on_reply(self, answer: str):
         self._messages.append({"role": "assistant", "content": answer})
@@ -392,13 +847,32 @@ class AIChatPage(QWidget):
         self.transcript.clear()
 
 
+PRIVACY_POINTS: tuple[str, ...] = (
+        "Screen capture frames are processed in memory and never written to disk.",
+        "AI requests are sent only to the endpoint you configure in Settings.",
+        "Voice recognition can run fully offline via a local model.",
+        "The crosshair overlay is off by default. When it is on, or while you edit its "
+        "position, it draws a crosshair on your primary screen only. The active crosshair "
+        "overlay does not interact with or inject "
+        "into any game processes. It does not read game frames, hook input, or read or "
+        "write game memory. Locked, it ignores the mouse so clicks reach the game.",
+        "The capture window list reads window titles and process names only, so you can "
+        "choose a window. It does not read or write any process's memory.",
+        "Preferences are stored in your system's settings store. The chat transcript is kept only for this session.",
+)
+
 class PrivacyPage(QWidget):
     """What stays on this machine, and a real way to delete the stored history."""
 
-    def __init__(self, store: AnalyticsStore | None = None, chat_page=None, parent=None):
+    # The main window clears the in-session calibration and recommendation state on this.
+    calibration_cleared = Signal()
+
+    def __init__(self, store: AnalyticsStore | None = None, chat_page=None, parent=None,
+                 calibration_path=None):
         super().__init__(parent)
         self._store = store
         self._chat = chat_page
+        self.calibration_path = calibration_path  # saved calibration history file (may be None)
 
         scroll, outer = _content_page(960)
         _page_root(self, scroll)
@@ -408,12 +882,7 @@ class PrivacyPage(QWidget):
             eyebrow="Help",
         ))
 
-        points = [
-            "Screen capture frames are processed in memory and never written to disk.",
-            "AI requests are sent only to the endpoint you configure in Settings.",
-            "Voice recognition can run fully offline via a local model.",
-            "Preferences are stored in your system's settings store. The chat transcript is kept only for this session.",
-        ]
+        points = PRIVACY_POINTS
         card, lay = _card("Data handling")
         for point in points:
             row = QHBoxLayout()
@@ -437,6 +906,22 @@ class PrivacyPage(QWidget):
         lay2.addWidget(self.clear_btn, 0, Qt.AlignmentFlag.AlignLeft)
         self.status = _label("", "statusLabel", wrap=True)
         lay2.addWidget(self.status)
+
+        lay2.addWidget(_divider())
+        lay2.addWidget(_label(
+            "Calibration and recommendation history is saved to .fpscoach_calibration_history.json "
+            "in the project folder. The app does not add new calibration results to it.",
+            "cardSubtitle", wrap=True,
+        ))
+        self.calibration_count_label = _label("", "cardSubtitle")
+        lay2.addWidget(self.calibration_count_label)
+        self.clear_calibration_btn = QPushButton(" Clear calibration and recommendation history")
+        self.clear_calibration_btn.setObjectName("secondary")
+        set_glyph(self.clear_calibration_btn, "trash")
+        self.clear_calibration_btn.clicked.connect(self._clear_calibration)
+        lay2.addWidget(self.clear_calibration_btn, 0, Qt.AlignmentFlag.AlignLeft)
+        self.calibration_status = _label("", "statusLabel", wrap=True)
+        lay2.addWidget(self.calibration_status)
         outer.addWidget(card2)
         outer.addStretch(1)
         self.refresh()
@@ -444,6 +929,27 @@ class PrivacyPage(QWidget):
     def refresh(self) -> None:
         count = len(self._store.sessions) if self._store is not None else 0
         self.count_label.setText(f"{count} saved training session{'s' if count != 1 else ''}.")
+        saved = count_calibration_records(self.calibration_path)
+        self.calibration_count_label.setText(
+            f"{saved} saved calibration result{'s' if saved != 1 else ''}."
+        )
+
+    def _clear_calibration(self):
+        answer = QMessageBox.question(
+            self,
+            "Vantage",
+            "Delete the saved calibration and recommendation history, and clear the calibration "
+            "and recommendation shown on screen? This cannot be undone.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        removed = clear_calibration_history(self.calibration_path)
+        self.calibration_cleared.emit()
+        self.refresh()
+        self.calibration_status.setText(
+            f"Cleared {removed} saved calibration result{'s' if removed != 1 else ''} "
+            "and the recommendation on screen."
+        )
 
     def _clear(self):
         answer = QMessageBox.question(
@@ -464,6 +970,9 @@ class PrivacyPage(QWidget):
 
 class SettingsPage(QWidget):
     settings_changed = Signal()
+    bounce_speed_changed = Signal(int)  # serious-mode speed percentage, sent on every slider step
+    stop_speaking_requested = Signal()  # Settings > Replies > Stop speaking
+    text_size_changed = Signal(int)  # Settings > Replies > Reply text size, sent while dragging
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -489,6 +998,7 @@ class SettingsPage(QWidget):
         right = QVBoxLayout()
         right.setSpacing(20)
         right.addWidget(self._build_ui_card())
+        right.addWidget(self._build_replies_card())
         right.addWidget(self._build_advanced_card())
         right.addStretch(1)
         columns.addLayout(left, 1)
@@ -526,8 +1036,8 @@ class SettingsPage(QWidget):
         form.addLayout(model_row, 2, 1)
 
         form.addWidget(_label("Temperature", "formLabel"), 3, 0)
-        self.temperature = QSlider(Qt.Horizontal)
-        self.temperature.setRange(0, 150)
+        # Stored as 0.00-1.50; the slider works in hundredths so the readout shows the stored value.
+        self.temperature = ValueSlider(0, 150, fmt=lambda v: f"{v / 100:.2f}")
         self.temperature.setValue(int(float(self.s.value("ai/temperature", 0.35)) * 100))
         self.temperature.valueChanged.connect(self._on_ai_changed)
         form.addWidget(self.temperature, 3, 1)
@@ -625,8 +1135,24 @@ class SettingsPage(QWidget):
         self.coach_panel.toggled.connect(self._on_ui_changed)
         form.addWidget(self.coach_panel, 3, 0, 1, 2)
 
+        # Serious mode (dashboard): how fast the tiles bounce. Its own signal, so a drag does not
+        # rebuild the dashboard the way a theme change does.
+        form.addWidget(_label("Serious mode speed", "formLabel"), 4, 0)
+        self.bounce_speed = ValueSlider(
+            BOUNCE_SPEED_MIN, BOUNCE_SPEED_MAX, fmt=lambda v: f"{v}%"
+        )
+        self.bounce_speed.setValue(clamp_bounce_speed(self.s.value("dashboard/bounce_speed", BOUNCE_SPEED_DEFAULT)))
+        self.bounce_speed.setToolTip("How fast the dashboard tiles bounce in serious mode.")
+        self.bounce_speed.valueChanged.connect(self._on_bounce_speed_changed)
+        form.addWidget(self.bounce_speed, 4, 1)
+
         lay.addLayout(form)
         return card
+
+    def _on_bounce_speed_changed(self, value: int) -> None:
+        value = clamp_bounce_speed(value)
+        self.s.setValue("dashboard/bounce_speed", value)
+        self.bounce_speed_changed.emit(value)
 
     def _on_ui_changed(self, *_args):
         self.s.setValue("ui/mode", self.mode.currentText())
@@ -668,6 +1194,76 @@ class SettingsPage(QWidget):
 
         return card
 
+    # ---- Replies (same saved values as the AI Coach tab) ------------------
+    def _build_replies_card(self):
+        card, lay = _card(
+            "Replies",
+            "Read aloud, stop speech, and reply text size. Same settings as the AI Coach tab.",
+        )
+        self.replies_read_aloud = QCheckBox("Read replies aloud")
+        self.replies_read_aloud.setToolTip("Same setting as Speak responses aloud under Voice.")
+        self.replies_read_aloud.toggled.connect(self._on_replies_read_aloud)
+        lay.addWidget(self.replies_read_aloud)
+
+        stop_row = QHBoxLayout()
+        self.replies_stop_btn = QPushButton(" Stop speaking")
+        self.replies_stop_btn.setObjectName("secondary")
+        set_glyph(self.replies_stop_btn, "stop")
+        self.replies_stop_btn.setToolTip(
+            "Clears replies waiting to be read. The sentence being read finishes."
+        )
+        self.replies_stop_btn.clicked.connect(self.stop_speaking_requested.emit)
+        stop_row.addWidget(self.replies_stop_btn)
+        stop_row.addStretch(1)
+        lay.addLayout(stop_row)
+
+        size_row = QHBoxLayout()
+        size_row.setSpacing(10)
+        size_row.addWidget(_label("Reply text size", "formLabel"))
+        self.replies_font_slider = ValueSlider(
+            AIChatPage.TEXT_MIN, AIChatPage.TEXT_MAX, fmt=lambda v: f"{v} px"
+        )
+        self.replies_font_slider.setToolTip("Makes the chat transcript text larger or smaller.")
+        self.replies_font_slider.valueChanged.connect(self._on_replies_text_size)
+        size_row.addWidget(self.replies_font_slider, 1)
+        self.replies_font_reset = QPushButton("Reset")
+        self.replies_font_reset.setObjectName("secondary")
+        self.replies_font_reset.setToolTip(f"Back to {AIChatPage.TEXT_DEFAULT} px")
+        self.replies_font_reset.clicked.connect(
+            lambda: self.replies_font_slider.setValue(AIChatPage.TEXT_DEFAULT)
+        )
+        size_row.addWidget(self.replies_font_reset)
+        lay.addLayout(size_row)
+
+        self.refresh_replies()
+        return card
+
+    def refresh_replies(self) -> None:
+        """Show the saved read-aloud and text-size values. Signals stay quiet.
+
+        Called when the AI Coach tab changes the same values.
+        """
+        enabled = self.s.value("ui/tts_enabled", False, type=bool)
+        px = self.s.value("chat/font_px", AIChatPage.TEXT_DEFAULT, type=int)
+        px = max(AIChatPage.TEXT_MIN, min(AIChatPage.TEXT_MAX, int(px)))
+        for box in (self.replies_read_aloud, self.tts_enabled):
+            box.blockSignals(True)
+            box.setChecked(bool(enabled))
+            box.blockSignals(False)
+        self.replies_font_slider.blockSignals(True)
+        self.replies_font_slider.setValue(px)
+        self.replies_font_slider.blockSignals(False)
+
+    def _on_replies_read_aloud(self, checked: bool) -> None:
+        self.s.setValue("ui/tts_enabled", bool(checked))
+        self.refresh_replies()
+        self.settings_changed.emit()
+
+    def _on_replies_text_size(self, px: int) -> None:
+        px = int(px)
+        self.s.setValue("chat/font_px", px)
+        self.text_size_changed.emit(px)
+
     def _browse_model(self):
         path = QFileDialog.getExistingDirectory(self, "Select voice model folder")
         if path:
@@ -679,6 +1275,7 @@ class SettingsPage(QWidget):
         self.s.setValue("ui/wake_word", self.wake_word.text())
         self.s.setValue("ui/tts_enabled", self.tts_enabled.isChecked())
         self.s.setValue("voice/vosk_model_path", self.vosk_path.text())
+        self.refresh_replies()
         self.settings_changed.emit()
 
     # ---- Advanced (disclosure) --------------------------------------------

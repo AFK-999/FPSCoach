@@ -21,9 +21,10 @@ Functional wiring (restored to the original backend behavior):
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtCore import QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QFontMetrics, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -43,8 +44,10 @@ from PySide6.QtWidgets import (
 
 from fps_coach.analytics import AnalyticsStore
 from fps_coach.backend import CoreBackend
+from fps_coach.local_data import CALIBRATION_HISTORY_NAME
 
 from .pages_coach import AIChatPage, PrivacyPage, SettingsPage
+from .crosshair_overlay import CrosshairOverlay
 from .pages_practice import CrosshairPage, TrainingPage
 from .pages_setup import CalibrationPage, CapturePage, DashboardPage, GuidePage, RecommendationPage
 from .styles import build_style, fx_enabled, set_active_theme
@@ -143,6 +146,12 @@ class MainWindow(QMainWindow):
         self._util_buttons: dict[str, QToolButton] = {}
         self._voice_service = None
         self._tts_service = None
+        # Speech watchdog: (started at, sentence) while a sentence is being spoken.
+        self._speech_watch: tuple[float, str] | None = None
+        self._speech_retry_text: str | None = None
+        self._speech_timer = QTimer(self)
+        self._speech_timer.setInterval(500)
+        self._speech_timer.timeout.connect(self._check_speech_watchdog)
         self._last_recommendation: dict | None = None
         self._last_summary: dict | None = None
 
@@ -153,7 +162,11 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        root.addWidget(self._build_topbar())
+        topbar = self._build_topbar()
+        root.addWidget(topbar)
+        # The window cannot be narrower than the top bar needs: brand, every tab (so AI Coach
+        # is never cut off), the core dot, and the utility buttons. Measured from the layout.
+        self.setMinimumWidth(topbar.layout().totalMinimumSize().width())
 
         self.coach_panel = CoachStrip(self)
         self.coach_panel.closed.connect(self._on_coach_closed)
@@ -205,7 +218,9 @@ class MainWindow(QMainWindow):
             # Reserve room for the bold (checked) weight so the label never clips.
             bold = btn.font()
             bold.setWeight(bold.Weight.DemiBold)
-            btn.setMinimumWidth(QFontMetrics(bold).horizontalAdvance(label) + 56)
+            # Bold label width + icon, icon spacing, the 12 px side padding, and a margin so
+            # the active (bold) label is never clipped.
+            btn.setMinimumWidth(QFontMetrics(bold).horizontalAdvance(label) + 60)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setIconSize(QSize(18, 18))
             btn.clicked.connect(lambda _c=False, k=key: self._select_page(k))
@@ -223,17 +238,25 @@ class MainWindow(QMainWindow):
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setWidget(tabs_host)
         scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        # The tab strip never gets narrower than its tabs, so the window cannot shrink
+        # to a width where the last tab (AI Coach) is cut off or needs scrolling.
+        tab_buttons = list(self._nav_buttons.values())
+        scroll.setMinimumWidth(sum(b.minimumWidth() for b in tab_buttons) + tabs.spacing() * (len(tab_buttons) - 1))
         lay.addWidget(scroll, 1)
 
         # Native core status (restored from the original): capture is either the
         # real native core or the Python preview mode.
-        self.core_status = QLabel("Native core" if self._backend.native_available else "Preview mode")
-        self.core_status.setObjectName("pill")
-        self.core_status.setFixedHeight(24)
-        self.core_status.setToolTip(self._backend.core_label)
+        # Shown as a small status dot so it does not take room from the tabs.
+        # The full text is in the tooltip and on the Capture page.
+        core_text = "Native core" if self._backend.native_available else "Preview mode"
+        self.core_status = QLabel()
+        self.core_status.setObjectName("coreDot")
+        self.core_status.setFixedSize(10, 10)
+        self.core_status.setToolTip(f"{core_text}: {self._backend.core_label}")
+        self.core_status.setAccessibleName(f"Capture core: {core_text}")
         _set_state(self.core_status, "good" if self._backend.native_available else "warn")
         lay.addWidget(self.core_status)
-        lay.addSpacing(8)
+        lay.addSpacing(12)
 
         for key, label in UTILITY:
             btn = QToolButton()
@@ -260,7 +283,12 @@ class MainWindow(QMainWindow):
         self.recommendation_page = RecommendationPage(self._backend)
         self.crosshair_page = CrosshairPage()
         self.chat_page = AIChatPage()
-        self.privacy_page = PrivacyPage(self._analytics_store, self.chat_page)
+        self.privacy_page = PrivacyPage(
+            self._analytics_store,
+            self.chat_page,
+            calibration_path=Path(__file__).resolve().parents[3] / CALIBRATION_HISTORY_NAME,
+        )
+        self.privacy_page.calibration_cleared.connect(self._on_calibration_cleared)
         self.settings_page = SettingsPage()
 
         self._pages = {
@@ -285,11 +313,78 @@ class MainWindow(QMainWindow):
         self.calibration_page.base_profile_changed.connect(self.chat_page.set_base_profile)
         self.chat_page.curve_adjusted.connect(self._on_curve_adjusted)
         self.recommendation_page.recommendation_ready.connect(self._on_recommendation)
+        self.recommendation_page.apply_requested.connect(self._on_apply_recommendation)
         self.chat_page.assistant_said.connect(self._on_assistant_said)
         self.chat_page.assistant_said.connect(self._speak_response)
+        self.chat_page.read_aloud_changed.connect(self._on_read_aloud_changed)
+        self.chat_page.stop_speaking_requested.connect(self._on_stop_speaking)
+        self.chat_page.speech_options_changed.connect(self._on_speech_options_changed)
+        self.chat_page.voice_test_requested.connect(self._on_voice_test)
+        self.chat_page.replies_changed.connect(self.settings_page.refresh_replies)
+        self.settings_page.stop_speaking_requested.connect(self._on_stop_speaking)
+        self.settings_page.text_size_changed.connect(self._on_reply_text_size)
         self.settings_page.settings_changed.connect(self._on_settings_changed)
+        self.settings_page.bounce_speed_changed.connect(self.dashboard_page.set_bounce_speed)
         self.training_page.session_recorded.connect(self._on_session_recorded)
         self.crosshair_page.edited.connect(self._on_crosshair_edited)
+        self.crosshair_page.activation_changed.connect(self._set_crosshair_overlay)
+        self.crosshair_page.config_changed.connect(self._on_crosshair_config)
+        self.crosshair_page.edit_mode_changed.connect(self._on_crosshair_edit_mode)
+        self.crosshair_page.position_reset.connect(self._on_crosshair_position_reset)
+        # The overlay is created only when Activation is on or the position is being
+        # edited. Activation is saved (default off). Edit mode is never saved: it starts locked.
+        self._overlay: CrosshairOverlay | None = None
+        if self.crosshair_page.activation.isChecked():
+            self._set_crosshair_overlay(True)
+
+    def _ensure_overlay(self) -> CrosshairOverlay:
+        if self._overlay is None:
+            # No parent: the overlay must stay an independent window (see crosshair_overlay).
+            self._overlay = CrosshairOverlay(
+                self.crosshair_page._model, centre=self._saved_overlay_centre()
+            )
+            self._overlay.position_committed.connect(self._save_overlay_centre)
+        return self._overlay
+
+    def _saved_overlay_centre(self):
+        from PySide6.QtCore import QPoint
+
+        if not (self.s.contains("crosshair/overlay_x") and self.s.contains("crosshair/overlay_y")):
+            return None
+        return QPoint(int(self.s.value("crosshair/overlay_x")), int(self.s.value("crosshair/overlay_y")))
+
+    def _save_overlay_centre(self, centre) -> None:
+        self.s.setValue("crosshair/overlay_x", int(centre.x()))
+        self.s.setValue("crosshair/overlay_y", int(centre.y()))
+
+    def _set_crosshair_overlay(self, active: bool) -> None:
+        if active:
+            overlay = self._ensure_overlay()
+            overlay.set_config(self.crosshair_page._model)
+            overlay.show()
+        elif self._overlay is not None and not self._overlay.editing:
+            self._overlay.hide()
+        self._refresh_dashboard()
+
+    def _on_crosshair_edit_mode(self, editing: bool) -> None:
+        overlay = self._ensure_overlay()
+        overlay.set_config(self.crosshair_page._model)
+        overlay.set_editing(editing)
+        if editing or self.crosshair_page.activation.isChecked():
+            overlay.show()
+        else:
+            overlay.hide()  # locked and not activated: nothing should be on screen
+
+    def _on_crosshair_position_reset(self) -> None:
+        for key in ("crosshair/overlay_x", "crosshair/overlay_y"):
+            self.s.remove(key)
+        overlay = self._ensure_overlay()
+        overlay.reset_centre()
+
+    def _on_crosshair_config(self, config) -> None:
+        if self._overlay is not None:
+            self._overlay.set_config(config)
+        self._refresh_dashboard()
 
     def _install_shortcuts(self) -> None:
         for index, (key, _label_text) in enumerate(NAV_TABS, start=1):
@@ -355,7 +450,8 @@ class MainWindow(QMainWindow):
             ),
             "crosshair": (
                 model.shape.replace("_", " ").title(),
-                f"Color {model.color} \u00b7 opacity {model.opacity:.0%}",
+                f"Overlay {'on' if self.crosshair_page.activation.isChecked() else 'off'}"
+                f" \u00b7 {model.color} \u00b7 opacity {model.opacity:.0%}",
             ),
             "chat": (
                 str(user_turns),
@@ -389,13 +485,65 @@ class MainWindow(QMainWindow):
     def _sync_tts(self):
         enabled = self.s.value("ui/tts_enabled", False, type=bool)
         if enabled and self._tts_service is None:
-            self._tts_service = _TtsService(self)
+            self._tts_service = _TtsService(self, options=self.chat_page.speech_options())
+            self._tts_service.voices_ready.connect(self.chat_page.set_voices)
             self._tts_service.failed.connect(self._on_tts_failed)
+            self._tts_service.status.connect(self.chat_page.set_speech_status)
+            self._tts_service.utterance_started.connect(self._on_utterance_started)
+            self._tts_service.utterance_finished.connect(self._on_utterance_finished)
             self._tts_service.start()
         elif not enabled and self._tts_service is not None:
             self._tts_service.stop()
             self._tts_service.wait(3000)
             self._tts_service = None
+
+    # -- speech watchdog ---------------------------------------------------------
+    @staticmethod
+    def _speech_timeout(text: str) -> float:
+        """Seconds a sentence may take before the engine is treated as stalled. Generous:
+        normal speech runs well under 0.1 s per character."""
+        return 10.0 + 0.15 * len(text)
+
+    def _on_utterance_started(self, text: str) -> None:
+        self._speech_watch = (time.monotonic(), text)
+        if not self._speech_timer.isActive():
+            self._speech_timer.start()
+
+    def _on_utterance_finished(self) -> None:
+        self._speech_watch = None
+        self._speech_timer.stop()
+
+    def _check_speech_watchdog(self) -> None:
+        if self._speech_watch is None:
+            self._speech_timer.stop()
+            return
+        started, text = self._speech_watch
+        if time.monotonic() - started > self._speech_timeout(text):
+            self._restart_speech(text)
+
+    def _restart_speech(self, text: str) -> None:
+        """The engine has not finished a sentence in time. Drop that worker, start a new one,
+        and read the sentence again once. If it stalls again, say so and move on."""
+        old = self._tts_service
+        self._speech_watch = None
+        self._speech_timer.stop()
+        self._tts_service = None
+        if old is not None:
+            old.abandon()
+        if text == self._speech_retry_text:
+            self._speech_retry_text = None
+            self.chat_page.set_speech_status(
+                "The speech engine stopped responding again, so this reply was skipped."
+            )
+            self._sync_tts()
+            return
+        self._speech_retry_text = text
+        self._sync_tts()
+        if self._tts_service is not None:
+            self._tts_service.enqueue(text)
+        self.chat_page.set_speech_status(
+            "The speech engine stopped responding, so it was restarted and the reply is read again."
+        )
 
     def _speak_response(self, text: str):
         if self._tts_service is not None:
@@ -403,6 +551,35 @@ class MainWindow(QMainWindow):
 
     def _on_tts_failed(self, message: str):
         self.chat_page._append("Text-to-speech", message)
+        self.chat_page.set_speech_failed()
+
+    def _on_read_aloud_changed(self, enabled: bool):
+        """The chat's switch and the Settings checkbox share one saved value."""
+        self._sync_tts()
+        self.settings_page.refresh_replies()
+
+    def _on_reply_text_size(self, px: int):
+        """Settings > Replies moved the text size. The AI Coach transcript follows."""
+        self.chat_page.set_text_size(px)
+
+    def _on_speech_options_changed(self, options):
+        """Speed, volume, or voice changed. A running speaker picks it up on the next sentence."""
+        if self._tts_service is not None:
+            self._tts_service.set_options(options)
+
+    def _on_voice_test(self):
+        if self._tts_service is not None:
+            self._tts_service.enqueue("This is the coach voice. Aim a little higher on the second target.")
+
+    def _on_stop_speaking(self):
+        if self._tts_service is None:
+            self.chat_page.set_speech_status("Read aloud is off, so nothing is queued.")
+            return
+        dropped = self._tts_service.clear()
+        self.chat_page.set_speech_status(
+            f"Stopped. {dropped} queued repl{'y' if dropped == 1 else 'ies'} cleared; "
+            "the sentence being read finishes."
+        )
 
     def _apply_voice_commands(self):
         enabled = self.s.value("ui/voice_commands", False, type=bool)
@@ -415,6 +592,11 @@ class MainWindow(QMainWindow):
             self._voice_service.stop()
             self._voice_service.wait(1500)
             self._voice_service = None
+            # Voice is off: free the Vosk model (it can be gigabytes). A running listener
+            # keeps its own reference until it exits, so this is safe either way.
+            from fps_coach import vosk_service
+
+            vosk_service.release_model()
 
     # ------------------------------------------------------------------
     def _on_calibration_result(self, summary: dict, recommendation: dict):
@@ -433,6 +615,23 @@ class MainWindow(QMainWindow):
         self.coach_panel.say(note)
         self._select_page("calibration")
 
+    def _on_apply_recommendation(self, recommendation: dict):
+        """Generate recommendation: draw the curve on the Calibration chart and show it there."""
+        self.calibration_page.apply_recommendation(dict(recommendation))
+        mult = float(recommendation.get("sensitivity_multiplier", 1.0))
+        self.coach_panel.say(f"Applied the recommended curve (\u00d7{mult:.2f}) to the Calibration chart.")
+        self._select_page("calibration")
+
+    def _on_calibration_cleared(self):
+        """Privacy > Local data > Clear calibration and recommendation history."""
+        self._backend.analyzer.reset()  # the trials Generate recommendation would use
+        self._last_summary = None
+        self._last_recommendation = None
+        self.calibration_page.clear_recommendation_state()
+        self.recommendation_page.clear_result()
+        self._refresh_dashboard()
+        self.coach_panel.say("Cleared the calibration and recommendation history.")
+
     def _on_recommendation(self, result):
         self._last_recommendation = dict(result)
         mult = float(result.get("sensitivity_multiplier", 1.0))
@@ -448,11 +647,13 @@ class MainWindow(QMainWindow):
         self._apply_theme()
         self.coach_panel.setVisible(self.s.value("ui/coach_panel", False, type=bool))
         self._sync_tts()
+        self.chat_page.refresh_from_settings()
         self._apply_voice_commands()
 
     def _on_session_recorded(self, result):
         self.coach_panel.say(f"Session complete \u2014 {result.accuracy * 100:.0f}% accuracy.")
         self._refresh_dashboard()
+        self.chat_page.notify_new_training(result)
 
     def _on_crosshair_edited(self, config):
         self._refresh_dashboard()
@@ -491,6 +692,9 @@ class MainWindow(QMainWindow):
         self.s.setValue("ui/coach_panel", False)
 
     def closeEvent(self, event):
+        overlay = getattr(self, "_overlay", None)
+        if overlay is not None:
+            overlay.close()
         if self._voice_service is not None:
             self._voice_service.stop()
             self._voice_service.wait(1500)

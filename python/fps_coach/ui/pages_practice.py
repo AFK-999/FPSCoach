@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSizePolicy,
-    QSlider,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -41,6 +41,7 @@ from fps_coach.crosshair import CrosshairConfig, preset_names
 from .styles import STAGE
 from .widgets import (
     CrosshairPreview,
+    ValueSlider,
     _draw_crosshair,
     Segmented,
     _card,
@@ -420,7 +421,6 @@ class TrainingPage(QWidget):
 
         self.view_switch = Segmented(["Drill", "Analytics"])
         self.view_switch.changed.connect(self._on_view_changed)
-        outer.addWidget(self.view_switch, 0)
 
         self.stack = QWidget()
         stack_lay = QVBoxLayout(self.stack)
@@ -481,10 +481,70 @@ class TrainingPage(QWidget):
         self.analytics_page.setVisible(False)
         stack_lay.addWidget(self.analytics_page, 1)
 
-        outer.addWidget(self.stack, 1)
+        # Side panel: target speed and difficulty. It sits beside the drill and the
+        # analytics, so it stays in view in both. It is outside the drill canvas.
+        panel, panel_lay = _card("Target settings", "Applies to the next drill you start.")
+        panel.setMinimumWidth(280)
+        panel.setMaximumWidth(320)
+        panel.setVisible(False)  # collapsed: only the gear icon shows until it is opened
+        settings = _settings()
+        panel_lay.addWidget(_label("Target speed", "formLabel"))
+        self.speed_slider = ValueSlider(
+            scenario_defs.SPEED_MIN_PCT,
+            scenario_defs.SPEED_MAX_PCT,
+            fmt=lambda v: f"{v / 100:.2f}x",
+        )
+        self.speed_slider.setValue(int(settings.value(
+            "training/speed_pct", scenario_defs.SPEED_DEFAULT_PCT, type=int)))
+        panel_lay.addWidget(self.speed_slider)
+        panel_lay.addWidget(_label("Difficulty", "formLabel"))
+        self.difficulty_slider = ValueSlider(
+            scenario_defs.DIFFICULTY_MIN,
+            scenario_defs.DIFFICULTY_MAX,
+            fmt=lambda v: f"Level {v}",
+        )
+        self.difficulty_slider.setValue(int(settings.value(
+            "training/difficulty", scenario_defs.DIFFICULTY_DEFAULT, type=int)))
+        panel_lay.addWidget(self.difficulty_slider)
+        self.tuning_note = _label("", "cardSubtitle", wrap=True)
+        panel_lay.addWidget(self.tuning_note)
+        panel_lay.addStretch(1)
+        panel_lay.addWidget(_label("Locked while a drill is running.", "cardSubtitle", wrap=True))
+        self.settings_panel = panel
+
+        # A gear icon opens and closes the panel. The gear shows the current values in its tooltip.
+        self.settings_toggle = QToolButton()
+        self.settings_toggle.setObjectName("iconButton")
+        self.settings_toggle.setCheckable(True)
+        self.settings_toggle.setChecked(False)
+        set_glyph(self.settings_toggle, "settings")
+        self.settings_toggle.setToolTip("Target settings")
+        self.settings_toggle.setAccessibleName("Target settings")
+        self.settings_toggle.toggled.connect(self.settings_panel.setVisible)
+
+        side = QWidget()
+        side_lay = QVBoxLayout(side)
+        side_lay.setContentsMargins(0, 0, 0, 0)
+        side_lay.setSpacing(10)
+        side_lay.addWidget(self.settings_toggle, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
+        side_lay.addWidget(panel, 0, Qt.AlignmentFlag.AlignTop)
+        side_lay.addStretch(1)
+
+        # Left: the drill or the analytics. Right: the gear, and the panel when opened.
+        body = QHBoxLayout()
+        body.setSpacing(20)
+        left = QVBoxLayout()
+        left.setSpacing(14)
+        left.addWidget(self.view_switch, 0)
+        left.addWidget(self.stack, 1)
+        body.addLayout(left, 1)
+        body.addWidget(side, 0, Qt.AlignmentFlag.AlignTop)
+        outer.addLayout(body, 1)
 
         self.start_btn.clicked.connect(self._start)
         self.stop_btn.clicked.connect(self._stop)
+        self.speed_slider.valueChanged.connect(self._on_tuning_changed)
+        self.difficulty_slider.valueChanged.connect(self._on_tuning_changed)
         self._describe()
 
     def _on_view_changed(self, index: int) -> None:
@@ -493,17 +553,47 @@ class TrainingPage(QWidget):
         else:
             self._show_training()
 
+    def _drill_scenario(self):
+        """The selected drill with the speed and difficulty settings applied."""
+        return scenario_defs.tuned(
+            scenario_defs.get(self.scenario.currentData()),
+            self.speed_slider.value(),
+            self.difficulty_slider.value(),
+        )
+
+    def _on_tuning_changed(self, *_args) -> None:
+        settings = _settings()
+        settings.setValue("training/speed_pct", int(self.speed_slider.value()))
+        settings.setValue("training/difficulty", int(self.difficulty_slider.value()))
+        self._describe()
+
     def _describe(self, *_args) -> None:
-        sc = scenario_defs.get(self.scenario.currentData())
-        self.desc.setText(sc.description)
+        base = scenario_defs.get(self.scenario.currentData())
+        sc = self._drill_scenario()
+        self.desc.setText(base.description)
+        parts = [f"Target radius {sc.target_radius} px"]
+        if sc.moving:
+            parts.append(f"moving at {sc.speed:.0f} px/s")
+        if sc.spawn_delay_ms:
+            parts.append(f"appears after up to {sc.spawn_delay_ms} ms")
+        if not (sc.moving or sc.spawn_delay_ms):
+            parts.append("speed setting applies to moving and reaction drills")
+        self.tuning_note.setText(" · ".join(parts))
+        if hasattr(self, "settings_toggle"):
+            self.settings_toggle.setToolTip(
+                f"Target settings: speed {self.speed_slider.value() / 100:.2f}x, "
+                f"Level {self.difficulty_slider.value()}"
+            )
 
     def _set_running(self, running: bool) -> None:
         self.start_btn.setEnabled(not running)
         self.stop_btn.setEnabled(running)
         self.scenario.setEnabled(not running)
+        self.speed_slider.setEnabled(not running)
+        self.difficulty_slider.setEnabled(not running)
 
     def _start(self) -> None:
-        sc = scenario_defs.get(self.scenario.currentData())
+        sc = self._drill_scenario()
         self.result.setText("")
         self.progress.setRange(0, sc.target_count)
         self.progress.setValue(0)
@@ -542,10 +632,16 @@ class CrosshairPage(QWidget):
     """Crosshair designer: presets, live preview, JSON import/export and PNG export.
 
     Stores the original CrosshairConfig schema under "crosshair/config". The
-    crosshair is shown in this app and written to files; it is never drawn over a game.
+    crosshair is shown in this app and written to files. Activation (off by
+    default, stored under "crosshair/overlay_active") also draws it on the primary
+    screen as a click-through overlay. The overlay does not read or attach to any game.
     """
 
     edited = Signal(dict)
+    activation_changed = Signal(bool)
+    config_changed = Signal(object)
+    edit_mode_changed = Signal(bool)  # True = edit (drag), False = locked
+    position_reset = Signal()
     SHAPES = ("cross_dot", "cross", "dot", "circle")
 
     def __init__(self, parent=None):
@@ -573,6 +669,39 @@ class CrosshairPage(QWidget):
         body.addWidget(preview_card, 3)
 
         controls_card, controls_lay = _card("Parameters")
+
+        # Activation: one clear switch for the on-screen overlay. Off by default.
+        self.activation = QPushButton()
+        self.activation.setObjectName("activation")
+        self.activation.setCheckable(True)
+        self.activation.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.activation.setChecked(self.s.value("crosshair/overlay_active", False, type=bool))
+        self.activation.toggled.connect(self._on_activation_toggled)
+        self.activation_note = _label("", "cardSubtitle", wrap=True)
+        controls_lay.addWidget(self.activation)
+        controls_lay.addWidget(self.activation_note)
+        self._update_activation_text(self.activation.isChecked())
+
+        # Position: Edit (drag the overlay) then Lock. Always starts locked.
+        self.edit_position = QPushButton("Edit position\u2026")
+        self.edit_position.setObjectName("secondary")
+        self.edit_position.setCheckable(True)
+        self.edit_position.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.edit_position.toggled.connect(self._on_edit_toggled)
+        self.centre_position = QPushButton("Reset to centre")
+        self.centre_position.setObjectName("secondary")
+        self.centre_position.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.centre_position.clicked.connect(self._on_reset_position)
+        position_row = QHBoxLayout()
+        position_row.setSpacing(8)
+        position_row.addWidget(self.edit_position)
+        position_row.addWidget(self.centre_position)
+        position_row.addStretch(1)
+        controls_lay.addLayout(position_row)
+        self.position_note = _label("", "cardSubtitle", wrap=True)
+        controls_lay.addWidget(self.position_note)
+        self._update_position_text(False)
+
         form = QGridLayout()
         form.setHorizontalSpacing(12)
         form.setVerticalSpacing(10)
@@ -595,7 +724,7 @@ class CrosshairPage(QWidget):
         self.length = self._slider(0, 64)
         self.gap = self._slider(0, 40)
         self.dot = self._slider(0, 12)
-        self.opacity = self._slider(10, 100)
+        self.opacity = self._slider(10, 100, suffix="%")
         for row, (text, slider) in enumerate((
             ("Thickness", self.thickness),
             ("Arm length", self.length),
@@ -650,10 +779,8 @@ class CrosshairPage(QWidget):
         self._refresh()
 
     @staticmethod
-    def _slider(lo: int, hi: int) -> QSlider:
-        slider = QSlider(Qt.Orientation.Horizontal)
-        slider.setRange(lo, hi)
-        return slider
+    def _slider(lo: int, hi: int, suffix: str = " px") -> ValueSlider:
+        return ValueSlider(lo, hi, fmt=lambda v: f"{v}{suffix}")
 
     def _load_model(self) -> CrosshairConfig:
         raw = self.s.value("crosshair/config", "")
@@ -697,8 +824,39 @@ class CrosshairPage(QWidget):
         )
         self._refresh()
 
+    def _update_activation_text(self, active: bool) -> None:
+        self.activation.setText("Crosshair overlay: On" if active else "Crosshair overlay: Off")
+        self.activation_note.setText(
+            "Drawn on your primary screen, click-through, above other windows."
+            if active else
+            "Off. The crosshair is shown here and exported. It appears on screen only while you edit its position."
+        )
+
+    def _on_activation_toggled(self, checked: bool) -> None:
+        self.s.setValue("crosshair/overlay_active", bool(checked))
+        self._update_activation_text(bool(checked))
+        self.activation_changed.emit(bool(checked))
+
+    def _update_position_text(self, editing: bool) -> None:
+        self.edit_position.setText("Lock position" if editing else "Edit position\u2026")
+        self.position_note.setText(
+            "Drag the crosshair to where you want it, then click Lock position. "
+            "While editing, the overlay takes the mouse."
+            if editing else
+            "Locked. The overlay ignores the mouse, so clicks go to the game. "
+            "The position is saved."
+        )
+
+    def _on_edit_toggled(self, checked: bool) -> None:
+        self._update_position_text(bool(checked))
+        self.edit_mode_changed.emit(bool(checked))
+
+    def _on_reset_position(self) -> None:
+        self.position_reset.emit()
+
     def _refresh(self):
         self.preview.set_config(self._model)
+        self.config_changed.emit(self._model)
         self.color_btn.setText(f"Color  {self._model.color}")
         self.s.setValue("crosshair/config", json.dumps(self._model.to_dict()))
         self.edited.emit(self._model.to_dict())
