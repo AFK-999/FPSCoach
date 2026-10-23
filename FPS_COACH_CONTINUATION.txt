@@ -1336,6 +1336,12 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
               - Full suite 342 passed. ruff F clean. Wiring 32/32.
               - Harness used for the baseline: committed HEAD built with the same fake layer.
 
+  2026-10-23 (rev71b) REQUEST DECLINED, NO CODE CHANGE: record gameplay at 720p for offline AI aim
+              analysis, plus auto-clearing cache and temp recordings on close. Gameplay analysis from screen
+              capture is a declined feature (re-requested and declined again). The cache-clearing part was not
+              built because it only serves that recording. Offered alternatives: post-session analytics from
+              the app's own drills; a coach grounded in the app's own calibration and curve data.
+
   2026-10-23 (rev71)  SERIOUS MODE: DASHBOARD TILES BOUNCE; SPEED IN SETTINGS.
               - python/fps_coach/dashboard_config.py: BOUNCE_SPEED_MIN/MAX/DEFAULT (25/300/100),
                 BOUNCE_BASE_SPEED (150 px/s), clamp_bounce_speed().
