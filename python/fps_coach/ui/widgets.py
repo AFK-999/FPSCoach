@@ -299,11 +299,27 @@ class CurveLegend(QWidget):
         p.end()
 
 
+DOT_LIMIT = 32  # curves with more points than this are drawn as a line, without handle dots
+
+
+def _positions(values, xs) -> list[float]:
+    """x positions for ``values``: ``xs`` when it matches in length, else evenly spaced 0..1."""
+    n = len(values)
+    if xs is not None and len(xs) == n:
+        return [float(x) for x in xs]
+    if n < 2:
+        return [0.0] * n
+    return [i / (n - 1) for i in range(n)]
+
+
 class CurveChart(QWidget):
     """Sensitivity curve with an optional previous curve and draggable points.
 
-    Points are normalized gains (0..1) at evenly spaced speed positions. The
-    chart paints on the surrounding card, so it has no fill of its own.
+    Each point sits at its own x position (``xs``, 0..1: speed over the curve's top speed), so
+    the line is the real curve and is never resampled. Without ``xs`` the points are spaced
+    evenly. Handle dots are drawn for curves of up to DOT_LIMIT points. Longer curves are drawn
+    as a line; a press on the line still grabs the nearest point. The chart paints on the
+    surrounding card, so it has no fill of its own.
     """
 
     curve_adjusted = Signal(list)
@@ -312,14 +328,24 @@ class CurveChart(QWidget):
         super().__init__(parent)
         self.setMinimumHeight(200)
         self.points = [0.0, 0.3, 0.55, 0.78, 1.0]
+        self.xs: list[float] | None = None
         self.previous_points = None
+        self.previous_xs: list[float] | None = None
         self._drag_index = None
         self._editable = editable
         self.setMouseTracking(editable)
 
-    def set_previous(self, points):
+    def set_previous(self, points, xs=None):
         self.previous_points = points
+        self.previous_xs = list(xs) if xs is not None else None
         self.update()
+
+    def x_positions(self) -> list[float]:
+        """The x position of each current point (0..1)."""
+        return _positions(self.points, self.xs)
+
+    def handles_visible(self) -> bool:
+        return 0 < len(self.points) <= DOT_LIMIT
 
     def _plot_rect(self):
         return self.rect().adjusted(40, 16, -14, -30)
@@ -349,22 +375,28 @@ class CurveChart(QWidget):
         p.drawText(rect.right() - 60, rect.bottom() + 4, 60, 16, Qt.AlignmentFlag.AlignRight, "fast")
 
         if self.previous_points:
-            self._draw_curve(p, rect, self.previous_points, QColor(pal["amber"]), dots=False, dashed=True)
-        self._draw_curve(p, rect, self.points, QColor(pal["accent"]), dots=True, fill=True)
+            self._draw_curve(
+                p, rect, self.previous_points, QColor(pal["amber"]),
+                dots=False, dashed=True, xs=_positions(self.previous_points, self.previous_xs),
+            )
+        self._draw_curve(
+            p, rect, self.points, QColor(pal["accent"]),
+            dots=self.handles_visible(), fill=True, xs=self.x_positions(),
+        )
         p.end()
 
-    def _xy(self, rect, i: int, n: int, v: float) -> QPointF:
-        x = rect.left() + rect.width() * i / (n - 1)
-        y = rect.bottom() - rect.height() * v
-        return QPointF(x, y)
+    @staticmethod
+    def _pt(rect, x: float, v: float) -> QPointF:
+        return QPointF(rect.left() + rect.width() * x, rect.bottom() - rect.height() * v)
 
-    def _draw_curve(self, p, rect, points, color, dots, dashed=False, fill=False):
+    def _draw_curve(self, p, rect, points, color, dots, dashed=False, fill=False, xs=None):
         n = len(points)
         if n < 2:
             return
+        xs = _positions(points, xs)
         path = QPainterPath()
-        for i, v in enumerate(points):
-            pt = self._xy(rect, i, n, v)
+        for i, (x, v) in enumerate(zip(xs, points)):
+            pt = self._pt(rect, x, v)
             if i == 0:
                 path.moveTo(pt)
             else:
@@ -390,28 +422,33 @@ class CurveChart(QWidget):
         p.setPen(pen)
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawPath(path)
-        if dots:
+        if dots and n <= DOT_LIMIT:
             base = QColor(active_palette()["surface"])
             p.setPen(QPen(color, 1.5))
             p.setBrush(QBrush(base))
-            for i, v in enumerate(points):
-                p.drawEllipse(self._xy(rect, i, n, v), 4.5, 4.5)
+            for x, v in zip(xs, points):
+                p.drawEllipse(self._pt(rect, x, v), 4.5, 4.5)
+
+    def _handle_at(self, pos) -> int | None:
+        """The nearest point within 14 px of ``pos``, or None."""
+        rect = self._plot_rect()
+        best, best_distance = None, 14
+        for i, (x, v) in enumerate(zip(self.x_positions(), self.points)):
+            distance = (pos - self._pt(rect, x, v).toPoint()).manhattanLength()
+            if distance < best_distance:
+                best, best_distance = i, distance
+        return best
 
     def mousePressEvent(self, event):
         if not self._editable:
             return
-        rect = self._plot_rect()
-        n = len(self.points)
-        for i, v in enumerate(self.points):
-            if (event.pos() - self._xy(rect, i, n, v).toPoint()).manhattanLength() < 14:
-                self._drag_index = i
-                break
+        self._drag_index = self._handle_at(event.position().toPoint())
 
     def mouseMoveEvent(self, event):
         if self._drag_index is None:
             return
         rect = self._plot_rect()
-        v = 1.0 - (event.pos().y() - rect.top()) / max(rect.height(), 1)
+        v = 1.0 - (event.position().y() - rect.top()) / max(rect.height(), 1)
         v = min(max(v, 0.0), 1.0)
         self.points[self._drag_index] = v
         self.update()
@@ -420,6 +457,7 @@ class CurveChart(QWidget):
         if self._drag_index is not None:
             self._drag_index = None
             self.curve_adjusted.emit(list(self.points))
+
 
 
 def _curve_samples(points, count: int = 5) -> list[float]:
@@ -445,6 +483,20 @@ def _curve_samples(points, count: int = 5) -> list[float]:
     return samples
 
 
+def _curve_points(points) -> tuple[list[float], list[float]]:
+    """Every point of a curve as (xs, ys), sorted by x and clamped to 0..1. Nothing is resampled.
+
+    Fewer than two points give the same default shape as _curve_samples.
+    """
+    pts = sorted((float(x), float(y)) for x, y in points)
+    if len(pts) < 2:
+        fallback = [0.0, 0.25, 0.5, 0.75, 1.0]
+        return list(fallback), list(fallback)
+    xs = [min(1.0, max(0.0, x)) for x, _ in pts]
+    ys = [min(1.0, max(0.0, y)) for _, y in pts]
+    return xs, ys
+
+
 def _lerp_factor(xs: list[float], ys: list[float], x: float) -> float:
     """Piecewise-linear lookup of ys at x (xs ascending), clamped at the ends."""
     if x <= xs[0]:
@@ -457,20 +509,21 @@ def _lerp_factor(xs: list[float], ys: list[float], x: float) -> float:
     return ys[-1]
 
 
-def _apply_chart_edit(profile, baseline: list[float], edited: list[float]):
+def _apply_chart_edit(profile, baseline: list[float], edited: list[float], xs=None, scale=None):
     """Scale a profile's gains by how far each chart point was dragged (edited / baseline).
 
-    The chart samples the curve at evenly spaced x positions, so each sample gives a
-    factor; every profile point gets the factor interpolated at its own speed.
+    ``xs`` are the chart's x positions, as speed over ``scale`` (the curve's top speed when not
+    given). Evenly spaced when ``xs`` is missing. Each profile point takes the factor at its own
+    speed: a point that sits on a chart point gets exactly that point's factor, so dragging one
+    point changes only that point.
     """
-    n = len(edited)
-    xs = [i / (n - 1) for i in range(n)]
+    xs = _positions(edited, xs)
     factors = [(e / b) if b > 1e-6 else 1.0 for e, b in zip(edited, baseline)]
 
     def scaled(points):
         if not points:
             return points
-        top = max((p.speed for p in points), default=1.0) or 1.0
+        top = scale or (max((p.speed for p in points), default=1.0) or 1.0)
         return [
             replace(p, multiplier=max(0.05, min(20.0, p.multiplier * _lerp_factor(xs, factors, min(1.0, p.speed / top)))))
             for p in points

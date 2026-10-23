@@ -1,7 +1,7 @@
 ================================================================================
 FPS COACH — CONTINUATION / HANDOFF DOCUMENT
 Copy-paste this whole file into a new agent chat to resume with zero context loss.
-Last updated: 2026-10-22 (rev 66)  (update after EVERY response)
+Last updated: 2026-10-23 (rev 67)  (update after EVERY response)
 
 *** IMPORTANT (rev4): The REAL repo was provided and differs a lot from the
 *** earlier scaffold. Work on the REAL repo at /home/user/workspace/FPSCoach
@@ -145,6 +145,14 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     /home/user/workspace/FPSCoach   (clone of https://github.com/AFK-999/FPSCoach.git)
     Remote origin/main = e9e69a2   (the visual REDESIGN; based on 04e6b0f)
     Working branch     = fix/redesign-backend-wiring (from e9e69a2), NOT pushed.
+    REV67 STATUS: rev66 plus Calibration chart: every point of a curve is drawn at its own speed
+    position (no five-point summary). An imported custom curve (up to 256 points per axis, any range)
+    shows its real shape. Handle dots appear for curves of up to 32 points; longer curves are drawn as a
+    line, and a press on the line still grabs the nearest point. A drag changes only the dragged point.
+    Undo/redo keep the positions and scale. The AI-adjusted overlay (dashed previous curve) and the
+    recommendation curves also use full point lists. The Recommendation tab's chart also shows every point
+    (7 for the analyzer's output, previously 5). The AI Coach quick-preview chart is UNCHANGED (still five
+    points). NOT verified on Windows. Still NOT pushed.
     REV66 STATUS: rev65 plus Privacy > Local data: a new button "Clear calibration and recommendation
     history". It empties .fpscoach_calibration_history.json (the rev14 file, the only saved calibration
     record; it currently holds 4 records from 2026-10-19), resets the analyzer's trials, the Calibration
@@ -1244,6 +1252,33 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
               slider and the new capture arguments); app.py quit run exit 0, no traceback.
               NOT verified: real display, Win32 window list, native capture, real Ollama,
               real game curve files, Windows build.
+
+  2026-10-23 (rev67)  CALIBRATION CHART: REAL CURVES, NOT A FIVE-POINT SUMMARY.
+              - widgets.py: DOT_LIMIT = 32. _positions() (real x or even spacing when the lengths do
+                not match). CurveChart keeps points (y, 0..1) and adds xs (x per point), previous_xs,
+                x_positions(), handles_visible(). Drawing uses each point's own x. Nearest-point hit test
+                (14 px). _curve_points(points) returns every point, sorted and clamped (fallback = the old
+                five-point default for fewer than two points). _curve_samples kept for the AI Coach quick
+                preview. _apply_chart_edit(profile, baseline, edited, xs=None, scale=None) maps each drag
+                onto the profile at real positions.
+              - pages_setup.py: CalibrationPage._set_chart(points, previous, xs, previous_xs, scale),
+                _set_overlay(), _shared_speed(); _chart_scale kept, and saved in undo snapshots with the
+                xs. apply_recommendation, set_adjusted, _import_curve and _on_curve_adjusted use full point
+                lists. RECOMMENDATION_MAX_SPEED = 100.0 (matches recommendation_profile). RecommendationPage
+                chart uses every point.
+              - Mouse handlers use event.position() (pos() is deprecated).
+              - Tests: tests/test_calibration_chart_full.py (14): sorting/clamping/fallback, handle limit,
+                even-spacing fallback, import of a 60-point .cc4 (every point, real positions), no dots on a
+                long curve, a real press/move/release on one point changes only that point, undo restores
+                the long curve exactly, an overlay edit changes only the dragged point, overlay positions,
+                7-point recommendation on both tabs, chart render.
+              - verify_mainwindow_wiring.py (outside the repo): the check "chart updated from recommendation
+                points" expected 5 points. It now expects len(rec["points"]), because the chart shows every
+                point. Result 32/32.
+              - Full suite 314 passed. ruff F clean. compileall OK.
+              - Screenshot /tmp/shots15/calibration_long.png: a 120-point imported curve drawn smoothly.
+              - Environment: the sandbox was reset again. PySide6 6.12.0, pytest, ruff and pyttsx3 were
+                reinstalled with pip; libxkbcommon0 was re-extracted to /home/user/.local/xkb.
 
   2026-10-22 (rev66)  PRIVACY > LOCAL DATA: CLEAR CALIBRATION AND RECOMMENDATION HISTORY.
               - NEW python/fps_coach/local_data.py (Qt-free): CALIBRATION_HISTORY_NAME,

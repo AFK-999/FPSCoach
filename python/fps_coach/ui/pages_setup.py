@@ -48,7 +48,7 @@ from .widgets import (
     set_glyph,
     _card,
     _content_page,
-    _curve_samples,
+    _curve_points,
     _divider,
     _label,
     _page_header,
@@ -597,6 +597,18 @@ class CapturePage(QWidget):
 # Calibration
 # ---------------------------------------------------------------------------
 
+# recommendation_profile() builds gains over this top speed; the chart uses the same scale for them.
+RECOMMENDATION_MAX_SPEED = 100.0
+
+
+def _shared_speed(previous, current) -> float:
+    """The speed normalized_overlay() scales both curves by (the larger of their top speeds)."""
+    return max(
+        max((p.speed for p in previous.horizontal), default=1.0) or 1.0,
+        max((p.speed for p in current.horizontal), default=1.0) or 1.0,
+    )
+
+
 class CalibrationPage(QWidget):
     """Calibration task (CalibrationCanvas on backend.analyzer) plus the curve view.
 
@@ -617,6 +629,8 @@ class CalibrationPage(QWidget):
         # Undo/redo history for the curve. Each entry is a full snapshot taken before a change.
         self._undo: list[dict] = []
         self._redo: list[dict] = []
+        # Speed the chart's x positions are scaled by (None: the curve's own top speed).
+        self._chart_scale: float | None = None
 
         scroll, outer = _content_page(1240)
         _page_root(self, scroll)
@@ -728,12 +742,21 @@ class CalibrationPage(QWidget):
         self.progress.setRange(0, max(1, total))
         self.progress.setValue(completed)
 
-    def _set_chart(self, points, previous=None):
-        self.chart.set_previous(previous)
+    def _set_chart(self, points, previous=None, xs=None, previous_xs=None, scale=None):
+        """Show ``points`` at x positions ``xs`` (evenly spaced when None). See CurveChart."""
+        self.chart.set_previous(previous, xs=previous_xs)
         self.legend.set_has_older(bool(previous))
         self.chart.points = list(points)
+        self.chart.xs = list(xs) if xs is not None else None
+        self._chart_scale = scale
         self._chart_baseline = list(points)
         self.chart.update()
+
+    def _set_overlay(self, current_pts, previous_pts, scale: float) -> None:
+        """Draw the current curve (solid) and the previous one (dashed), each at its real positions."""
+        cur_xs, cur_ys = _curve_points(current_pts)
+        prev_xs, prev_ys = _curve_points(previous_pts)
+        self._set_chart(cur_ys, previous=prev_ys, xs=cur_xs, previous_xs=prev_xs, scale=scale)
 
     # -- undo / redo ----------------------------------------------------------
     _HISTORY_LIMIT = 50
@@ -743,6 +766,9 @@ class CalibrationPage(QWidget):
         return {
             "points": list(points if points is not None else self.chart.points),
             "previous": list(self.chart.previous_points) if self.chart.previous_points else None,
+            "previous_xs": list(self.chart.previous_xs) if self.chart.previous_xs is not None else None,
+            "xs": list(self.chart.xs) if self.chart.xs is not None else None,
+            "scale": self._chart_scale,
             "profile": deepcopy(self._profile),
             "base": deepcopy(self._base_profile),
             "baseline": list(self._chart_baseline) if self._chart_baseline is not None else None,
@@ -761,8 +787,11 @@ class CalibrationPage(QWidget):
         self._base_profile = deepcopy(snap["base"])
         self._chart_baseline = list(snap["baseline"]) if snap["baseline"] is not None else None
         self.chart.previous_points = list(snap["previous"]) if snap["previous"] else None
+        self.chart.previous_xs = list(snap["previous_xs"]) if snap.get("previous_xs") is not None else None
         self.legend.set_has_older(bool(self.chart.previous_points))
         self.chart.points = list(snap["points"])
+        self.chart.xs = list(snap["xs"]) if snap.get("xs") is not None else None
+        self._chart_scale = snap.get("scale")
         self.chart.update()
         self.hint.setText(message)
         self.profile_changed.emit({"restored": True})
@@ -810,13 +839,17 @@ class CalibrationPage(QWidget):
                 adjusted, note = adjust_from_recommendation(self._base_profile, recommendation)
                 prev_pts, cur_pts = normalized_overlay(self._base_profile, adjusted)
                 self._profile = adjusted
-                self._set_chart(_curve_samples(cur_pts), previous=_curve_samples(prev_pts))
+                self._set_overlay(cur_pts, prev_pts, _shared_speed(self._base_profile, adjusted))
                 self.hint.setText(note)
             else:
                 self._profile = recommendation_profile(recommendation)
+                xs, ys = _curve_points(recommendation.get("points") or [])
                 self._set_chart(
-                    _curve_samples(recommendation.get("points") or []),
+                    ys,
                     previous=list(self.chart.points),
+                    xs=xs,
+                    previous_xs=self.chart.x_positions(),
+                    scale=RECOMMENDATION_MAX_SPEED,
                 )
         except CurveFormatError as exc:
             self._profile = None
@@ -829,17 +862,19 @@ class CalibrationPage(QWidget):
         # A click that moved nothing is not a change, so it gets no history entry.
         if baseline != points:
             self._checkpoint(points=baseline)
+        xs = self.chart.x_positions()
         if self._profile is None:
             # No curve yet: treat the chart values as the curve's output-speed shape.
-            n = len(points)
             try:
                 self._profile = recommendation_profile(
-                    {"points": [(i / (n - 1), y) for i, y in enumerate(points)], "sensitivity_multiplier": 1.0}
+                    {"points": list(zip(xs, points)), "sensitivity_multiplier": 1.0},
+                    max_speed=RECOMMENDATION_MAX_SPEED,
                 )
+                self._chart_scale = RECOMMENDATION_MAX_SPEED
             except CurveFormatError:
                 pass
         else:
-            self._profile = _apply_chart_edit(self._profile, baseline, points)
+            self._profile = _apply_chart_edit(self._profile, baseline, points, xs=xs, scale=self._chart_scale)
         self._chart_baseline = list(points)
         self.hint.setText("Curve edited. Export curve to save the edited version.")
         self.profile_changed.emit({"points": points})
@@ -859,7 +894,8 @@ class CalibrationPage(QWidget):
         self._base_profile = deepcopy(profile)
         self._profile = deepcopy(profile)
         self.base_profile_changed.emit(deepcopy(profile))
-        self._set_chart(_curve_samples(chart_points(profile)))
+        xs, ys = _curve_points(chart_points(profile))
+        self._set_chart(ys, xs=xs, scale=max((p.speed for p in profile.horizontal), default=1.0) or 1.0)
         self.hint.setText(
             f"Imported {Path(path).name}. Run calibration to adjust it, or drag points to edit it."
         )
@@ -870,7 +906,7 @@ class CalibrationPage(QWidget):
         self._checkpoint()
         self._profile = deepcopy(current)
         prev_pts, cur_pts = normalized_overlay(previous, current)
-        self._set_chart(_curve_samples(cur_pts), previous=_curve_samples(prev_pts))
+        self._set_overlay(cur_pts, prev_pts, _shared_speed(previous, current))
         self.hint.setText(f"{note} Export curve to save it.")
 
     def _save(self):
@@ -1001,7 +1037,9 @@ class RecommendationPage(QWidget):
         self.reasons_label.setText("\n".join(f"\u2022  {r}" for r in reasons))
 
         self.chart.previous_points = None
-        self.chart.points = _curve_samples(recommendation.get("points") or [])
+        xs, ys = _curve_points(recommendation.get("points") or [])
+        self.chart.xs = xs
+        self.chart.points = ys
         self.chart.setVisible(True)
         self.empty_label.setVisible(False)
         self.chart.update()
@@ -1017,6 +1055,7 @@ class RecommendationPage(QWidget):
         self.reasons_label.setText("")
         self.chart.previous_points = None
         self.chart.points = []
+        self.chart.xs = None
         self.chart.setVisible(False)
         self.empty_label.setVisible(True)
         self.chart.update()
