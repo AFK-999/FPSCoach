@@ -9,7 +9,7 @@ import math
 from copy import deepcopy
 
 from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QSizePolicy,
     QTextEdit,
     QToolButton,
     QVBoxLayout,
@@ -29,7 +30,13 @@ from PySide6.QtWidgets import (
 )
 
 from fps_coach import scenarios as scenario_defs
-from fps_coach.ai_chat import ChatSettings, curve_context
+from fps_coach.ai_chat import (
+    ChatSettings,
+    AIChatClient,
+    curve_context,
+    model_supports_images,
+)
+from fps_coach.visual_coach import LiveVisionSession, VisionSettings, suggested_vision_models
 from fps_coach.ingame import GAMES, InGameMode
 from fps_coach.tts_service import SPEED_MAX, SPEED_MIN, VOLUME_MAX, VOLUME_MIN, SpeechOptions
 from fps_coach.ai_curve_actions import apply_adjustment, parse_adjustment
@@ -45,7 +52,13 @@ from fps_coach.dashboard_config import (
 from fps_coach.curve_adjust import apply_preset, normalized_overlay
 
 from .styles import active_palette, fx_enabled
-from .threads import _ChatRequest, _ModelPullThread, _OllamaStatusCheck, _VoiceListenThread
+from .threads import (
+    _ChatRequest,
+    _LiveVisionThread,
+    _ModelPullThread,
+    _OllamaStatusCheck,
+    _VoiceListenThread,
+)
 from .widgets import (
     CurveChart,
     ValueSlider,
@@ -195,6 +208,10 @@ class AIChatPage(QWidget):
         self._proactive_pending = None
         self._proactive_check = None
         self._proactive_request = None
+        self._capture_source = None      # CoreBackend; set by MainWindow
+        self._live_thread = None
+        self._live_session = None
+        self._live_failures = 0
 
         scroll, outer = _content_page(1280)
         _page_root(self, scroll)
@@ -271,6 +288,9 @@ class AIChatPage(QWidget):
         input_row.addWidget(self.send_btn)
         lay.addLayout(input_row)
         body.addWidget(card, 3)
+
+        live_card = self._build_live_vision_card()
+        body.addWidget(live_card, 2)
 
         tune_card, tune_lay = _card(
             "Curve tuning",
@@ -380,10 +400,17 @@ class AIChatPage(QWidget):
         if self._focus_on("training"):
             parts.append("After each training drill: a note and a recommendation.")
         if self._focus_on("capture"):
-            parts.append(
-                "Capture: the coach sees capture settings (preset, FPS) only. "
-                "It cannot see the screen or gameplay."
-            )
+            thread = getattr(self, "_live_thread", None)
+            if thread is not None and thread.isRunning():
+                parts.append(
+                    "Capture: the coach sees the settings (preset, FPS) and still frames of the "
+                    "preview while Live vision is on. It sees no game events."
+                )
+            else:
+                parts.append(
+                    "Capture: the coach sees capture settings (preset, FPS) only. "
+                    "It cannot see the screen or gameplay."
+                )
         self.focus_note.setText(" ".join(parts))
 
     def _with_capture_focus(self, context: str) -> str:
@@ -391,10 +418,18 @@ class AIChatPage(QWidget):
             return context
         preset = str(self._settings.value("capture/preset", "balanced"))
         fps = self._settings.value("capture/fps", 60, type=int)
-        line = (
-            f"Capture settings: preset '{preset}', {fps} FPS. The coach cannot see the "
-            "screen or gameplay; this is configuration only."
-        )
+        thread = getattr(self, "_live_thread", None)
+        watching = thread is not None and thread.isRunning()
+        if watching:
+            line = (
+                f"Capture settings: preset '{preset}', {fps} FPS. Live vision is on, so the coach "
+                "is receiving still frames of the capture preview; it sees no game events."
+            )
+        else:
+            line = (
+                f"Capture settings: preset '{preset}', {fps} FPS. The coach cannot see the "
+                "screen or gameplay unless you turn Live vision on; this is configuration only."
+            )
         return f"{context}\n\n{line}" if context else line
 
     def set_ingame_context(self, block: str) -> None:
@@ -584,10 +619,277 @@ class AIChatPage(QWidget):
         )
         self._append("Quick action", "Sent the adjusted curve to Calibration (open it to review and export).")
 
+    # -- live vision (coach watches the capture preview) ----------------------
+    def set_capture_source(self, backend) -> None:
+        """Hand the page the object whose ``latest_frame()`` feeds the coach.
+
+        MainWindow passes its CoreBackend. Without it the Live vision card
+        explains that there is nothing to watch instead of failing.
+        """
+        self._capture_source = backend
+        self._refresh_live_vision_note()
+
+    def _build_live_vision_card(self):
+        card, lay = _card(
+            "Live vision",
+            "Let the coach see the capture preview. Off at every launch.",
+        )
+        self._live_pixmap = None
+        self.live_thumb = QLabel("No frame yet")
+        self.live_thumb.setObjectName("stage")
+        self.live_thumb.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.live_thumb.setFixedHeight(132)
+        self.live_thumb.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.live_thumb.setScaledContents(False)
+        self.live_thumb.installEventFilter(self)  # re-fit the thumbnail when the card resizes
+        lay.addWidget(self.live_thumb)
+
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        self.live_toggle = QPushButton(" Watch preview")
+        self.live_toggle.setObjectName("secondary")
+        self.live_toggle.setCheckable(True)
+        self.live_toggle.setChecked(False)  # never on at launch
+        set_glyph(self.live_toggle, "eye")
+        self.live_now = QPushButton(" Look now")
+        self.live_now.setObjectName("secondary")
+        set_glyph(self.live_now, "refresh")
+        self.live_now.setToolTip("Send the newest frame once, without starting the loop")
+        row.addWidget(self.live_toggle)
+        row.addWidget(self.live_now)
+        row.addStretch(1)
+        lay.addLayout(row)
+
+        form = QGridLayout()
+        form.setHorizontalSpacing(10)
+        form.setVerticalSpacing(8)
+        form.addWidget(_label("Ask every", "formLabel"), 0, 0)
+        self.live_interval = QDoubleSpinBox()
+        self.live_interval.setRange(2.0, 120.0)
+        self.live_interval.setSingleStep(1.0)
+        self.live_interval.setDecimals(0)
+        self.live_interval.setSuffix(" s")
+        self.live_interval.setValue(float(_settings().value("ai/live_interval", 6.0, type=float)))
+        self.live_interval.setToolTip(
+            "How long to wait after each reply. A longer gap means fewer, less repetitive "
+            "comments; a local vision model is the real limit."
+        )
+        self.live_interval.valueChanged.connect(
+            lambda value: _settings().setValue("ai/live_interval", float(value))
+        )
+        form.addWidget(self.live_interval, 0, 1)
+        lay.addLayout(form)
+
+        self.live_change_only = QCheckBox("Only when the picture changes")
+        self.live_change_only.setToolTip(
+            "Skip frames that look the same as the last one sent, so a paused game does not "
+            "produce identical comments."
+        )
+        self.live_change_only.setChecked(
+            bool(_settings().value("ai/live_change_only", True, type=bool))
+        )
+        self.live_change_only.toggled.connect(
+            lambda checked: _settings().setValue("ai/live_change_only", bool(checked))
+        )
+        lay.addWidget(self.live_change_only)
+
+        self.live_status = _label("Off", "statusLabel", wrap=True)
+        lay.addWidget(self.live_status)
+
+        self.live_note = _label("", "cardSubtitle", wrap=True)
+        lay.addWidget(self.live_note)
+        self._refresh_live_vision_note()
+
+        lay.addStretch(1)  # keep the controls together at the top of the tall card
+        self.live_toggle.toggled.connect(self._toggle_live_vision)
+        self.live_now.clicked.connect(self._ask_live_now)
+        return card
+
+    def _live_frame_provider(self):
+        """The newest captured frame, or None while the preview is not running."""
+        source = self._capture_source
+        latest = getattr(source, "latest_frame", None)
+        if not callable(latest):
+            return None
+        try:
+            frame = latest()
+        except Exception:  # noqa: BLE001 - the loop reports a broken backend itself
+            return None
+        return frame if isinstance(frame, dict) and frame.get("bgra") else None
+
+    def _refresh_live_vision_note(self) -> None:
+        """Say whether the configured model can see, and where the frames go."""
+        if not hasattr(self, "live_note"):
+            return
+        settings = self._chat_settings()
+        notes: list[str] = []
+        if not callable(getattr(self._capture_source, "latest_frame", None)):
+            notes.append("Live vision needs the capture backend; it is not available here.")
+        if not model_supports_images(settings.model, settings.provider):
+            example = suggested_vision_models()[0]
+            notes.append(
+                f"{settings.model or 'This model'} cannot see images. Pick a vision model in "
+                f"Settings, for example {example} (ollama pull {example})."
+            )
+        if settings.provider == "openai":
+            notes.append(
+                "Frames are uploaded to your configured API endpoint while this runs."
+            )
+        elif model_supports_images(settings.model, settings.provider):
+            notes.append("Local model: frames stay on this machine.")
+        self.live_note.setText(" ".join(notes))
+        self.live_note.setVisible(bool(notes))
+
+    def _set_live_status(self, text: str, state: str = "") -> None:
+        self.live_status.setText(text)
+        self.live_status.setProperty("state", state)
+        self.live_status.style().unpolish(self.live_status)
+        self.live_status.style().polish(self.live_status)
+
+    def _toggle_live_vision(self, checked: bool) -> None:
+        if checked:
+            self._start_live_vision()
+        else:
+            self._stop_live_vision()
+
+    def _live_vision_settings(self) -> VisionSettings:
+        return VisionSettings(
+            min_interval=float(self.live_interval.value()),
+            skip_unchanged=self.live_change_only.isChecked(),
+        )
+
+    def _start_live_vision(self) -> None:
+        if self._live_thread is not None:
+            return  # already starting or running
+        if not callable(getattr(self._capture_source, "latest_frame", None)):
+            self._stop_live_vision()
+            self._set_live_status("No capture backend, so there is nothing to watch.", "bad")
+            return
+        settings = self._chat_settings()
+        if not model_supports_images(settings.model, settings.provider):
+            self._set_live_status(
+                f"{settings.model} cannot see images — choose a vision model in Settings.",
+                "warn",
+            )
+        else:
+            self._set_live_status("Starting…", "good")
+        self._live_failures = 0
+        self._live_session = LiveVisionSession(
+            frame_provider=self._live_frame_provider,
+            chat=AIChatClient(settings),
+            settings=self._live_vision_settings(),
+            context_provider=lambda: self._calibration_context,
+        )
+        self._live_thread = _LiveVisionThread(self._live_session, self)
+        self._live_thread.reply_ready.connect(self._live_vision_reply)
+        self._live_thread.request_failed.connect(self._live_vision_failed)
+        self._live_thread.status_changed.connect(self._live_vision_status)
+        self._live_thread.frame_sent.connect(self._live_vision_frame)
+        self._live_thread.finished.connect(self._live_vision_finished)
+        blocked = self.live_toggle.blockSignals(True)
+        self.live_toggle.setChecked(True)
+        self.live_toggle.blockSignals(blocked)
+        self.live_interval.setEnabled(False)
+        self._live_thread.start()
+
+    def _stop_live_vision(self) -> None:
+        if self._live_thread is not None:
+            self._live_thread.stop_session()
+            if not self._live_thread.isRunning():
+                self._live_thread.deleteLater()
+                self._live_thread = None
+        self._live_session = None
+        signals_blocked = self.live_toggle.blockSignals(True)
+        self.live_toggle.setChecked(False)
+        self.live_toggle.blockSignals(signals_blocked)
+        self.live_interval.setEnabled(True)
+        self._set_live_status("Off")
+
+    def _ask_live_now(self) -> None:
+        """One frame, one answer — the loop runs once if it is not already."""
+        if not callable(getattr(self._capture_source, "latest_frame", None)):
+            self._set_live_status("No capture backend, so there is nothing to look at.", "bad")
+            return
+        if self._live_thread is not None and self._live_thread.isRunning():
+            self._live_thread.ask_now()
+            self._set_live_status("Looking at the newest frame…", "good")
+            return
+        self._start_live_vision()
+        if self._live_thread is not None:
+            self._live_thread.ask_now()
+
+    def _live_vision_reply(self, text: str, meta) -> None:
+        meta = meta or {}
+        stamp = f"frame {meta.get('frame', '?')}"
+        if meta.get("latency"):
+            stamp += f" · {float(meta['latency']):.1f} s"
+        self._append("Coach (live)", f"{text} <i>— {stamp}</i>")
+        counters = self._live_session.counters if self._live_session is not None else None
+        self._set_live_status(counters.line() if counters else "Watching", "good")
+
+    def _live_vision_failed(self, message: str) -> None:
+        self._live_failures += 1
+        self._set_live_status(f"Live vision: {message}", "bad")
+
+    def _live_vision_status(self, message: str) -> None:
+        if message.startswith("Live vision stopped"):
+            return  # the toggle and the counters already say so
+        state = "warn" if message.startswith("No frame yet") else ""
+        self._set_live_status(message, state)
+
+    def _live_vision_frame(self, jpeg: bytes, meta) -> None:
+        """Show exactly what the model was sent — no doubt about what it 'saw'."""
+        pixmap = QPixmap()
+        if not jpeg or not pixmap.loadFromData(jpeg, "JPEG"):
+            return
+        self._live_pixmap = pixmap
+        self._fit_live_thumb()
+        size = meta or {}
+        self.live_thumb.setToolTip(
+            f"Sent to the model: {size.get('width', '?')}×{size.get('height', '?')} "
+            f"· {size.get('bytes', 0) / 1024:.0f} KB"
+        )
+
+    def _fit_live_thumb(self) -> None:
+        if self._live_pixmap is None:
+            return
+        width = max(120, self.live_thumb.width() - 8)
+        height = max(60, self.live_thumb.height() - 8)
+        self.live_thumb.setPixmap(
+            self._live_pixmap.scaled(
+                width,
+                height,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        )
+
+    def eventFilter(self, obj, event):  # noqa: N802 - Qt naming
+        if obj is getattr(self, "live_thumb", None) and event.type() == QEvent.Type.Resize:
+            self._fit_live_thumb()
+        return super().eventFilter(obj, event)
+
+    def _live_vision_finished(self) -> None:
+        self._live_session = None
+        if self._live_thread is not None:
+            self._live_thread.deleteLater()
+            self._live_thread = None
+        signals_blocked = self.live_toggle.blockSignals(True)
+        self.live_toggle.setChecked(False)
+        self.live_toggle.blockSignals(signals_blocked)
+        self.live_interval.setEnabled(True)
+
     def shutdown(self) -> None:
-        for thread in (self._thread, self._voice_thread, self._proactive_check, self._proactive_request):
+        self._stop_live_vision()
+        for thread in (
+            self._thread,
+            self._voice_thread,
+            self._proactive_check,
+            self._proactive_request,
+            self._live_thread,
+        ):
             if thread is not None and thread.isRunning():
-                thread.wait(2000)
+                thread.wait(3000)
 
     # -- read aloud and text size ----------------------------------------------
     def _build_speech_bar(self) -> QHBoxLayout:
@@ -715,6 +1017,8 @@ class AIChatPage(QWidget):
 
     def refresh_from_settings(self) -> None:
         """Show the saved read-aloud and text-size values. Signals stay quiet."""
+        if hasattr(self, "live_note"):
+            self._refresh_live_vision_note()  # the model may have changed in Settings
         enabled = self._settings.value("ui/tts_enabled", False, type=bool)
         px = self._settings.value("chat/font_px", self.TEXT_DEFAULT, type=int)
         px = max(self.TEXT_MIN, min(self.TEXT_MAX, int(px)))
@@ -875,6 +1179,11 @@ PRIVACY_POINTS: tuple[str, ...] = (
         "for that session. It never reads or changes the game: you type your game, DPI, and "
         "in-game sensitivity, and the app converts those numbers. While it is on, those numbers "
         "are included in the context sent to your configured AI endpoint.",
+        "Live vision (AI Coach) is off at every launch. While it is on, downscaled still frames of "
+        "the capture preview are sent to the AI endpoint you configured, one at a time, and the "
+        "replies appear in the chat. With a local Ollama model the frames stay on this machine; with "
+        "an online provider they are uploaded to it. Turn it off and no frame leaves the app. The "
+        "coach is asked to comment on the picture and setup only - never on targets, enemies, or aim.",
         "AI requests are sent only to the endpoint you configure in Settings.",
         "Voice recognition can run fully offline via a local model.",
         "The crosshair overlay is off by default. When it is on, or while you edit its "

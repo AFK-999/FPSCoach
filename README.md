@@ -18,6 +18,7 @@ A lightweight, local-first foundation for an FPS movement/sensitivity coach. It 
 - **Conservative custom curve recommendation** with monotonic points, sensitivity multiplier, confidence, and plain-language reasons.
 - **Custom Curve compatibility** for importing/exporting modern `.cc4` JSON profiles and legacy `.ccurve` text profiles, selected explicitly in the UI.
 - **In-Game Mode (Settings)** — off at every launch. Turn it on for a session, pick your game, and enter your DPI and in-game sensitivity; Vantage converts that to cm/360°, shows what its recommendation means in that game's units, and can ask the coach for a specific value. It never reads or changes the game.
+- **Live vision (AI Coach)** — off at every launch. Turn it on and the coach receives a downscaled still frame of the capture preview every few seconds (or on **Look now**) and comments on the setup and the picture: layout, HUD clutter, readability, lighting. It is instructed never to analyse targets, enemies, or aim. Needs a vision model (for example `gemma3:4b`); the card says so before you start.
 - **Optional AI coach** using local Ollama models (defaults to `qwen3:1.7b`, with `phi4-mini` as an option) or a user-configured OpenAI-compatible online API.
 - **Portable Python reference analyzer** so UI/model work can be previewed without the Windows extension.
 
@@ -119,6 +120,21 @@ The Capture tab works in three tiers, and each one says which is in use:
 5. In **Recommendation**, select **Custom Curve 4 (.cc4)** or **Custom Curve 3 / legacy (.ccurve)**, then import or export explicitly. Export creates a profile file; it never applies one.
 6. Optionally open **AI chat** to discuss the result with a local or online model.
 7. Test over several sessions. Revert if comfort or consistency declines.
+
+### Live vision
+
+The AI Coach tab's **Live vision** card sends the newest frame of the Capture preview to
+your configured model. It is off at launch, sends only still frames (never video), waits for
+each reply before taking the next, skips frames that look unchanged, and shows you the exact
+JPEG the model was given. A text-only model such as `qwen3:1.7b` cannot see images — the card
+names a vision model to pull instead:
+
+```
+ollama pull gemma3:4b
+```
+
+With a local Ollama server the frames never leave the machine; with an online provider they
+are uploaded to it. See `docs/PRIVACY.md`.
 
 Screen capture and calibration are independent in this foundation: pixels are available for future, policy-compliant local context models, while the current curve model uses only the explicit calibration movements.
 

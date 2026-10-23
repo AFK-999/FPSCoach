@@ -42,6 +42,33 @@ Future pixel models should add a D3D11 compute shader (or DirectML execution pro
 
 `tests/test_python_capture.py` covers all of this with an injected `mss` double; no test touches a display.
 
+## Live vision (rev79)
+
+`visual_coach.py` is Qt-free and does four things:
+
+1. `frame_signature()` samples a 32×18 luma grid straight out of the BGRA buffer — one pixel per
+   cell, no resize, no dependency. `frame_delta()` compares two signatures; below the threshold
+   (0.4% mean luma) the frame counts as unchanged and is not re-sent, so a paused game does not
+   produce identical comments.
+2. `encode_frame()` produces a JPEG capped at 768 px wide: OpenCV when the recorder extra is
+   installed, otherwise Qt's writer, so a plain install still works.
+3. `LiveVisionSession` runs the loop: take the **newest** frame, encode, ask, wait
+   `min_interval`, repeat. It waits for a frame if capture is not running, backs off
+   exponentially on provider errors and stops after `max_consecutive_errors`, and never queues
+   frames — a slow model simply means fewer comments.
+4. The prompt (`COACH_PROMPT` / `LOOK_PROMPT`) restricts the model to the picture and the setup:
+   layout, readability, HUD clutter, lighting, colour, blur. It is told never to identify
+   targets, enemies, or players and never to give aim, recoil, or positioning guidance.
+
+`ai_chat.AIChatClient.chat(..., images=[jpeg])` carries the picture in the shape each provider
+expects: base64 under `images` on the Ollama message, `image_url` parts for OpenAI-compatible
+endpoints, with `VISION_SYSTEM_PROMPT` added (never replacing `SYSTEM_PROMPT`).
+`model_supports_images()` is a name heuristic used only to warn in the UI before a request fails.
+
+The Qt side is `AIChatPage`'s **Live vision** card plus `threads._LiveVisionThread`, which turns
+the session's callbacks into signals so the page only touches widgets on the UI thread. The page
+also shows the exact JPEG that was sent, so there is no doubt about what the model saw.
+
 ## Scratch recording (Capture tab)
 
 `screen_recorder.py` is a Qt-free engine: a capture thread grabs the primary display with `mss`, writes BGRA→BGR frames into a `cv2.VideoWriter`, and publishes each frame into a single-slot, sequence-numbered `LatestFrameBuffer` (readers always get a private copy; old frames are overwritten so a slow consumer adds no latency). A second thread fires an `analysis_callback` every `analysis_interval` seconds on an absolute schedule, skips ticks that arrive before the first frame, does not replay missed ticks, and survives callback exceptions.

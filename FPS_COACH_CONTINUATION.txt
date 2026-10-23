@@ -1,7 +1,7 @@
 ================================================================================
 FPS COACH — CONTINUATION / HANDOFF DOCUMENT
 Copy-paste this whole file into a new agent chat to resume with zero context loss.
-Last updated: 2026-10-23 (rev 78)  (update after EVERY response)
+Last updated: 2026-10-23 (rev 79)  (update after EVERY response)
 
 *** IMPORTANT (rev4): The REAL repo was provided and differs a lot from the
 *** earlier scaffold. Work on the REAL repo at /home/user/workspace/FPSCoach
@@ -35,6 +35,16 @@ Last updated: 2026-10-23 (rev 78)  (update after EVERY response)
               - README / docs/architecture.md / pyproject: three capture tiers documented.
               - VERIFICATION: pytest 476 passed, 5 skipped; offscreen MainWindow capture run painted frames
                 at 60 FPS through the Python path.
+
+  2026-10-23 (rev79)  FEATURE: LIVE VISION - THE COACH READS THE CAPTURE PREVIEW.
+              - python/fps_coach/visual_coach.py (new): frame signature/delta, JPEG encoder with a Qt
+                fallback, and LiveVisionSession (newest-frame loop, change skipping, backoff, ask_now).
+              - ai_chat.py: images= on chat() (Ollama base64 / OpenAI image_url), VISION_SYSTEM_PROMPT,
+                model_supports_images().
+              - ui: "Live vision" card in AI Coach (toggle off at launch, Look now, thumbnail of the exact
+                frame sent, vision-model warning), _LiveVisionThread, "eye" glyph, privacy copy.
+              - tests: test_visual_coach.py (29) + test_vision_payloads.py (21).
+              - VERIFICATION: pytest 526 passed, 5 skipped; offscreen end-to-end with a fake vision model.
 
 ================================================================================
 
@@ -171,6 +181,47 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     /home/user/workspace/FPSCoach   (clone of https://github.com/AFK-999/FPSCoach.git)
     Remote origin/main = e9e69a2   (the visual REDESIGN; based on 04e6b0f)
     Working branch     = fix/redesign-backend-wiring (from e9e69a2), NOT pushed.
+    REV79 STATUS: rev78 plus LIVE VISION - the AI coach reads the capture preview and comments on it.
+    Requested: "update our existing desktop utility script that uses mss and threading to capture the live
+    screen preview within the application and allow the ai in the application to automate responses
+    according to the visual data represented in the preview". Clarified with the user: BOTH automatic
+    commentary while capture runs AND an on-demand "Look now"; payload = real frames from the preview
+    (they answered "the video on being played on the preview screen in realtime"), not a text summary.
+    HARD BOUNDARY KEPT: no target/enemy/aim analysis. The prompt (visual_coach.COACH_PROMPT / LOOK_PROMPT)
+    restricts the coach to the picture and the setup - layout, readability, HUD clutter, lighting, colour,
+    blur - and forbids identifying targets, enemies or players and giving aim/recoil/positioning advice.
+    What was built:
+      - python/fps_coach/visual_coach.py (new, ~470 lines, Qt-free): frame_signature() (32x18 luma grid
+        sampled from BGRA, no resize), frame_delta(), describe_frame() (size/brightness/contrast only),
+        encode_frame() (BGRA -> JPEG <=768 px via OpenCV, else Qt's writer), LiveVisionSession (newest-frame
+        loop: waits for capture, skips unchanged frames at 0.4% mean luma, exponential backoff, stops after
+        max_consecutive_errors, ask_now() bypasses the change check, stop() breaks any wait).
+      - ai_chat.py: chat(..., images=[jpeg]) -> base64 "images" on the Ollama user message, image_url parts
+        for OpenAI-compatible; VISION_SYSTEM_PROMPT added without replacing SYSTEM_PROMPT;
+        model_supports_images() name heuristic (gemma3:1b explicitly text-only) and encode_image().
+      - ui/threads.py: _LiveVisionThread forwards session callbacks as signals (reply_ready,
+        request_failed, status_changed, frame_sent).
+      - ui/pages_coach.py: "Live vision" card in the AI Coach right column - thumbnail of the exact JPEG
+        sent, "Watch preview" toggle (off at every launch), "Look now", ask-every seconds, "Only when the
+        picture changes", status line + counters, and a note naming a vision model when the configured one
+        cannot see / or "frames stay on this machine" for a local vision model. Replies post as
+        "Coach (live)" into the transcript. set_capture_source(backend) is called by MainWindow.
+      - ui/icons.py: "eye" glyph. PRIVACY_POINTS + docs/PRIVACY.md: new Live vision section (off at launch,
+        still frames only, local vs online upload, prompt restrictions).
+    Tests: tests/test_visual_coach.py (29 - signature/delta/stride, describe_frame, JPEG via OpenCV AND via
+    the Qt fallback, no-encoder message, one-frame-one-reply, unchanged skipping, changed-frame sending,
+    static frame re-sent when the check is off, ask_now, history cap, no-frame-yet, provider errors,
+    consecutive failures stopping the loop, empty reply, curve context, settings normalisation, prompt
+    guardrails, stop breaking a long wait, page: warning for a text model, local note, no-backend message,
+    full toggle -> transcript + thumbnail) and tests/test_vision_payloads.py (21 - capability heuristic,
+    exact Ollama/OpenAI payload shapes, no-user-turn fallback, empty bytes ignored).
+    VERIFICATION (sandbox, Linux, no display, no model): full suite 526 passed, 5 skipped; ruff clean on new
+    files; end-to-end through MainWindow -> AI Coach with a fake vision model: 2 frames (8 KB each) sent,
+    2 "Coach (live)" replies in the transcript, status "Watching", note "Local model: frames stay on this
+    machine." Screenshot: deliverables/screenshots/ai-live-vision.png.
+    NOT verified: a real vision model (qwen3:1.7b cannot see; gemma3:4b untested here), a real Windows
+    display, latency on a gaming PC. Still NOT pushed.
+
     REV78 STATUS: rev77 plus FIX: THE CAPTURE TAB'S LIVE SECTION WORKS WITHOUT THE NATIVE CORE.
     Reported by the user: "i only see the recording section where is the real-time capture section for this
     tool?" The live section (left-hand preview stage + Source card) has existed since the redesign, but on

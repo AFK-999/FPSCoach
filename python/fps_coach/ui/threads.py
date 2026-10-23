@@ -211,6 +211,39 @@ class _VoiceCommandService(QThread):
             self.failed.emit(str(exc))
 
 
+class _LiveVisionThread(QThread):
+    """Run one LiveVisionSession off the UI thread (rev79).
+
+    The session calls its callbacks from this thread; each one is forwarded as a
+    Qt signal so the page touches its widgets on the UI thread only.
+    """
+
+    reply_ready = Signal(str, object)   # (reply text, meta)
+    request_failed = Signal(str)
+    status_changed = Signal(str)
+    frame_sent = Signal(bytes, object)  # (jpeg, meta) — what the model was shown
+
+    def __init__(self, session, parent=None):
+        super().__init__(parent)
+        self._session = session
+        session._on_reply = lambda text, meta: self.reply_ready.emit(text, meta)
+        session._on_error = lambda message: self.request_failed.emit(message)
+        session._on_status = lambda message: self.status_changed.emit(message)
+        session._on_frame = lambda jpeg, meta: self.frame_sent.emit(jpeg, meta)
+
+    def run(self) -> None:
+        try:
+            self._session.run()
+        except Exception as exc:  # noqa: BLE001 - never let a worker crash the app
+            self.request_failed.emit(f"Live vision stopped unexpectedly: {exc}")
+
+    def ask_now(self) -> None:
+        self._session.ask_now()
+
+    def stop_session(self) -> None:
+        self._session.stop()
+
+
 class _ChatRequest(QThread):
     """Send one conversation turn to the configured AI provider off the UI thread."""
 

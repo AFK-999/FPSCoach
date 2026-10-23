@@ -283,6 +283,8 @@ class MainWindow(QMainWindow):
         self.recommendation_page = RecommendationPage(self._backend)
         self.crosshair_page = CrosshairPage()
         self.chat_page = AIChatPage()
+        # Live vision (AI Coach tab) reads the newest frame from the same capture backend.
+        self.chat_page.set_capture_source(self._backend)
         self.privacy_page = PrivacyPage(
             self._analytics_store,
             self.chat_page,

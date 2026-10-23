@@ -1,6 +1,6 @@
 # FPS Coach (Vantage) Privacy Policy
 
-Last updated: 2026-10-23 (rev75)
+Last updated: 2026-10-23 (rev79)
 
 This policy describes what FPS Coach stores, what it sends, and what it never does.
 The same statements appear in the app on the Privacy page.
@@ -30,6 +30,26 @@ The same statements appear in the app on the Privacy page.
   pipeline health check. It does not look for targets, shooting, or gameplay events.
 - The capture window list reads window titles and process names only, so you can choose
   a window. It does not read or write any process's memory.
+
+## Live vision (AI Coach)
+
+- **Off at every launch.** The switch is not saved; the next start begins with it off,
+  exactly like In-Game Mode.
+- When it is on, Vantage sends **downscaled still frames of your capture preview** to the
+  AI endpoint configured in Settings, one frame at a time, waiting for each reply before
+  taking the next. Frames are reduced to at most 768 px wide JPEGs before sending.
+- **Where they go depends on your provider.** With a local Ollama server the frames never
+  leave the machine. With an online provider (for example an OpenAI-compatible endpoint)
+  the frames are uploaded to that service, exactly like the text you type into the chat.
+  The Live vision card states which case applies under the switch.
+- Only the newest frame is ever held, and nothing is written to disk unless you also use
+  the Recording card.
+- **What the model is asked to do with them:** comment on the setup and the picture —
+  screen or mode, layout, HUD clutter, lighting, colour, blur, whether the image looks
+  correct. It is explicitly instructed not to identify targets, enemies, or players and
+  not to give aim, recoil, or positioning guidance. "Look now" asks the same question on
+  demand.
+- Turning the switch off stops the requests immediately; no frame is sent while it is off.
 
 ## In-Game Mode
 
@@ -67,9 +87,15 @@ The same statements appear in the app on the Privacy page.
 ## Features that are not offered
 
 - Gameplay-based feedback drawn over a game.
-- Detection of enemy targets or shooting from game footage.
+- Detection of enemy targets, enemies, or shooting from game footage, including through
+  Live vision.
+- Aim, recoil, or positioning coaching derived from what is on screen.
 - Reading or changing game settings, memory, or input. In-Game Mode works only from
   numbers you type and never suggests that Vantage applies them.
+
+Live vision is deliberately limited to the picture itself — layout, readability, lighting,
+HUD clutter — and its prompt forbids target, enemy, and aim analysis. It is not a way to
+have the app watch the game for you.
 
 These were requested and then declined, because they would give a player an advantage
 in live play and break the rules of games that use anti-cheat systems. They are not
