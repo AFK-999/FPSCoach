@@ -74,6 +74,8 @@ python -m fps_coach
 
 `pip install -e .` invokes scikit-build-core/CMake and installs `fpscoach_native.pyd` beside the Python package.
 
+The app runs without the optional `recorder` extra (`mss`, `numpy`, `opencv-python-headless`); only the Capture tab's Recording card needs it, and it says so when the packages are missing. Install them with `pip install -e ".[dev,recorder]"`.
+
 ## First-use flow
 
 1. Open **Beginner guide** and retain a copy of your current mouse/game profile.

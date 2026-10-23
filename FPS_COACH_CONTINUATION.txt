@@ -1,7 +1,7 @@
 ================================================================================
 FPS COACH — CONTINUATION / HANDOFF DOCUMENT
 Copy-paste this whole file into a new agent chat to resume with zero context loss.
-Last updated: 2026-10-23 (rev 75)  (update after EVERY response)
+Last updated: 2026-10-23 (rev 76)  (update after EVERY response)
 
 *** IMPORTANT (rev4): The REAL repo was provided and differs a lot from the
 *** earlier scaffold. Work on the REAL repo at /home/user/workspace/FPSCoach
@@ -145,6 +145,25 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     /home/user/workspace/FPSCoach   (clone of https://github.com/AFK-999/FPSCoach.git)
     Remote origin/main = e9e69a2   (the visual REDESIGN; based on 04e6b0f)
     Working branch     = fix/redesign-backend-wiring (from e9e69a2), NOT pushed.
+    REV76 STATUS: rev75 plus FIX: start-up crash when numpy is not installed (reported traceback from the
+    user's Windows machine: python -m fps_coach -> pages_setup -> capture_recording -> screen_recorder line
+    108 "AnalysisCallback = Callable[[np.ndarray, int], None]" -> AttributeError: 'NoneType' object has no
+    attribute 'ndarray'). Cause: numpy is imported behind a guard (np = None when missing), but that
+    module-level type alias is a real runtime expression, so typing evaluated np.ndarray at import time and
+    killed the whole app before the Capture page could disable its Recording card. Fix: the alias is now
+    Callable[["np.ndarray", int], None] (forward reference, not evaluated); _require_dependencies() checks
+    numpy FIRST and raises a clear RuntimeError; the mss/OpenCV messages now also name the recorder extra.
+    Verified with a meta-path import blocker in a subprocess (numpy alone, mss alone, cv2 alone, all three):
+    the engine imports, missing_dependencies() reports the right package label, start() raises "…is required
+    … pip install -e \".[recorder]\"", and the Qt layer (CapturePage + SettingsPage, offscreen) builds with
+    the Recording card reading "Unavailable" and Record disabled. New tests: tests/test_optional_deps.py
+    (5, includes the UI subprocess check) + tests/_blocked_deps.py helper. Also verified by hand: MainWindow
+    constructs with numpy/mss/cv2 blocked and In-Game Mode is still off at launch.
+    USER-SIDE REMEDY (told to the user): either just update to rev76 (app runs; Recording card disabled) or
+    install the extras: pip install -e ".[dev,recorder]" (or pip install numpy mss opencv-python-headless).
+    Tests: full suite 451 passed, 5 skipped. NOT verified: the user's own Windows machine, a real display.
+    Still NOT pushed.
+
     REV75 STATUS: rev74 plus IN-GAME MODE (Settings > In-Game Mode), off at every launch.
     Requirement as given: a Settings section; when enabled it lets the user pick the game and gives
     sensitivity feedback, so the AI can suggest in-game sensitivity values; it must be DISABLED BY
@@ -2088,3 +2107,16 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
               - VERIFICATION (sandbox, Linux): full suite 446 passed, 5 skipped; ruff clean apart from
                 pre-existing I001; card rendered offscreen and inspected.
               - Still declined: engine-side game reading, input automation, target detection.
+
+  2026-10-23 (rev76)  FIX: CRASH AT STARTUP WITHOUT NUMPY.
+              - python/fps_coach/screen_recorder.py: AnalysisCallback now uses a string forward reference
+                ("np.ndarray") so the module imports when numpy is absent; _require_dependencies() checks
+                numpy first and all three dependency messages point at the recorder extra.
+              - tests/_blocked_deps.py (new): meta-path import blocker driven by FPSCoach_BLOCK_MODULES.
+              - tests/test_optional_deps.py (new, 5): engine imports with numpy / mss / cv2 / all three
+                blocked, missing_dependencies labels, start() error text, and an offscreen subprocess that
+                builds CapturePage + SettingsPage with the Recording card reading "Unavailable".
+              - docs/screen-recorder-tool.md: install section notes the app runs without the extra and names
+                this traceback; README: same one-liner.
+              - VERIFICATION (sandbox, Linux): pytest 451 passed, 5 skipped; ruff clean on the touched files;
+                MainWindow built by hand with all three packages blocked.

@@ -52,6 +52,12 @@ on screen.
 pip install -e ".[dev,recorder]"     # mss, numpy, opencv-python-headless
 ```
 
+The app **runs without** these packages: the Recording card shows *Unavailable* with the
+install command instead of disabling itself silently. If you see
+`AttributeError: 'NoneType' object has no attribute 'ndarray'` at start-up, that was a
+rev73-rev75 bug (the module evaluated a `numpy` type alias at import time); rev76 fixes it,
+and installing the extra above enables the feature either way.
+
 `scripts/bootstrap.ps1` and `scripts/build.ps1` already install the `recorder`
 extra, and `installer/fpscoach.spec` collects `mss` submodules because that
 package chooses its platform backend at run time.

@@ -105,7 +105,10 @@ LOGGER = logging.getLogger("fps_coach.screen_recorder")
 #: Callback invoked by the analysis thread.
 #: Receives a private copy of the newest BGR frame and its monotonically
 #: increasing buffer sequence number.
-AnalysisCallback = Callable[[np.ndarray, int], None]
+#: Callback invoked by the analysis thread.  The annotation is a forward
+#: reference on purpose: with numpy missing, ``np`` is ``None`` and a real
+#: subscription would raise at import time, taking the whole app down with it.
+AnalysisCallback = Callable[["np.ndarray", int], None]
 
 #: Factory returning an ``mss``-compatible screen-capture object.
 SctFactory = Callable[[], object]
@@ -574,16 +577,25 @@ class ScreenRecorder:
 
     # -- internals: setup --------------------------------------------------
     def _require_dependencies(self) -> None:
+        # numpy is needed by the buffer even when the caller injects both
+        # factories, so it is checked first and unconditionally.
+        if np is None:
+            raise RuntimeError(
+                "numpy is required for screen recording. "
+                'Install the recorder extra with: pip install -e ".[recorder]" '
+                "(or: pip install numpy)"
+            )
         if self._sct_factory is None and mss is None:
             raise RuntimeError(
-                "The 'mss' package is required for screen capture. "
-                "Install it with: pip install mss"
+                "The 'mss' package is required for screen recording. "
+                'Install the recorder extra with: pip install -e ".[recorder]" '
+                "(or: pip install mss)"
             )
         if self._writer_factory is None and cv2 is None:
             raise RuntimeError(
-                "OpenCV is required to encode the capture. "
-                "Install it with: pip install opencv-python "
-                "(or pass a custom writer_factory)."
+                "OpenCV is required to encode the screen recording. "
+                'Install the recorder extra with: pip install -e ".[recorder]" '
+                "(or: pip install opencv-python-headless), or pass a custom writer_factory."
             )
 
     def _create_temp_file(self) -> Path:
