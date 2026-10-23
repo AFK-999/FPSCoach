@@ -798,9 +798,9 @@ private:
     bool read_window_frame(const winrt::Windows::Graphics::Capture::Direct3D11CaptureFrame& frame,
                            CapturedFrame& out, std::string& error) {
         try {
-            auto access = frame.Surface().as<IDirect3DDxgiInterfaceAccess>();
+            auto dxgi_access = frame.Surface().as<Windows::Graphics::DirectX::Direct3D11::IDirect3DDxgiInterfaceAccess>();
             winrt::com_ptr<ID3D11Texture2D> texture;
-            winrt::check_hresult(access->GetInterface(winrt::guid_of<ID3D11Texture2D>(), texture.put_void()));
+            winrt::check_hresult(dxgi_access->GetInterface(winrt::guid_of<ID3D11Texture2D>(), texture.put_void()));
 
             D3D11_TEXTURE2D_DESC source_desc{};
             texture->GetDesc(&source_desc);

@@ -1336,6 +1336,13 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
               - Full suite 342 passed. ruff F clean. Wiring 32/32.
               - Harness used for the baseline: committed HEAD built with the same fake layer.
 
+  2026-10-23 (rev71c) WINDOWS BUILD FIX: native/src/capture.cpp line 801-803 (WGC window path) failed to
+              compile on MSVC (C3536 'access' cannot be used before it is initialized). The IDirect3DDxgiInterfaceAccess
+              name was unqualified; the cast now uses Windows::Graphics::DirectX::Direct3D11::IDirect3DDxgiInterfaceAccess
+              (as in Microsoft's capture sample) and the local is renamed dxgi_access. NOT compiled on Windows here (no
+              SDK in the sandbox). The WGC path has never compiled on Windows before, so further errors in it are possible.
+              Linux suite unaffected (WGC code is Windows-only).
+
   2026-10-23 (rev71b) REQUEST DECLINED, NO CODE CHANGE: record gameplay at 720p for offline AI aim
               analysis, plus auto-clearing cache and temp recordings on close. Gameplay analysis from screen
               capture is a declined feature (re-requested and declined again). The cache-clearing part was not
