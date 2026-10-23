@@ -53,7 +53,9 @@ pip install -e ".[dev,recorder]"     # mss, numpy, opencv-python-headless
 ```
 
 The app **runs without** these packages: the Recording card shows *Unavailable* with the
-install command instead of disabling itself silently. If you see
+install command instead of disabling itself silently. If `pip install -e ".[recorder]"`
+fails while building the native C++ core (`LNK2001 ... __imp__Py...`), set
+`FPSCOACH_SKIP_NATIVE=1` first — the recorder is pure Python and does not need it. If you see
 `AttributeError: 'NoneType' object has no attribute 'ndarray'` at start-up, that was a
 rev73-rev75 bug (the module evaluated a `numpy` type alias at import time); rev76 fixes it,
 and installing the extra above enables the feature either way.

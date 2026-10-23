@@ -1,7 +1,7 @@
 ================================================================================
 FPS COACH — CONTINUATION / HANDOFF DOCUMENT
 Copy-paste this whole file into a new agent chat to resume with zero context loss.
-Last updated: 2026-10-23 (rev 76)  (update after EVERY response)
+Last updated: 2026-10-23 (rev 77)  (update after EVERY response)
 
 *** IMPORTANT (rev4): The REAL repo was provided and differs a lot from the
 *** earlier scaffold. Work on the REAL repo at /home/user/workspace/FPSCoach
@@ -10,6 +10,20 @@ Last updated: 2026-10-23 (rev 76)  (update after EVERY response)
 *** Real layout: python/fps_coach/ (ai_chat.py uses STDLIB urllib, not requests),
 *** native/ C++ core + CMakeLists.txt, batch files at repo root, scripts/*.ps1.
 *** There is NO config/ai_profile.toml, NO installer/ folder, NO build.bat yet.
+  2026-10-23 (rev77)  FIX: NATIVE C++ CORE IS OPTIONAL (LNK2001 ON WINDOWS).
+              - CMakeLists.txt: FPSCOACH_SKIP_NATIVE guard (no targets built, compiler-free install),
+                project(... LANGUAGES NONE) + enable_language(CXX) in the build branch, plain if()/else()
+                instead of a top-level return() (needs CMake 3.29, floor is 3.23), and Python::Module linked
+                explicitly into fpscoach_native -> fixes "LNK2001 unresolved external symbol __imp__Py...".
+              - tests/test_cmake_native_optional.py (new, 5): text-level guards, incl. the configure-time warning when
+                find_package(Python) resolves no import library (the root cause of the 149 symbols);
+                verified to fail on a LANGUAGES CXX regression.
+              - README (LNK2001 troubleshooting + three remedies, incl. py -3.12), docs/build-and-packaging.md
+                (new "Installing without the native core"), docs/screen-recorder-tool.md (pointer to the var).
+              - VERIFICATION (sandbox, Linux): skip=1 configures with a bogus compiler, wheel has no native
+                binaries, editable install + MainWindow carry the fallback analyzer; skip=0 builds the analysis
+                core and ctest passes; pytest 455 passed, 5 skipped; ruff clean on the new test.
+
 ================================================================================
 
 --------------------------------------------------------------------------------
@@ -145,6 +159,47 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     /home/user/workspace/FPSCoach   (clone of https://github.com/AFK-999/FPSCoach.git)
     Remote origin/main = e9e69a2   (the visual REDESIGN; based on 04e6b0f)
     Working branch     = fix/redesign-backend-wiring (from e9e69a2), NOT pushed.
+    REV77 STATUS: rev76 plus FIX: the native C++ core is optional (compiler-free install).
+    Reported from the user's Windows machine (Python 3.13.5 at C:/Python313, VS 2022 Community, MSVC 19.44,
+    CMake 3.31.6, scikit-build-core 1.1.1, pybind11 3.1.0, Windows SDK 10.0.26100):
+      pip install -e".[recorder]"  ->  bindings.obj : error LNK2001: unresolved external symbol
+      __imp__PyThread_tss_create (+ ~140 more __imp__Py...), fatal error LNK1120: 149 unresolved externals,
+      *** CMake build failed.   (Note the missing space: `-e".[recorder]"` is a usage error on top of it.)
+    Diagnosis: not a header/toolchain mismatch - EVERY CPython symbol was missing, so the import library was
+    never on the link line at all (pybind11::module did not carry Python::Module through). Nothing was
+    installed by that run: pip resolves/builds before installing, so the user's existing editable install and
+    their site-packages were untouched; mss/numpy/opencv were downloaded and then discarded.
+    Fix (CMakeLists.txt):
+      1. FPSCOACH_SKIP_NATIVE env guard. Set to anything but "0"/"" -> the file prints a STATUS line and
+         builds no targets, so `pip install -e ".[dev,recorder]"` needs no compiler, no SDK, no Visual Studio.
+         The app then imports with fps_coach.backend falling back to the portable analyzer.
+      2. project(FPSCoach VERSION 0.1.0 LANGUAGES NONE) + enable_language(CXX) inside the non-skip branch.
+         Enabling CXX at project() time makes CMake hunt for a compiler during configure, which would have
+         defeated (1) on a machine with no toolchain.
+      3. The guard is a plain if(FPSCOACH_SKIP_NATIVE)/else()/endif(), NOT a top-level return(): return() at
+         file scope needs CMake >= 3.29 and the declared floor is cmake_minimum_required(VERSION 3.23).
+      4. fpscoach_native now links Python::Module explicitly
+         (target_link_libraries(fpscoach_native PRIVATE fpscoach_analysis Python::Module d3d11 dxgi dxguid
+         WindowsApp)) so the CPython import library is on the link line even if pybind11's indirect link
+         does not surface it - this is the LNK2001 fix itself.
+    New tests: tests/test_cmake_native_optional.py (4) pins all of the above as text-level assertions: no
+    file-scope return() under a <3.29 floor, LANGUAGES NONE + enable_language(CXX), the guard's env-var
+    semantics ("0"/"" keep the native build), every add_library() inside the non-skip branch, and
+    Python::Module in fpscoach_native's link line. Verified to FAIL when the file is edited back to
+    LANGUAGES CXX.
+    Docs: README "Windows prerequisites" now names the LNK2001 signature and gives three escapes
+    (FPSCOACH_SKIP_NATIVE, plain `pip install numpy mss opencv-python-headless` + run from source, or a
+    py -3.12 venv); docs/build-and-packaging.md has a "Installing without the native core" section;
+    docs/screen-recorder-tool.md points at the variable.
+    VERIFICATION (sandbox, Linux): CMake 4.4.4 - skip=1 configures with CC/CXX pointed at /nonexistent (no
+    compiler touched), `cmake --build`/`--install` succeed, `pip wheel` with FPSCOACH_SKIP_NATIVE=1 produces
+    48 files and ZERO .pyd/.so/.dll; skip=0 and unset both configure the analysis core, build it, and ctest
+    passes 1/1; `pip install -e ".[recorder]"` with the guard installs and `import fps_coach` + MainWindow
+    (offscreen) work with the fallback analyzer, Recording card "Idle"/enabled, In-Game Mode off.
+    Full suite 456 passed, 5 skipped. NOT verified: the actual Windows link with Python::Module (no MSVC in
+    the sandbox) - if the user's LNK2001 persists, FPSCOACH_SKIP_NATIVE=1 is the working path.
+    Still NOT pushed.
+
     REV76 STATUS: rev75 plus FIX: start-up crash when numpy is not installed (reported traceback from the
     user's Windows machine: python -m fps_coach -> pages_setup -> capture_recording -> screen_recorder line
     108 "AnalysisCallback = Callable[[np.ndarray, int], None]" -> AttributeError: 'NoneType' object has no

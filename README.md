@@ -45,12 +45,39 @@ A lightweight, local-first foundation for an FPS movement/sensitivity coach. It 
 ## Windows prerequisites
 
 - Windows 10/11
-- Python 3.10–3.12 (3.11 recommended)
+- Python 3.10–3.12 (3.11 recommended; 3.13 builds the native core unreliably)
 - Visual Studio 2022 Build Tools with **Desktop development with C++**
 - A recent Windows SDK and CMake 3.23+
 - A WDDM driver with DXGI 1.2 Desktop Duplication support
 
 No CUDA or discrete GPU is required.
+
+### If `pip install -e` fails at the native link step
+
+A failure that looks like `bindings.obj : error LNK2001: unresolved external symbol
+__imp__PyThread_tss_create` (many `__imp__Py...` symbols, ending in `LNK1120: 149
+unresolved externals`) means the C++ extension could not link against your Python's
+import library — usually a Python/toolchain mismatch, most often Python 3.13. The Python
+side of the app does not need that extension. Pick one:
+
+```powershell
+# 1. Install the Python package without the native core (no compiler needed at all)
+$env:FPSCOACH_SKIP_NATIVE = "1"
+pip install -e ".[dev,recorder]"
+
+# 2. Or just install the optional packages and run from source
+pip install numpy mss opencv-python-headless
+python -m fps_coach
+
+# 3. Or use the supported interpreter for the native build
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -e ".[dev,recorder]"
+```
+
+With the native core missing, `fps_coach.backend` uses its portable fallback analyzer and
+the Capture page reports that the native core is unavailable; recording and In-Game Mode
+are pure Python and work normally.
 
 ## Build and run
 
