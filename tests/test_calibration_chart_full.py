@@ -1,11 +1,13 @@
-"""Calibration chart: imported custom curves are drawn point for point, not as a five-point summary.
+"""Calibration chart: the line runs through every point, and handles sit at the curve's bends.
 
-Each point sits at its own speed position (0..1 of the curve's top speed). Drag edits change only
-the point that was dragged, and undo restores the long curve exactly.
+A custom curve of any length or shape is drawn point for point. The handles a user grabs are the
+bends the curve needs, so a straight run has two and a wiggly curve has many. A drag moves one
+handle and scales only the points between its neighbouring handles.
 """
 
 from __future__ import annotations
 
+import math
 import os
 from copy import deepcopy
 from types import SimpleNamespace
@@ -36,7 +38,7 @@ def _page(qapp):
 
 
 def _long_profile(n: int = 60, top: float = 5000.0) -> CurveProfile:
-    """Uneven speeds over a long range, with gains that wander, so every point matters."""
+    """Uneven speeds over a long range, with gains that wander, so the curve has many bends."""
     horizontal = [
         CurvePoint(speed=round(top * (i / (n - 1)) ** 1.7, 2), multiplier=round(0.4 + 0.5 * ((i * 7) % 11) / 10, 3))
         for i in range(n)
@@ -44,10 +46,16 @@ def _long_profile(n: int = 60, top: float = 5000.0) -> CurveProfile:
     return CurveProfile(name="Long range", horizontal=horizontal, vertical=deepcopy(horizontal))
 
 
+def _profile_from_gains(gains: list[float], top: float = 1000.0) -> CurveProfile:
+    n = len(gains)
+    horizontal = [CurvePoint(speed=top * i / (n - 1), multiplier=g) for i, g in enumerate(gains)]
+    return CurveProfile(name="Test", horizontal=horizontal, vertical=deepcopy(horizontal))
+
+
 def _import(page, monkeypatch, tmp_path, profile: CurveProfile):
     from PySide6.QtWidgets import QFileDialog
 
-    path = tmp_path / "long.cc4"
+    path = tmp_path / "curve.cc4"
     save_curve(profile, path)
     monkeypatch.setattr(QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: (str(path), "")))
     page._import_curve()
@@ -80,9 +88,21 @@ def _screen_point(chart, index: int, value: float):
     return pt.x(), pt.y()
 
 
-def _screen_y_for(chart, value: float) -> float:
-    rect = chart._plot_rect()
-    return rect.bottom() - rect.height() * value
+def _drag_handle(page, index: int, new_value: float) -> None:
+    """A real press / move / release on one handle, through the chart's mouse handlers."""
+    chart = page.chart
+    x0, y0 = _screen_point(chart, index, chart.points[index])
+    x1, y1 = _screen_point(chart, index, new_value)
+    chart.mousePressEvent(_mouse("press", x0, y0))
+    chart.mouseMoveEvent(_mouse("move", x1, y1))
+    chart.mouseReleaseEvent(_mouse("release", x1, y1))
+
+
+def _middle_handle(chart) -> tuple[int, int, int]:
+    """(previous handle, this handle, next handle) around the middle of the chart's handles."""
+    handles = chart.handle_indices()
+    k = len(handles) // 2
+    return handles[k - 1], handles[k], handles[k + 1]
 
 
 # -- the chart's point handling -------------------------------------------------------
@@ -95,20 +115,20 @@ def test_points_are_sorted_clamped_and_not_resampled() -> None:
     assert ys == [0.0, 0.3, 0.5, 1.0]
 
 
+def test_points_with_equal_speed_keep_their_order() -> None:
+    """A vertical step (two points at one speed) must not swap, or drag edits would land on the wrong point."""
+    from fps_coach.ui.widgets import _curve_points
+
+    xs, ys = _curve_points([(0.0, 0.1), (0.5, 0.9), (0.5, 0.2), (1.0, 0.5)])
+    assert xs == [0.0, 0.5, 0.5, 1.0]
+    assert ys == [0.1, 0.9, 0.2, 0.5]
+
+
 def test_too_few_points_fall_back_to_the_default_shape() -> None:
     from fps_coach.ui.widgets import _curve_points
 
     assert _curve_points([]) == ([0.0, 0.25, 0.5, 0.75, 1.0],) * 2
     assert _curve_points([(0.0, 0.5)]) == ([0.0, 0.25, 0.5, 0.75, 1.0],) * 2
-
-
-def test_handles_are_drawn_only_for_short_curves(qapp) -> None:
-    from fps_coach.ui.widgets import DOT_LIMIT, CurveChart
-
-    chart = CurveChart()
-    for n in (2, 5, DOT_LIMIT, DOT_LIMIT + 1, 60):
-        chart.points = [0.5] * n
-        assert chart.handles_visible() == (n <= DOT_LIMIT), n
 
 
 def test_positions_fall_back_to_even_spacing_when_they_do_not_match(qapp) -> None:
@@ -118,6 +138,54 @@ def test_positions_fall_back_to_even_spacing_when_they_do_not_match(qapp) -> Non
     chart.points = [0.0, 0.5, 1.0]
     chart.xs = [0.0, 0.1]  # wrong length: ignored
     assert chart.x_positions() == [0.0, 0.5, 1.0]
+
+
+def test_handles_follow_the_bends_not_the_length(qapp) -> None:
+    from fps_coach.ui.widgets import HANDLE_DOT_LIMIT, CurveChart
+
+    chart = CurveChart()
+    _KEEP_ALIVE.append(chart)
+
+    # A straight run of any length needs only its two ends.
+    chart.xs = [i / 59 for i in range(60)]
+    chart.points = [i / 59 for i in range(60)]
+    assert chart.handle_indices() == [0, 59]
+    assert chart.handles_visible()
+
+    # A wiggly curve needs many handles, but not every point.
+    chart.xs = [i / 199 for i in range(200)]
+    chart.points = [0.5 + 0.4 * math.sin(i / 8) for i in range(200)]
+    assert 2 < len(chart.handle_indices()) < 200
+
+    # Zig-zag: every point is a bend, so there are too many handles to draw as dots.
+    chart.xs = [i / 199 for i in range(200)]
+    chart.points = [float(i % 2) for i in range(200)]
+    assert len(chart.handle_indices()) > HANDLE_DOT_LIMIT
+    assert not chart.handles_visible()
+
+
+def test_two_and_five_point_curves_show_their_handles(qapp) -> None:
+    from fps_coach.ui.widgets import CurveChart
+
+    chart = CurveChart()
+    _KEEP_ALIVE.append(chart)
+    chart.points = [0.0, 1.0]
+    assert chart.handle_indices() == [0, 1] and chart.handles_visible()
+    chart.points = [0.0, 0.3, 0.55, 0.78, 1.0]
+    assert chart.handles_visible()
+
+
+def test_handles_are_cached_until_the_curve_is_replaced(qapp) -> None:
+    from fps_coach.ui.widgets import CurveChart
+
+    chart = CurveChart()
+    _KEEP_ALIVE.append(chart)
+    chart.points = [0.0, 1.0, 0.0, 1.0, 0.0]
+    first = chart.handle_indices()
+    chart.points[2] = 0.5  # an in-place edit (as a drag does) keeps the same handles
+    assert chart.handle_indices() is first
+    chart.points = [0.0, 0.5, 1.0]  # a new curve recomputes them
+    assert chart.handle_indices() == [0, 2]
 
 
 # -- importing a long custom curve ----------------------------------------------------
@@ -134,15 +202,16 @@ def test_imported_long_curve_keeps_every_point(qapp, monkeypatch, tmp_path) -> N
     assert page.chart.x_positions()[-1] == pytest.approx(1.0)
 
 
-def test_long_curve_points_are_distinct_and_have_no_handle_dots(qapp, monkeypatch, tmp_path) -> None:
+def test_long_curve_has_handles_at_its_bends(qapp, monkeypatch, tmp_path) -> None:
     page = _page(qapp)
     _import(page, monkeypatch, tmp_path, _long_profile())
-    xs = page.chart.x_positions()
-    assert len(set(xs)) == 60
-    assert not page.chart.handles_visible()
+    handles = page.chart.handle_indices()
+    assert 2 < len(handles) < 60
+    assert handles[0] == 0 and handles[-1] == 59
+    assert len(set(page.chart.x_positions())) == 60
 
 
-def test_imported_short_curve_still_shows_handles(qapp, monkeypatch, tmp_path) -> None:
+def test_imported_short_curve_shows_its_handles(qapp, monkeypatch, tmp_path) -> None:
     page = _page(qapp)
     _import(page, monkeypatch, tmp_path, _long_profile(n=5))
     assert len(page.chart.points) == 5
@@ -163,31 +232,45 @@ def test_chart_renders_the_long_curve(qapp) -> None:
 
 # -- editing a long curve -------------------------------------------------------------
 
-def _drag_point(page, index: int, new_value: float) -> None:
-    """A real press / move / release on one point, through the chart's mouse handlers."""
-    chart = page.chart
-    x0, y0 = _screen_point(chart, index, chart.points[index])
-    x1, y1 = _screen_point(chart, index, new_value)
-    chart.mousePressEvent(_mouse("press", x0, y0))
-    chart.mouseMoveEvent(_mouse("move", x1, y1))
-    chart.mouseReleaseEvent(_mouse("release", x1, y1))
-
-
-def test_dragging_one_point_on_a_long_curve_changes_only_that_point(qapp, monkeypatch, tmp_path) -> None:
+def test_dragging_a_handle_changes_only_the_points_between_its_neighbours(qapp, monkeypatch, tmp_path) -> None:
     page = _page(qapp)
     _import(page, monkeypatch, tmp_path, _long_profile())
     page.chart.resize(640, 320)
+    prev_h, h, next_h = _middle_handle(page.chart)
     before = [p.multiplier for p in page._profile.horizontal]
-    start = page.chart.points[30]
+    start = page.chart.points[h]
     target = min(1.0, start + 0.2)
 
-    _drag_point(page, 30, target)
+    _drag_handle(page, h, target)
 
     after = [p.multiplier for p in page._profile.horizontal]
     changed = [i for i in range(60) if abs(after[i] - before[i]) > 1e-9]
-    assert changed == [30]
-    assert page.chart.points[30] == pytest.approx(target, abs=0.01)
-    assert after[30] / before[30] == pytest.approx(page.chart.points[30] / start, rel=1e-6)
+    assert h in changed
+    assert all(prev_h < i < next_h for i in changed), changed
+    assert page.chart.points[h] == pytest.approx(target, abs=0.01)
+    assert after[h] / before[h] == pytest.approx(page.chart.points[h] / start, rel=1e-6)
+
+
+def test_points_between_handles_move_smoothly_not_in_steps(qapp) -> None:
+    """Dragging a handle scales the points between it and its neighbours by a straight-line factor."""
+    from fps_coach.ui.widgets import CurveChart
+
+    chart = CurveChart()
+    _KEEP_ALIVE.append(chart)
+    chart.xs = [i / 10 for i in range(11)]
+    chart.points = [0.2 + 0.6 * abs(math.sin(i / 2.5)) for i in range(11)]  # bends at several points
+    chart.resize(400, 200)
+    handles = chart.handle_indices()
+    h = handles[len(handles) // 2]
+    base = list(chart.points)
+    chart._drag_base = list(base)
+    chart._move_handle(h, min(1.0, base[h] * 1.1))
+    factors = [after / before for after, before in zip(chart.points, base)]
+    lo, hi = handles[len(handles) // 2 - 1], handles[len(handles) // 2 + 1]
+    for i in range(lo + 1, hi):
+        if i != h:
+            assert factors[i] != pytest.approx(1.0, abs=1e-6)  # between handles: moved
+    assert factors[lo] == pytest.approx(1.0) and factors[hi] == pytest.approx(1.0)  # neighbours: unmoved
 
 
 def test_undo_restores_the_long_curve_exactly(qapp, monkeypatch, tmp_path) -> None:
@@ -198,7 +281,8 @@ def test_undo_restores_the_long_curve_exactly(qapp, monkeypatch, tmp_path) -> No
     xs_before = list(page.chart.x_positions())
     multipliers_before = [p.multiplier for p in page._profile.horizontal]
 
-    _drag_point(page, 12, min(1.0, page.chart.points[12] + 0.15))
+    _prev, h, _next = _middle_handle(page.chart)
+    _drag_handle(page, h, min(1.0, page.chart.points[h] + 0.15))
     assert page.chart.points != points_before
 
     page.undo()
@@ -208,8 +292,8 @@ def test_undo_restores_the_long_curve_exactly(qapp, monkeypatch, tmp_path) -> No
     assert [p.multiplier for p in page._profile.horizontal] == multipliers_before
 
 
-def test_edit_after_an_overlay_still_changes_only_the_dragged_point(qapp, monkeypatch, tmp_path) -> None:
-    """The overlay's shared scale must match the profile's, or a drag would move its neighbours."""
+def test_edit_after_an_overlay_changes_only_the_points_between_its_handles(qapp, monkeypatch, tmp_path) -> None:
+    """The overlay's shared scale must match the profile's, or a drag would move the wrong points."""
     page = _page(qapp)
     base = _import(page, monkeypatch, tmp_path, _long_profile(top=5000.0))
     adjusted = deepcopy(base)
@@ -220,14 +304,17 @@ def test_edit_after_an_overlay_still_changes_only_the_dragged_point(qapp, monkey
     page.set_adjusted(base, adjusted, "AI adjustment")
     page.chart.resize(640, 320)
 
-    prev_xs, _ = normalized_overlay(base, adjusted)
-    assert page.chart.previous_xs == pytest.approx([x for x, _ in prev_xs])
+    prev_pts, _cur = normalized_overlay(base, adjusted)
+    assert page.chart.previous_xs == pytest.approx([x for x, _ in prev_pts])
     assert len(page.chart.previous_points) == 60
 
+    prev_h, h, next_h = _middle_handle(page.chart)
     before = [p.multiplier for p in page._profile.horizontal]
-    _drag_point(page, 40, min(1.0, page.chart.points[40] + 0.1))
+    _drag_handle(page, h, min(1.0, page.chart.points[h] + 0.1))
     after = [p.multiplier for p in page._profile.horizontal]
-    assert [i for i in range(60) if abs(after[i] - before[i]) > 1e-9] == [40]
+    changed = [i for i in range(60) if abs(after[i] - before[i]) > 1e-9]
+    assert h in changed
+    assert all(prev_h < i < next_h for i in changed), changed
 
 
 def test_overlay_keeps_both_curves_at_their_real_positions(qapp, monkeypatch, tmp_path) -> None:

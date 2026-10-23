@@ -1,7 +1,7 @@
 ================================================================================
 FPS COACH — CONTINUATION / HANDOFF DOCUMENT
 Copy-paste this whole file into a new agent chat to resume with zero context loss.
-Last updated: 2026-10-23 (rev 67)  (update after EVERY response)
+Last updated: 2026-10-23 (rev 68)  (update after EVERY response)
 
 *** IMPORTANT (rev4): The REAL repo was provided and differs a lot from the
 *** earlier scaffold. Work on the REAL repo at /home/user/workspace/FPSCoach
@@ -145,6 +145,15 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     /home/user/workspace/FPSCoach   (clone of https://github.com/AFK-999/FPSCoach.git)
     Remote origin/main = e9e69a2   (the visual REDESIGN; based on 04e6b0f)
     Working branch     = fix/redesign-backend-wiring (from e9e69a2), NOT pushed.
+    REV68 STATUS: rev67 plus Calibration chart: the handles are chosen from the curve. The line still runs
+    through every point. Handles are the bends the curve needs (Ramer-Douglas-Peucker, tolerance 0.005 of
+    the 0..1 chart, about 1.4 px). A straight run has 2 handles; a wiggly curve has many; any length. Up to
+    64 handles are drawn as dots. A drag moves one handle and scales only the points between its
+    neighbouring handles. Handles are cached, so a drag keeps them. Points with equal speed keep their
+    file order. CHANGE FROM REV67: drag now scales the neighbouring points (rev67 moved one point). NOT done: the recommendation's point count is still fixed by the analyzer (7 points);
+    making it depend on the player's trial data is a model change, awaiting the user's answer. The
+    per-point smoothness and corner flags in .cc4/.ccurve files are NOT drawn (the line is straight
+    between points). NOT verified on Windows. Still NOT pushed.
     REV67 STATUS: rev66 plus Calibration chart: every point of a curve is drawn at its own speed
     position (no five-point summary). An imported custom curve (up to 256 points per axis, any range)
     shows its real shape. Handle dots appear for curves of up to 32 points; longer curves are drawn as a
@@ -1252,6 +1261,28 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
               slider and the new capture arguments); app.py quit run exit 0, no traceback.
               NOT verified: real display, Win32 window list, native capture, real Ollama,
               real game curve files, Windows build.
+
+  2026-10-23 (rev68)  CALIBRATION CHART: ADAPTIVE HANDLES.
+              - NEW python/fps_coach/curve_sampling.py (Qt-free): KEY_TOLERANCE = 0.005; key_indices(xs, ys,
+                tolerance) = Ramer-Douglas-Peucker with distance to the segment (the first version measured to
+                the infinite line, which broke the tolerance guarantee; caught by tests).
+              - widgets.py CurveChart: points and xs are properties; setting them clears the handle cache.
+                handle_indices() (cached), handles_visible() (<= HANDLE_DOT_LIMIT = 64). Line through all points.
+                Hit test and drag work on handles only. _move_handle() scales points between neighbouring
+                handles from the press-time snapshot (no compounding). A handle at zero gain cannot be
+                moved by a ratio, so it stays put (existing limit of ratio edits). _curve_points() uses a
+                stable sort by x.
+              - Tests: tests/test_curve_sampling.py (15): short inputs, straight line -> ends, ends kept,
+                every dropped point within tolerance (property test), tighter tolerance keeps more, zero
+                tolerance keeps every bend, vertical step, identical points, 2000-point curve, length
+                mismatch. tests/test_calibration_chart_full.py rewritten for handles (19): straight run ->
+                2 handles, wiggly -> many, zig-zag -> no dots, cache, drag a handle changes only points between
+                its neighbours, smooth factor between handles, undo exact, overlay drag, recommendation points.
+              - Results: long 60-point test curve -> 43 handles; 200-point sine -> 42; straight 60 -> 2.
+                Screenshot /tmp/shots16/calibration_adaptive.png: 160-point demo (flat then wiggly) -> 25 handles.
+              - Full suite 329 passed. ruff F clean. compileall OK. Wiring 32/32.
+              - Environment reset again: PySide6 6.12.0, pytest, ruff and pyttsx3 reinstalled with pip;
+                libxkbcommon0 re-extracted to /home/user/.local/xkb.
 
   2026-10-23 (rev67)  CALIBRATION CHART: REAL CURVES, NOT A FIVE-POINT SUMMARY.
               - widgets.py: DOT_LIMIT = 32. _positions() (real x or even spacing when the lengths do

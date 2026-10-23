@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from fps_coach.curve_sampling import KEY_TOLERANCE, key_indices
 from fps_coach.crosshair import CrosshairConfig
 
 from .icons import icon, pixmap
@@ -299,7 +300,9 @@ class CurveLegend(QWidget):
         p.end()
 
 
-DOT_LIMIT = 32  # curves with more points than this are drawn as a line, without handle dots
+HANDLE_DOT_LIMIT = 64  # up to this many handles are drawn as dots; more are still grabbable
+_HANDLE_RADIUS_FEW = 4.5
+_HANDLE_RADIUS_MANY = 3.0
 
 
 def _positions(values, xs) -> list[float]:
@@ -313,12 +316,14 @@ def _positions(values, xs) -> list[float]:
 
 
 class CurveChart(QWidget):
-    """Sensitivity curve with an optional previous curve and draggable points.
+    """Sensitivity curve with an optional previous curve and draggable handles.
 
-    Each point sits at its own x position (``xs``, 0..1: speed over the curve's top speed), so
-    the line is the real curve and is never resampled. Without ``xs`` the points are spaced
-    evenly. Handle dots are drawn for curves of up to DOT_LIMIT points. Longer curves are drawn
-    as a line; a press on the line still grabs the nearest point. The chart paints on the
+    The line runs through every point of the curve, at each point's own x position (``xs``, 0..1:
+    speed over the curve's top speed), so nothing is resampled and any length or shape is shown.
+    The handles, the points a user can grab, are the bends the curve needs (see
+    curve_sampling.key_indices), so a straight run has two and a wiggly curve has many. Dragging a
+    handle moves it and scales the points between its neighbouring handles smoothly; the other
+    points stay put. Without ``xs`` the points are spaced evenly. The chart paints on the
     surrounding card, so it has no fill of its own.
     """
 
@@ -327,13 +332,33 @@ class CurveChart(QWidget):
     def __init__(self, parent=None, editable: bool = True):
         super().__init__(parent)
         self.setMinimumHeight(200)
-        self.points = [0.0, 0.3, 0.55, 0.78, 1.0]
-        self.xs: list[float] | None = None
+        self._points = [0.0, 0.3, 0.55, 0.78, 1.0]
+        self._xs = None
+        self._handles = None  # cached handle_indices(); cleared when the curve is replaced
         self.previous_points = None
         self.previous_xs: list[float] | None = None
         self._drag_index = None
+        self._drag_base = None
         self._editable = editable
         self.setMouseTracking(editable)
+
+    @property
+    def points(self):
+        return self._points
+
+    @points.setter
+    def points(self, values):
+        self._points = values
+        self._handles = None
+
+    @property
+    def xs(self):
+        return self._xs
+
+    @xs.setter
+    def xs(self, values):
+        self._xs = values
+        self._handles = None
 
     def set_previous(self, points, xs=None):
         self.previous_points = points
@@ -342,10 +367,23 @@ class CurveChart(QWidget):
 
     def x_positions(self) -> list[float]:
         """The x position of each current point (0..1)."""
-        return _positions(self.points, self.xs)
+        return _positions(self._points, self._xs)
+
+    def handle_indices(self) -> list[int]:
+        """Indices of the points a user can grab: the bends the curve needs, within KEY_TOLERANCE.
+
+        Cached until the curve is replaced, so a drag keeps the same handles.
+        """
+        if self._handles is None:
+            if len(self._points) < 3:
+                self._handles = list(range(len(self._points)))
+            else:
+                self._handles = key_indices(self.x_positions(), list(self._points), KEY_TOLERANCE)
+        return self._handles
 
     def handles_visible(self) -> bool:
-        return 0 < len(self.points) <= DOT_LIMIT
+        """True when the handles are few enough to draw as dots."""
+        return 0 < len(self.handle_indices()) <= HANDLE_DOT_LIMIT
 
     def _plot_rect(self):
         return self.rect().adjusted(40, 16, -14, -30)
@@ -377,11 +415,12 @@ class CurveChart(QWidget):
         if self.previous_points:
             self._draw_curve(
                 p, rect, self.previous_points, QColor(pal["amber"]),
-                dots=False, dashed=True, xs=_positions(self.previous_points, self.previous_xs),
+                dashed=True, xs=_positions(self.previous_points, self.previous_xs),
             )
+        handles = self.handle_indices() if self.handles_visible() else []
         self._draw_curve(
-            p, rect, self.points, QColor(pal["accent"]),
-            dots=self.handles_visible(), fill=True, xs=self.x_positions(),
+            p, rect, self._points, QColor(pal["accent"]),
+            dots=bool(handles), fill=True, xs=self.x_positions(), handles=handles,
         )
         p.end()
 
@@ -389,7 +428,7 @@ class CurveChart(QWidget):
     def _pt(rect, x: float, v: float) -> QPointF:
         return QPointF(rect.left() + rect.width() * x, rect.bottom() - rect.height() * v)
 
-    def _draw_curve(self, p, rect, points, color, dots, dashed=False, fill=False, xs=None):
+    def _draw_curve(self, p, rect, points, color, dots=False, dashed=False, fill=False, xs=None, handles=()):
         n = len(points)
         if n < 2:
             return
@@ -422,19 +461,21 @@ class CurveChart(QWidget):
         p.setPen(pen)
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawPath(path)
-        if dots and n <= DOT_LIMIT:
+        if dots and handles:
+            radius = _HANDLE_RADIUS_FEW if len(handles) <= 32 else _HANDLE_RADIUS_MANY
             base = QColor(active_palette()["surface"])
             p.setPen(QPen(color, 1.5))
             p.setBrush(QBrush(base))
-            for x, v in zip(xs, points):
-                p.drawEllipse(self._pt(rect, x, v), 4.5, 4.5)
+            for i in handles:
+                p.drawEllipse(self._pt(rect, xs[i], points[i]), radius, radius)
 
     def _handle_at(self, pos) -> int | None:
-        """The nearest point within 14 px of ``pos``, or None."""
+        """The nearest handle within 14 px of ``pos``, or None."""
         rect = self._plot_rect()
+        xs = self.x_positions()
         best, best_distance = None, 14
-        for i, (x, v) in enumerate(zip(self.x_positions(), self.points)):
-            distance = (pos - self._pt(rect, x, v).toPoint()).manhattanLength()
+        for i in self.handle_indices():
+            distance = (pos - self._pt(rect, xs[i], self._points[i]).toPoint()).manhattanLength()
             if distance < best_distance:
                 best, best_distance = i, distance
         return best
@@ -443,21 +484,40 @@ class CurveChart(QWidget):
         if not self._editable:
             return
         self._drag_index = self._handle_at(event.position().toPoint())
+        self._drag_base = list(self._points) if self._drag_index is not None else None
 
     def mouseMoveEvent(self, event):
-        if self._drag_index is None:
+        if self._drag_index is None or self._drag_base is None:
             return
         rect = self._plot_rect()
         v = 1.0 - (event.position().y() - rect.top()) / max(rect.height(), 1)
         v = min(max(v, 0.0), 1.0)
-        self.points[self._drag_index] = v
+        self._move_handle(self._drag_index, v)
         self.update()
+
+    def _move_handle(self, index: int, value: float) -> None:
+        """Set handle ``index`` to ``value``. Points between handles follow it smoothly.
+
+        Works from the curve as it was at the press, so repeated moves do not compound. A handle
+        at zero gain cannot be moved by a ratio, so it stays put.
+        """
+        base = self._drag_base
+        old = base[index]
+        factor = value / old if old > 1e-6 else 1.0
+        handles = self.handle_indices()
+        xs = self.x_positions()
+        handle_xs = [xs[i] for i in handles]
+        handle_factors = [1.0] * len(handles)
+        handle_factors[handles.index(index)] = factor
+        for i, (point, x) in enumerate(zip(base, xs)):
+            scaled = point * _lerp_factor(handle_xs, handle_factors, x)
+            self._points[i] = min(1.0, max(0.0, scaled))
 
     def mouseReleaseEvent(self, event):
         if self._drag_index is not None:
             self._drag_index = None
-            self.curve_adjusted.emit(list(self.points))
-
+            self._drag_base = None
+            self.curve_adjusted.emit(list(self._points))
 
 
 def _curve_samples(points, count: int = 5) -> list[float]:
@@ -488,7 +548,7 @@ def _curve_points(points) -> tuple[list[float], list[float]]:
 
     Fewer than two points give the same default shape as _curve_samples.
     """
-    pts = sorted((float(x), float(y)) for x, y in points)
+    pts = sorted(((float(x), float(y)) for x, y in points), key=lambda pair: pair[0])
     if len(pts) < 2:
         fallback = [0.0, 0.25, 0.5, 0.75, 1.0]
         return list(fallback), list(fallback)
