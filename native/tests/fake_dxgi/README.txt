@@ -16,7 +16,16 @@ Build (from the repo root; needs pybind11 and the Python headers):
 Run:
   PYTHONPATH=build_fake python3 native/tests/fake_dxgi/smoke_capture.py
   PYTHONPATH=build_fake python3 native/tests/fake_dxgi/stress_capture.py
+  PYTHONPATH=python:build_fake python3 -m pytest -q tests/test_window_capture.py   (native checks run only with build_fake)
+Latency (desktop change to screen, through the real CapturePage):
+  PYTHONPATH=python:build_fake python3 native/tests/fake_dxgi/bench_desktop_age.py 6 balanced 60
+  The fake desktop records when each frame appeared (fake_desktop_frame_count and
+  fake_desktop_frame_time_us, called with ctypes). Only the fake build exports them.
 
 What this proves: the threading, buffer reuse, shared-frame publishing, sequence numbers and
-row-pitch handling are internally consistent. What it does NOT prove: anything about real
+row-pitch handling are internally consistent. Window capture: start_window needs Windows Graphics Capture, which this build does not have. Here it
+falls back to the screen area and says so in CaptureStats.notice (capture_mode "region"). The
+Windows Graphics Capture code is compiled only on Windows (FPSCOACH_HAS_WGC) and is not run here.
+
+What it does NOT prove: anything about real
 Desktop Duplication timing, GPU behaviour or Windows drivers. Those need a Windows build.

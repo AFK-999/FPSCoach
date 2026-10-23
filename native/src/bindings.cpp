@@ -53,6 +53,8 @@ py::dict stats_dict(const CaptureStats& value) {
     result["capture_height"] = value.capture_height;
     result["adapter_name"] = value.adapter_name;
     result["last_error"] = value.last_error;
+    result["capture_mode"] = value.capture_mode;
+    result["notice"] = value.notice;
     return result;
 }
 
@@ -88,6 +90,33 @@ PYBIND11_MODULE(fpscoach_native, module) {
             py::arg("height") = 360,
             py::arg("target_fps") = 60,
             py::call_guard<py::gil_scoped_release>())
+        .def(
+            "start_window",
+            [](DesktopDuplicationCapture& capture,
+               const std::uint64_t hwnd,
+               const std::uint32_t adapter_index,
+               const std::uint32_t output_index,
+               const int x,
+               const int y,
+               const int width,
+               const int height,
+               const std::uint32_t target_fps) {
+                CaptureConfig fallback{};
+                fallback.adapter_index = adapter_index;
+                fallback.output_index = output_index;
+                fallback.region = {x, y, width, height};
+                fallback.target_fps = target_fps;
+                capture.start_window(hwnd, fallback);
+            },
+            py::arg("hwnd"),
+            py::arg("adapter_index") = 0,
+            py::arg("output_index") = 0,
+            py::arg("x") = -1,
+            py::arg("y") = -1,
+            py::arg("width") = 640,
+            py::arg("height") = 360,
+            py::arg("target_fps") = 60,
+            py::call_guard<py::gil_scoped_release>())
         .def("stop", &DesktopDuplicationCapture::stop, py::call_guard<py::gil_scoped_release>())
         .def_property_readonly("running", &DesktopDuplicationCapture::running)
         .def("stats", [](const DesktopDuplicationCapture& capture) {
@@ -102,6 +131,7 @@ PYBIND11_MODULE(fpscoach_native, module) {
             py::dict result;
             result["sequence"] = frame->sequence;
             result["timestamp_us"] = frame->timestamp_us;
+            result["arrival_us"] = frame->arrival_us;
             result["width"] = frame->width;
             result["height"] = frame->height;
             result["stride"] = frame->stride;

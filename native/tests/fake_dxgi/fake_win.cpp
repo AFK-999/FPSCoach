@@ -11,6 +11,10 @@
 namespace {
 std::atomic<std::uint64_t> g_desktop_frame{0};
 std::chrono::steady_clock::time_point g_next_due = std::chrono::steady_clock::now();
+// Time (steady clock, microseconds) at which each desktop frame appeared, indexed by frame number
+// modulo the table size. Lets a test measure desktop-update-to-screen latency.
+constexpr std::size_t kFrameTimeSlots = 1u << 20;
+std::uint64_t g_frame_times_us[kFrameTimeSlots];
 constexpr int kDesktopWidth = 1920;
 constexpr int kDesktopHeight = 1080;
 
@@ -94,6 +98,9 @@ HRESULT IDXGIOutputDuplication::AcquireNextFrame(UINT timeout_ms, DXGI_OUTDUPL_F
         g_next_due = std::chrono::steady_clock::now();
     }
     const std::uint64_t frame = ++g_desktop_frame;
+    g_frame_times_us[frame % kFrameTimeSlots] = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
     info->LastPresentTime = frame;
     info->PointerPosition.Visible = 1;
     info->PointerPosition.Position = POINT{300, 200};
@@ -157,4 +164,10 @@ HRESULT D3D11CreateDevice(IDXGIAdapter1*, D3D_DRIVER_TYPE, void*, UINT, const D3
     context->ptr_ = new ID3D11DeviceContext();
     *selected = D3D_FEATURE_LEVEL_11_0;
     return 0;
+}
+
+// Test hooks, loaded with ctypes by the benchmark. Not used by the product.
+extern "C" std::uint64_t fake_desktop_frame_count() { return g_desktop_frame.load(); }
+extern "C" std::uint64_t fake_desktop_frame_time_us(std::uint64_t frame) {
+    return g_frame_times_us[frame % kFrameTimeSlots];
 }

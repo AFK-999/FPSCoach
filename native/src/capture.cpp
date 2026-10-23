@@ -11,9 +11,32 @@
 #include <dxgi1_2.h>
 #include <wrl/client.h>
 
+// Window capture uses Windows Graphics Capture, which needs the C++/WinRT headers and Windows 10 SDK
+// 1903 or later. Builds without them (Linux test builds included) compile the screen-area path only.
+#if defined(_WIN32) && defined(__has_include)
+#  if __has_include(<winrt/Windows.Graphics.Capture.h>) && __has_include(<windows.graphics.capture.interop.h>) && \
+      __has_include(<windows.graphics.directx.direct3d11.interop.h>)
+#    define FPSCOACH_HAS_WGC 1
+#  endif
+#endif
+#ifndef FPSCOACH_HAS_WGC
+#  define FPSCOACH_HAS_WGC 0
+#endif
+#if FPSCOACH_HAS_WGC
+#  include <winrt/Windows.Foundation.h>
+#  include <winrt/Windows.Graphics.h>
+#  include <winrt/Windows.Graphics.Capture.h>
+#  include <winrt/Windows.Graphics.DirectX.h>
+#  include <winrt/Windows.Graphics.DirectX.Direct3D11.h>
+#  include <windows.graphics.capture.interop.h>
+#  include <windows.graphics.directx.direct3d11.interop.h>
+#endif
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <string>
 #include <cstring>
 #include <iterator>
 #include <memory>
@@ -206,6 +229,9 @@ struct DuplicationResources {
             return AcquireResult::failure;
         }
 
+        // Taken as soon as the desktop frame is handed over, before the copy and any pacing.
+        frame.arrival_us = now_us();
+
         struct FrameReleaser {
             IDXGIOutputDuplication* value;
             ~FrameReleaser() { value->ReleaseFrame(); }
@@ -279,36 +305,44 @@ struct DuplicationResources {
 
 } // namespace
 
+namespace {
+
+constexpr const char* kWindowUnavailableNotice =
+    "Window capture is not available in this build. Showing the screen area behind the window instead, "
+    "so windows on top of it will appear.";
+
+} // namespace
+
 class DesktopDuplicationCapture::Impl {
 public:
     ~Impl() { stop(); }
 
     void start(const CaptureConfig& config) {
         stop();
-        config_ = config;
-        config_.target_fps = std::clamp(config_.target_fps, 1U, 240U);
-        frames_captured_ = 0;
-        acquire_timeouts_ = 0;
-        access_lost_count_ = 0;
-        last_frame_timestamp_us_ = 0;
-        {
-            std::scoped_lock lock(frame_mutex_);
-            latest_.reset();
+        reset_for(config, 0);
+        set_mode(config_.region.width <= 0 && config_.region.height <= 0 ? "output" : "region");
+        start_worker(false);
+    }
+
+    void start_window(const std::uint64_t hwnd, const CaptureConfig& fallback) {
+        stop();
+        reset_for(fallback, hwnd);
+        if (FPSCOACH_HAS_WGC) {
+            set_mode("window");
+        } else {
+            // Decided here, not in the worker, so the first status read is already correct.
+            set_mode("region");
+            set_notice(kWindowUnavailableNotice);
         }
-        {
-            std::scoped_lock lock(state_mutex_);
-            capture_fps_ = 0.0;
-            capture_width_ = 0;
-            capture_height_ = 0;
-            adapter_name_.clear();
-            last_error_.clear();
-        }
-        running_ = true;
-        worker_ = std::thread([this] { run(); });
+        start_worker(FPSCOACH_HAS_WGC != 0);
     }
 
     void stop() {
-        running_ = false;
+        {
+            std::scoped_lock lock(gate_mutex_);
+            running_ = false;
+        }
+        gate_cv_.notify_all();
         if (worker_.joinable()) {
             worker_.join();
         }
@@ -341,20 +375,155 @@ public:
             value.capture_height = capture_height_;
             value.adapter_name = adapter_name_;
             value.last_error = last_error_;
+            value.capture_mode = capture_mode_;
+            value.notice = notice_;
         }
         return value;
     }
 
+    CaptureConfig config_{};
+    std::atomic<bool> running_{false};
+    std::thread worker_;
+    std::uint64_t hwnd_{};
+
+    mutable std::mutex frame_mutex_;
+    std::shared_ptr<CapturedFrame> latest_;
+    std::vector<std::uint8_t> recycled_pixels_;  // worker thread only
+
+    mutable std::mutex state_mutex_;
+    double capture_fps_{};
+    int capture_width_{};
+    int capture_height_{};
+    std::string adapter_name_;
+    std::string last_error_;
+    std::string capture_mode_;
+    std::string notice_;  // set by start paths; the worker never clears it
+
+    std::atomic<std::uint64_t> frames_captured_{0};
+    std::atomic<std::uint64_t> acquire_timeouts_{0};
+    std::atomic<std::uint64_t> access_lost_count_{0};
+    std::atomic<std::uint64_t> last_frame_timestamp_us_{0};
+
+    // Worker-only pacing and bookkeeping.
+    std::uint64_t sequence_{0};
+    Clock::time_point last_copy_{};
+    Clock::time_point fps_window_start_{};
+    std::uint64_t fps_window_frames_{0};
+
+    // Window path: the newest arrived frame waits here until the worker takes it.
+    std::mutex gate_mutex_;
+    std::condition_variable gate_cv_;
+    std::uint64_t pending_arrival_us_{0};  // guarded by gate_mutex_
+    std::atomic<int> window_pool_width_{0};
+    std::atomic<int> window_pool_height_{0};
+
+    ComPtr<ID3D11Device> window_device_;
+    ComPtr<ID3D11DeviceContext> window_context_;
+    ComPtr<ID3D11Texture2D> window_staging_;
+    D3D11_TEXTURE2D_DESC window_staging_desc_{};
+
+#if FPSCOACH_HAS_WGC
+    winrt::Windows::Graphics::DirectX::Direct3D11::IDirect3DDevice window_device_rt_{nullptr};
+    winrt::Windows::Graphics::Capture::Direct3D11CaptureFramePool window_pool_{nullptr};
+    winrt::Windows::Graphics::Capture::GraphicsCaptureSession window_session_{nullptr};
+    winrt::Windows::Graphics::Capture::Direct3D11CaptureFrame pending_{nullptr};  // guarded by gate_mutex_
+    winrt::event_token window_frame_token_{};
+#endif
+
 private:
+    void reset_for(const CaptureConfig& config, const std::uint64_t hwnd) {
+        config_ = config;
+        config_.target_fps = std::clamp(config_.target_fps, 1U, 240U);
+        hwnd_ = hwnd;
+        frames_captured_ = 0;
+        acquire_timeouts_ = 0;
+        access_lost_count_ = 0;
+        last_frame_timestamp_us_ = 0;
+        sequence_ = 0;
+        last_copy_ = Clock::time_point{};
+        fps_window_start_ = Clock::now();
+        fps_window_frames_ = 0;
+        {
+            std::scoped_lock lock(frame_mutex_);
+            latest_.reset();
+        }
+        {
+            std::scoped_lock lock(state_mutex_);
+            capture_fps_ = 0.0;
+            capture_width_ = 0;
+            capture_height_ = 0;
+            adapter_name_.clear();
+            last_error_.clear();
+            capture_mode_.clear();
+            notice_.clear();
+        }
+    }
+
+    void start_worker(const bool window) {
+        running_ = true;
+        worker_ = std::thread([this, window] {
+            const HRESULT com_result = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+            const bool uninitialize_com = SUCCEEDED(com_result);
+            if (window) {
+                run_window();
+            } else {
+                run();
+            }
+            if (uninitialize_com) {
+                CoUninitialize();
+            }
+        });
+    }
+
     void set_error(std::string error) {
         std::scoped_lock lock(state_mutex_);
         last_error_ = std::move(error);
     }
 
+    void set_mode(const char* mode) {
+        std::scoped_lock lock(state_mutex_);
+        capture_mode_ = mode;
+    }
+
+    void set_notice(std::string notice) {
+        std::scoped_lock lock(state_mutex_);
+        notice_ = std::move(notice);
+    }
+
+    // Slightly under one frame, so a frame that is due is never held back by a whole interval.
+    [[nodiscard]] Clock::duration min_frame_gap() const {
+        return std::chrono::duration_cast<Clock::duration>(
+            std::chrono::microseconds(1'000'000 / config_.target_fps) * 9 / 10);
+    }
+
+    void update_fps(const Clock::time_point now) {
+        const auto elapsed = now - fps_window_start_;
+        if (elapsed >= std::chrono::seconds(1)) {
+            const double seconds = std::chrono::duration<double>(elapsed).count();
+            std::scoped_lock lock(state_mutex_);
+            capture_fps_ = static_cast<double>(fps_window_frames_) / seconds;
+            fps_window_frames_ = 0;
+            fps_window_start_ = now;
+        }
+    }
+
+    // Publishes a copied frame. The pixel buffer of the previous frame is recycled only when no
+    // Python reader still holds it.
+    void publish(const std::shared_ptr<CapturedFrame>& frame) {
+        frame->sequence = ++sequence_;
+        last_frame_timestamp_us_ = frame->timestamp_us;
+        ++frames_captured_;
+        ++fps_window_frames_;
+        std::scoped_lock lock(frame_mutex_);
+        if (latest_ && latest_.use_count() == 1) {
+            recycled_pixels_.swap(latest_->pixels);
+        }
+        latest_ = frame;
+    }
+
     void run() {
         const HRESULT com_result = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
         const bool uninitialize_com = SUCCEEDED(com_result);
-        std::uint64_t sequence = 0;
 
         while (running_) {
             DuplicationResources resources;
@@ -375,35 +544,29 @@ private:
                 last_error_.clear();
             }
 
-            const auto frame_interval = std::chrono::microseconds(1'000'000 / config_.target_fps);
             const UINT timeout_ms = std::max<UINT>(1, 1000U / config_.target_fps);
-            auto fps_window_start = Clock::now();
-            std::uint64_t fps_window_frames = 0;
             bool recreate = false;
 
             while (running_ && !recreate) {
-                const auto iteration_start = Clock::now();
+                // Pacing happens before the acquire, not after the copy. Waiting after the copy would
+                // hold back a frame that arrives during the wait. Here we wait only until the minimum
+                // gap since the last copy has passed, so the next acquire returns as soon as a frame is due.
+                const auto since_copy = Clock::now() - last_copy_;
+                if (since_copy < min_frame_gap()) {
+                    std::this_thread::sleep_for(min_frame_gap() - since_copy);
+                }
+
                 // Reuse a pixel buffer from an earlier frame instead of allocating and zeroing one per frame.
                 auto frame = std::make_shared<CapturedFrame>();
                 frame->pixels.swap(recycled_pixels_);
                 const auto result = resources.acquire(*frame, timeout_ms, error);
                 switch (result) {
-                case DuplicationResources::AcquireResult::frame: {
-                    frame->sequence = ++sequence;
-                    last_frame_timestamp_us_ = frame->timestamp_us;
-                    ++frames_captured_;
-                    ++fps_window_frames;
-                    {
-                        std::scoped_lock lock(frame_mutex_);
-                        // Only this thread and the lock create or hand out references. If nobody else
-                        // still holds the old frame, its buffer is free for the next frame.
-                        if (latest_ && latest_.use_count() == 1) {
-                            recycled_pixels_.swap(latest_->pixels);
-                        }
-                        latest_ = frame;
-                    }
+                case DuplicationResources::AcquireResult::frame:
+                    // Pace from the arrival, when the copy starts. Pacing from the end of the copy would
+                    // add the copy time to every interval and cost frames at high resolutions.
+                    last_copy_ = Clock::time_point(std::chrono::microseconds(frame->arrival_us));
+                    publish(frame);
                     break;
-                }
                 case DuplicationResources::AcquireResult::timeout:
                     ++acquire_timeouts_;
                     break;
@@ -420,21 +583,7 @@ private:
                 if (result != DuplicationResources::AcquireResult::frame) {
                     recycled_pixels_.swap(frame->pixels);  // not published: keep its buffer
                 }
-
-                const auto now = Clock::now();
-                const auto elapsed = now - fps_window_start;
-                if (elapsed >= std::chrono::seconds(1)) {
-                    const double seconds = std::chrono::duration<double>(elapsed).count();
-                    std::scoped_lock lock(state_mutex_);
-                    capture_fps_ = static_cast<double>(fps_window_frames) / seconds;
-                    fps_window_frames = 0;
-                    fps_window_start = now;
-                }
-
-                const auto spent = Clock::now() - iteration_start;
-                if (spent < frame_interval) {
-                    std::this_thread::sleep_for(frame_interval - spent);
-                }
+                update_fps(Clock::now());
             }
 
             if (running_ && recreate) {
@@ -447,31 +596,284 @@ private:
         }
     }
 
-    CaptureConfig config_{};
-    std::atomic<bool> running_{false};
-    std::thread worker_;
+    // Window capture. Windows Graphics Capture delivers only the chosen window, so windows on top of
+    // it are not captured. Frames arrive on a pool thread; the worker keeps only the newest one and
+    // copies it at the frame rate.
+    void run_window() {
+#if FPSCOACH_HAS_WGC
+        std::string error;
+        if (!start_window_session(error)) {
+            stop_window_session();
+            set_mode("region");
+            set_notice("Window capture could not start (" + error +
+                       "). Showing the screen area behind the window instead, so windows on top of it will appear.");
+            run();
+            return;
+        }
 
-    mutable std::mutex frame_mutex_;
-    std::shared_ptr<CapturedFrame> latest_;
-    std::vector<std::uint8_t> recycled_pixels_;  // worker thread only
+        {
+            std::unique_lock lock(gate_mutex_);
+            while (running_) {
+                update_fps(Clock::now());
+                gate_cv_.wait_for(lock, std::chrono::milliseconds(50),
+                                  [this] { return !running_ || static_cast<bool>(pending_); });
+                if (!running_) {
+                    break;
+                }
+                if (!pending_) {
+                    continue;
+                }
+                // Honour the frame rate: a frame that arrives early waits only until the minimum gap
+                // since the last copy has passed. Newer frames replace the pending one while we wait.
+                const auto due = last_copy_ + min_frame_gap();
+                while (running_ && Clock::now() < due) {
+                    gate_cv_.wait_until(lock, due);
+                }
+                if (!running_ || !pending_) {
+                    continue;
+                }
+                auto frame = pending_;
+                pending_ = nullptr;
+                const std::uint64_t arrival = pending_arrival_us_;
+                lock.unlock();
 
-    mutable std::mutex state_mutex_;
-    double capture_fps_{};
-    int capture_width_{};
-    int capture_height_{};
-    std::string adapter_name_;
-    std::string last_error_;
+                auto out = std::make_shared<CapturedFrame>();
+                out->pixels.swap(recycled_pixels_);
+                std::string copy_error;
+                const auto copy_start = Clock::now();
+                const bool copied = read_window_frame(frame, *out, copy_error);
+                frame.Close();
+                if (copied) {
+                    out->arrival_us = arrival;
+                    publish(out);
+                    last_copy_ = copy_start;  // the pacing slot this copy used
+                    set_error(std::string{});
+                } else {
+                    recycled_pixels_.swap(out->pixels);
+                    set_error(copy_error);
+                }
+                update_fps(Clock::now());
+                lock.lock();
+            }
+            if (pending_) {
+                pending_.Close();
+                pending_ = nullptr;
+            }
+        }
+        stop_window_session();
+#else
+        run();
+#endif
+    }
 
-    std::atomic<std::uint64_t> frames_captured_{0};
-    std::atomic<std::uint64_t> acquire_timeouts_{0};
-    std::atomic<std::uint64_t> access_lost_count_{0};
-    std::atomic<std::uint64_t> last_frame_timestamp_us_{0};
+#if FPSCOACH_HAS_WGC
+    bool create_window_device(std::string& error) {
+        constexpr D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0};
+        D3D_FEATURE_LEVEL selected{};
+        HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+                                       D3D11_CREATE_DEVICE_BGRA_SUPPORT, levels,
+                                       static_cast<UINT>(std::size(levels)), D3D11_SDK_VERSION,
+                                       &window_device_, &selected, &window_context_);
+        if (FAILED(hr)) {
+            error = hr_message("D3D11CreateDevice", hr);
+            return false;
+        }
+        ComPtr<IDXGIDevice> dxgi;
+        hr = window_device_.As(&dxgi);
+        if (FAILED(hr)) {
+            error = hr_message("Query IDXGIDevice", hr);
+            return false;
+        }
+        winrt::com_ptr<::IInspectable> inspectable;
+        hr = CreateDirect3D11DeviceFromDXGIDevice(dxgi.Get(), inspectable.put());
+        if (FAILED(hr)) {
+            error = hr_message("CreateDirect3D11DeviceFromDXGIDevice", hr);
+            return false;
+        }
+        window_device_rt_ = inspectable.as<winrt::Windows::Graphics::DirectX::Direct3D11::IDirect3DDevice>();
+        return true;
+    }
+
+    bool start_window_session(std::string& error) {
+        try {
+            if (!winrt::Windows::Graphics::Capture::GraphicsCaptureSession::IsSupported()) {
+                error = "this Windows version does not support it; Windows 10 version 1903 or later is needed";
+                return false;
+            }
+            if (!IsWindow(reinterpret_cast<HWND>(hwnd_))) {
+                error = "the selected window is no longer open";
+                return false;
+            }
+            if (!window_device_ && !create_window_device(error)) {
+                return false;
+            }
+
+            auto interop = winrt::get_activation_factory<winrt::Windows::Graphics::Capture::GraphicsCaptureItem,
+                                                         IGraphicsCaptureItemInterop>();
+            winrt::Windows::Graphics::Capture::GraphicsCaptureItem item{nullptr};
+            winrt::check_hresult(interop->CreateForWindow(reinterpret_cast<HWND>(hwnd_),
+                                                          winrt::guid_of<ABI::Windows::Graphics::Capture::IGraphicsCaptureItem>(),
+                                                          winrt::put_abi(item)));
+            // A minimised window reports zero size; the pool needs at least 1x1.
+            const auto size = item.Size();
+            const int width = std::max(1, size.Width);
+            const int height = std::max(1, size.Height);
+            window_pool_width_ = width;
+            window_pool_height_ = height;
+            window_pool_ = winrt::Windows::Graphics::Capture::Direct3D11CaptureFramePool::CreateFreeThreaded(
+                window_device_rt_, winrt::Windows::Graphics::DirectX::DirectXPixelFormat::B8G8R8A8UIntNormalized, 2,
+                winrt::Windows::Graphics::SizeInt32{width, height});
+            window_session_ = window_pool_.CreateCaptureSession(item);
+            try {
+                // Windows 10 2004 and later can hide the yellow capture border. Older builds cannot.
+                window_session_.IsBorderRequired(false);
+            } catch (const winrt::hresult_error&) {
+            }
+            window_session_.IsCursorCaptureEnabled(false);
+            window_frame_token_ = window_pool_.FrameArrived(
+                [this](winrt::Windows::Graphics::Capture::Direct3D11CaptureFramePool const& sender,
+                       winrt::Windows::Foundation::IInspectable const&) { on_window_frame(sender); });
+            {
+                std::scoped_lock lock(state_mutex_);
+                capture_width_ = width;
+                capture_height_ = height;
+                adapter_name_ = "window capture";
+            }
+            window_session_.StartCapture();
+            return true;
+        } catch (const winrt::hresult_error& exception) {
+            error = winrt::to_string(exception.message());
+            return false;
+        }
+    }
+
+    void on_window_frame(const winrt::Windows::Graphics::Capture::Direct3D11CaptureFramePool& sender) {
+        // Runs on the pool's thread.
+        const auto frame = sender.TryGetNextFrame();
+        if (!frame) {
+            return;
+        }
+        const std::uint64_t arrival = now_us();
+        const auto content = frame.ContentSize();
+        if (content.Width != window_pool_width_.load() || content.Height != window_pool_height_.load()) {
+            // The window was resized: rebuild the pool so frames match the new size.
+            sender.Recreate(window_device_rt_, winrt::Windows::Graphics::DirectX::DirectXPixelFormat::B8G8R8A8UIntNormalized,
+                            2, content);
+            window_pool_width_ = content.Width;
+            window_pool_height_ = content.Height;
+        }
+        std::scoped_lock lock(gate_mutex_);
+        if (pending_) {
+            pending_.Close();  // superseded before the worker took it
+        }
+        pending_ = frame;
+        pending_arrival_us_ = arrival;
+        gate_cv_.notify_one();
+    }
+
+    bool ensure_window_staging(const D3D11_TEXTURE2D_DESC& source, std::string& error) {
+        if (window_staging_ && window_staging_desc_.Width == source.Width &&
+            window_staging_desc_.Height == source.Height && window_staging_desc_.Format == source.Format) {
+            return true;
+        }
+        window_staging_.Reset();
+        D3D11_TEXTURE2D_DESC desc = source;
+        desc.MipLevels = 1;
+        desc.ArraySize = 1;
+        desc.SampleDesc.Count = 1;
+        desc.SampleDesc.Quality = 0;
+        desc.Usage = D3D11_USAGE_STAGING;
+        desc.BindFlags = 0;
+        desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        desc.MiscFlags = 0;
+        const HRESULT hr = window_device_->CreateTexture2D(&desc, nullptr, &window_staging_);
+        if (FAILED(hr)) {
+            error = hr_message("Create window staging texture", hr);
+            return false;
+        }
+        window_staging_desc_ = desc;
+        return true;
+    }
+
+    bool read_window_frame(const winrt::Windows::Graphics::Capture::Direct3D11CaptureFrame& frame,
+                           CapturedFrame& out, std::string& error) {
+        try {
+            auto access = frame.Surface().as<IDirect3DDxgiInterfaceAccess>();
+            winrt::com_ptr<ID3D11Texture2D> texture;
+            winrt::check_hresult(access->GetInterface(winrt::guid_of<ID3D11Texture2D>(), texture.put_void()));
+
+            D3D11_TEXTURE2D_DESC source_desc{};
+            texture->GetDesc(&source_desc);
+            if (!ensure_window_staging(source_desc, error)) {
+                return false;
+            }
+            window_context_->CopyResource(window_staging_.Get(), texture.get());
+
+            D3D11_MAPPED_SUBRESOURCE mapped{};
+            const HRESULT hr = window_context_->Map(window_staging_.Get(), 0, D3D11_MAP_READ, 0, &mapped);
+            if (FAILED(hr)) {
+                error = hr_message("Map window staging texture", hr);
+                return false;
+            }
+            struct TextureUnmapper {
+                ID3D11DeviceContext* context;
+                ID3D11Texture2D* texture;
+                ~TextureUnmapper() { context->Unmap(texture, 0); }
+            } unmap{window_context_.Get(), window_staging_.Get()};
+
+            out.timestamp_us = now_us();
+            out.width = static_cast<int>(source_desc.Width);
+            out.height = static_cast<int>(source_desc.Height);
+            out.stride = out.width * 4;
+            out.pointer_visible = false;
+            out.pointer_x = 0;
+            out.pointer_y = 0;
+            out.pixels.resize(static_cast<std::size_t>(out.stride) * static_cast<std::size_t>(out.height));
+            const auto* source_bytes = static_cast<const std::uint8_t*>(mapped.pData);
+            if (mapped.RowPitch == static_cast<UINT>(out.stride)) {
+                std::memcpy(out.pixels.data(), source_bytes, out.pixels.size());
+            } else {
+                for (int row = 0; row < out.height; ++row) {
+                    std::memcpy(out.pixels.data() + static_cast<std::size_t>(row * out.stride),
+                                source_bytes + static_cast<std::size_t>(row) * mapped.RowPitch,
+                                static_cast<std::size_t>(out.stride));
+                }
+            }
+            return true;
+        } catch (const winrt::hresult_error& exception) {
+            error = "Window frame could not be read: " + winrt::to_string(exception.message());
+            return false;
+        }
+    }
+
+    void stop_window_session() {
+        try {
+            if (window_session_) {
+                window_session_.Close();
+            }
+            if (window_pool_) {
+                window_pool_.FrameArrived(window_frame_token_);
+                window_pool_.Close();
+            }
+        } catch (const winrt::hresult_error&) {
+        }
+        window_session_ = nullptr;
+        window_pool_ = nullptr;
+        window_device_rt_ = nullptr;
+        window_staging_.Reset();
+        window_context_.Reset();
+        window_device_.Reset();
+    }
+#endif
 };
 
 DesktopDuplicationCapture::DesktopDuplicationCapture() : impl_(std::make_unique<Impl>()) {}
 DesktopDuplicationCapture::~DesktopDuplicationCapture() = default;
 
 void DesktopDuplicationCapture::start(const CaptureConfig& config) { impl_->start(config); }
+void DesktopDuplicationCapture::start_window(std::uint64_t hwnd, const CaptureConfig& fallback) {
+    impl_->start_window(hwnd, fallback);
+}
 void DesktopDuplicationCapture::stop() { impl_->stop(); }
 bool DesktopDuplicationCapture::running() const { return impl_->running(); }
 std::shared_ptr<const CapturedFrame> DesktopDuplicationCapture::latest_frame() const {

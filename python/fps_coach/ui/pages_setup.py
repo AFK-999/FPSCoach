@@ -292,7 +292,9 @@ class GuidePage(QWidget):
 # Capture
 # ---------------------------------------------------------------------------
 
-FRAME_INTERVAL_MS = 16  # about 60 Hz: the preview keeps up with 60 FPS capture
+FRAME_INTERVAL_MS = 4  # the check copies nothing, so a short poll shows each new frame almost at once
+# In window mode, no new frame for this long is worth a note (a static or minimised window sends none).
+WINDOW_STALL_MS = 1500
 
 
 class FramePreview(QWidget):
@@ -485,6 +487,13 @@ class CapturePage(QWidget):
         self.error_label.setWordWrap(True)
         self.error_label.setVisible(False)
         lay.addWidget(self.error_label)
+
+        # Fallbacks and stall notes. Kept apart from errors so a fallback is never mistaken for a failure.
+        self.notice_label = QLabel("")
+        self.notice_label.setObjectName("statusLabel")
+        self.notice_label.setWordWrap(True)
+        self.notice_label.setVisible(False)
+        lay.addWidget(self.notice_label)
         lay.addStretch(1)
 
         card.setMinimumWidth(340)
@@ -504,6 +513,7 @@ class CapturePage(QWidget):
         # Frames are pulled at display rate, but only while this tab is visible and capture runs.
         # An older native build cannot report the frame number cheaply, so it keeps the 250 ms poll.
         self._fast_frames = bool(getattr(backend, "fast_frame_sequence", False))
+        self._start_note = ""  # set when the chosen mode fell back (for example, an older native build)
         self._frame_timer = QTimer(self)
         self._frame_timer.setTimerType(Qt.TimerType.PreciseTimer)
         self._frame_timer.setInterval(FRAME_INTERVAL_MS if self._fast_frames else 250)
@@ -565,28 +575,42 @@ class CapturePage(QWidget):
             region = self.custom_region.currentData()
         fps = self.fps_combo.currentData()
         width, height = region if region else (int(output["width"]), int(output["height"]))
-        left, top = -1, -1
         window_note = ""
+        start_note = ""
         hwnd = self.source_combo.currentData()
-        if hwnd:
-            rect = get_window_rect(int(hwnd))
-            if rect:
-                left, top, width, height = rect
-            else:
-                window_note = "Could not read that window's bounds; capturing the full output instead."
+        window_rect = get_window_rect(int(hwnd)) if hwnd else None
+        if hwnd and not window_rect:
+            window_note = "Could not read that window's bounds; capturing the full output instead."
+            hwnd = None
         try:
-            self._backend.start_capture(
-                int(output["adapter_index"]),
-                int(output["output_index"]),
-                int(width),
-                int(height),
-                int(fps),
-                int(left),
-                int(top),
-            )
+            if hwnd:
+                # Window mode: only that window is recorded, even when other windows cover it.
+                # The window's bounds are the screen-area fallback.
+                left, top, width, height = window_rect
+                start_note = self._backend.start_window(
+                    int(hwnd),
+                    int(output["adapter_index"]),
+                    int(output["output_index"]),
+                    int(width),
+                    int(height),
+                    int(fps),
+                    int(left),
+                    int(top),
+                )
+            else:
+                self._backend.start_capture(
+                    int(output["adapter_index"]),
+                    int(output["output_index"]),
+                    int(width),
+                    int(height),
+                    int(fps),
+                    -1,
+                    -1,
+                )
         except RuntimeError as exc:  # NativeCoreUnavailable is a RuntimeError
             self._show_error(str(exc))
             return
+        self._start_note = start_note
         self._last_sequence = -1
         self._show_error(window_note)
         self._set_running(True)
@@ -602,6 +626,8 @@ class CapturePage(QWidget):
         else:
             self._set_status("Idle", "")
             self.stats_label.setText("")
+            self._show_notice("")
+            self._start_note = ""
             self.preview.clear_frame()
             self._last_sequence = -1
         self._sync_frame_timer()
@@ -646,6 +672,18 @@ class CapturePage(QWidget):
         self.error_label.setText(message)
         self.error_label.setVisible(bool(message))
 
+    def _show_notice(self, message):
+        self.notice_label.setText(message)
+        self.notice_label.setVisible(bool(message))
+
+    @staticmethod
+    def _status_text(mode: str) -> str:
+        return {
+            "window": "Capturing this window only",
+            "region": "Capturing screen area",
+            "output": "Capturing full display",
+        }.get(mode, "Capturing…")
+
     def _refresh_stats(self):
         stats = self._backend.capture_stats()
         running = bool(stats.get("running"))
@@ -657,6 +695,13 @@ class CapturePage(QWidget):
             self._show_error(error)
         if not running:
             return
+        mode = str(stats.get("capture_mode") or "")
+        self._set_status(self._status_text(mode), "good")
+        notices = [str(stats.get("notice") or ""), self._start_note]
+        if mode == "window" and int(stats.get("last_frame_age_ms", 0)) > WINDOW_STALL_MS:
+            notices.append("No new frames from this window for a while. It may be minimised, "
+                           "or nothing in it is changing.")
+        self._show_notice(" ".join(note for note in notices if note))
         fps = float(stats.get("capture_fps", 0.0))
         frames = int(stats.get("frames_captured", 0))
         width = int(stats.get("capture_width", 0))

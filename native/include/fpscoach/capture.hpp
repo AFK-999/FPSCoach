@@ -42,6 +42,9 @@ struct CapturedFrame {
     int width{};
     int height{};
     int stride{};
+    // When the native worker received this frame from the OS (desktop frame or window frame), before
+    // the copy and before any pacing wait. Compare with timestamp_us to see the worker's own delay.
+    std::uint64_t arrival_us{};
     bool pointer_visible{};
     int pointer_x{};
     int pointer_y{};
@@ -60,6 +63,11 @@ struct CaptureStats {
     int capture_height{};
     std::string adapter_name;
     std::string last_error;
+    // "output" (whole display), "region" (a crop of the display) or "window" (one window, via
+    // Windows Graphics Capture).
+    std::string capture_mode;
+    // Set when the requested mode fell back to another one. Not cleared by the worker.
+    std::string notice;
 };
 
 // Desktop Duplication runs on a native worker so Python never sits in the
@@ -74,6 +82,10 @@ public:
     DesktopDuplicationCapture& operator=(const DesktopDuplicationCapture&) = delete;
 
     void start(const CaptureConfig& config);
+    // Captures one window (hwnd) through Windows Graphics Capture when this build has it. Otherwise,
+    // or if the window cannot be captured, it falls back to the screen area in `fallback`, and
+    // CaptureStats::notice says so.
+    void start_window(std::uint64_t hwnd, const CaptureConfig& fallback);
     void stop();
     [[nodiscard]] bool running() const;
     // The newest frame, shared rather than copied. Frames are never changed once published.

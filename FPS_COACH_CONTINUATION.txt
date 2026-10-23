@@ -1,7 +1,7 @@
 ================================================================================
 FPS COACH — CONTINUATION / HANDOFF DOCUMENT
 Copy-paste this whole file into a new agent chat to resume with zero context loss.
-Last updated: 2026-10-23 (rev 69)  (update after EVERY response)
+Last updated: 2026-10-23 (rev 70)  (update after EVERY response)
 
 *** IMPORTANT (rev4): The REAL repo was provided and differs a lot from the
 *** earlier scaffold. Work on the REAL repo at /home/user/workspace/FPSCoach
@@ -145,6 +145,28 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     /home/user/workspace/FPSCoach   (clone of https://github.com/AFK-999/FPSCoach.git)
     Remote origin/main = e9e69a2   (the visual REDESIGN; based on 04e6b0f)
     Working branch     = fix/redesign-backend-wiring (from e9e69a2), NOT pushed.
+    REV70 STATUS: Capture preview cause found and fixed; window capture changed to record only the
+    selected window. (1) Cause of the visual delay, in order of size: the native worker slept after each
+    copy, so a frame that arrived during the sleep waited up to one frame interval; the UI polled for new
+    frames every 16 ms; and the copy was timed from the end of the last copy. Fixes: the worker now waits
+    before the acquire, only until 0.9 frame intervals have passed since the last frame arrived; the UI
+    polls every 4 ms (cheap: it copies nothing). Measured on the fake desktop, desktop change to screen,
+    median / p95: balanced 960x540 at 60 FPS 17.3 / 28.1 ms before, 11.4 / 18.5 ms after; quality 1080p
+    at 60 FPS 20.0 / 30.6 ms before, 14.6 / 21.2 ms after; low 640x360 at 30 FPS 25.2 / 42.1 ms before,
+    17.6 / 30.5 ms after. Capture rate: 60.0 FPS at 60 (both presets); at 30 FPS it runs at about 33
+    FPS, because of the 0.9 pacing margin. (2) Window capture: selecting a window used to crop the
+    whole-screen Desktop Duplication output to the window's rectangle, so any window on top of it
+    appeared (including Vantage). Now a window selection calls start_window, which uses Windows Graphics
+    Capture (WGC) on Windows 10 1903+ and records only that window. It is independent of what covers it.
+    On Linux, and wherever WGC cannot start, it falls back to the screen area behind the window and says
+    so in a notice ("Showing the screen area behind the window instead..."). The WGC code is compiled
+    only on Windows (FPSCOACH_HAS_WGC); it is NOT compiled or run here and is UNVERIFIED on Windows.
+    A stall note appears in window mode when no frame has come for 1.5 s (a minimised window, or one
+    whose content is not changing, sends no frames). Capture stats now carry capture_mode
+    (output / region / window), notice, and each frame carries arrival_us.
+    NOT verified on Windows: WGC behaviour, the border, minimised windows, cross-adapter capture, and
+    the GPU readback stall under game load (not addressed; needs a GPU-side downscale and a Windows
+    measurement). Still NOT pushed.
     REV69 STATUS: Capture preview pipeline optimised for 60 FPS. The preview now shows the newest frame
     within about one frame (measured median 17 ms old, previously 130-140 ms; the old 4 Hz poll is gone).
     Changes: (1) native worker publishes frames as shared pointers, so a pull copies pixels once (not twice),
@@ -1298,7 +1320,33 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
               - Full suite 342 passed. ruff F clean. Wiring 32/32.
               - Harness used for the baseline: committed HEAD built with the same fake layer.
 
-  2026-10-23 (rev68)  CALIBRATION CHART: ADAPTIVE HANDLES.
+  2026-10-23 (rev70)  CAPTURE: PREVIEW LATENCY AND WINDOW-ONLY CAPTURE.
+              - native/include/fpscoach/capture.hpp: CapturedFrame.arrival_us; CaptureStats.capture_mode,
+                notice; DesktopCapture.start_window().
+              - native/src/capture.cpp: DD worker waits before acquire (0.9 interval since last arrival),
+                not after the copy; arrival stamped right after AcquireNextFrame; window path via
+                Windows Graphics Capture under FPSCOACH_HAS_WGC (Windows only): pool of 2, free-threaded,
+                border off where supported, cursor off, newest frame kept, staging copy, paced copy,
+                pool rebuilt on resize, falls back to the screen area with a notice.
+              - native/src/bindings.cpp: start_window(hwnd, adapter, output, x, y, width, height, target_fps);
+                latest_frame adds arrival_us; stats add capture_mode and notice.
+              - CMakeLists.txt: WindowsApp linked (WinRT capture).
+              - native/tests/fake_dxgi/fake_win.cpp: exports fake_desktop_frame_count() and
+                fake_desktop_frame_time_us(n) for the latency benchmark. bench_desktop_age.py added;
+                README updated (Linux runs fall back to the screen area; the WGC block is not compiled).
+              - python/fps_coach/backend.py: start_window() (native, or start_capture with a note on
+                older builds); OLD_NATIVE_WINDOW_NOTE.
+              - python/fps_coach/ui/pages_setup.py: FRAME_INTERVAL_MS 16 -> 4; window selection uses
+                start_window with the window's bounds; status text follows capture_mode; notice label
+                (separate from errors) for fallbacks and the 1.5 s stall note in window mode; notice
+                cleared on stop.
+              - tests/test_window_capture.py (11; 2 native checks run only with the fake build).
+              - Measured: see STATUS above. Full suite 351 passed, 2 skipped (no native build).
+                With the fake build on PYTHONPATH: 12 errors in tests/test_recommendation_apply.py
+                (same on HEAD; the test expects the Python analyzer). ruff F clean. Wiring 32/32.
+              - Harness: HEAD built from git archive, not a worktree.
+
+  2026-10-23 (rev69)  CAPTURE PREVIEW: 60 FPS PIPELINE.
               - NEW python/fps_coach/curve_sampling.py (Qt-free): KEY_TOLERANCE = 0.005; key_indices(xs, ys,
                 tolerance) = Ramer-Douglas-Peucker with distance to the segment (the first version measured to
                 the infinite line, which broke the tolerance guarantee; caught by tests).

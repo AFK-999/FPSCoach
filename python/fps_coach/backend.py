@@ -18,6 +18,12 @@ except ImportError:
     _native = None
 
 
+OLD_NATIVE_WINDOW_NOTE = (
+    "This build of the native capture module cannot capture single windows. "
+    "Showing the screen area behind the window instead, so windows on top of it will appear."
+)
+
+
 class NativeCoreUnavailable(RuntimeError):
     pass
 
@@ -173,6 +179,43 @@ class CoreBackend:
                 "Desktop Duplication is available only in a Windows build with the native extension."
             )
         self.capture.start(adapter_index, output_index, int(left), int(top), width, height, target_fps)
+
+    def start_window(
+        self,
+        hwnd: int,
+        adapter_index: int,
+        output_index: int,
+        width: int,
+        height: int,
+        target_fps: int,
+        left: int = -1,
+        top: int = -1,
+    ) -> str:
+        """Capture only the window ``hwnd``, even when other windows cover it.
+
+        Returns "" when window capture is running. Otherwise it returns a note saying why the capture
+        fell back to the screen area behind the window, and that fallback can show windows on top of it.
+        ``width``/``height``/``left``/``top`` describe that screen area (the window's bounds).
+        """
+        if not self.capture:
+            raise NativeCoreUnavailable(
+                "Window capture is available only in a Windows build with the native extension."
+            )
+        if callable(getattr(self.capture, "start_window", None)):
+            self.capture.start_window(
+                hwnd=int(hwnd),
+                adapter_index=int(adapter_index),
+                output_index=int(output_index),
+                x=int(left),
+                y=int(top),
+                width=int(width),
+                height=int(height),
+                target_fps=int(target_fps),
+            )
+            return ""
+        # Older native build without window capture: show the screen area and say so.
+        self.capture.start(adapter_index, output_index, int(left), int(top), width, height, target_fps)
+        return OLD_NATIVE_WINDOW_NOTE
 
     def stop_capture(self) -> None:
         if self.capture:
