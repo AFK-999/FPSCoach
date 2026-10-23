@@ -15,6 +15,11 @@ Threading contract:
 * :meth:`RecordingService.shutdown` stops and joins the engine's threads before
   the owning widget is destroyed, so no signal can be emitted into a deleted
   QObject.
+
+Retention: unless ``keep`` was requested the scratch file is deleted when the
+recording stops (or when the app closes).  With ``keep=True`` the file is moved
+to a timestamped ``fpscoach-recording-*.mp4`` name in ``save_dir`` and survives
+both stop and shutdown.
 """
 from __future__ import annotations
 
@@ -22,6 +27,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 
@@ -57,12 +63,17 @@ class RecordingStatus:
 
 @dataclass(frozen=True, slots=True)
 class RecordingSummary:
-    """What a finished recording was, reported once it has been cleaned up."""
+    """What a finished recording was, reported once the worker threads are done.
+
+    ``path`` is the saved file when ``kept`` is true, otherwise the deleted
+    scratch path (useful for logs).
+    """
 
     frames: int
     seconds: float
     analyses: int
     path: str
+    kept: bool = False
 
 
 class RecordingService(QObject):
@@ -81,6 +92,7 @@ class RecordingService(QObject):
         self._ticks = 0
         self._closed = False
         self._last_error = ""
+        self._keep = False
 
     # -- capability --------------------------------------------------------
     @staticmethod
@@ -111,8 +123,14 @@ class RecordingService(QObject):
         fps: float = 30.0,
         analysis_interval: float = 2.0,
         monitor_index: int = 1,
+        keep: bool = False,
+        save_dir: str | None = None,
     ) -> bool:
-        """Start recording.  Returns ``False`` (and emits ``failed``) on error."""
+        """Start recording.  Returns ``False`` (and emits ``failed``) on error.
+
+        ``keep`` keeps the finished video instead of deleting it, and
+        ``save_dir`` chooses where it is written (created when missing).
+        """
         if self._closed:
             return False
         if self._recorder is not None:
@@ -122,14 +140,20 @@ class RecordingService(QObject):
             self.failed.emit(message)
             return False
         recorder = None
+        target = Path(save_dir).expanduser() if save_dir else None
         try:
+            kwargs: dict = {}
+            if keep:
+                kwargs["keep_temp_file"] = True
+            if target is not None:
+                kwargs["output_dir"] = target
             recorder = self._recorder_factory(
                 fps=float(fps),
                 analysis_interval=float(analysis_interval),
                 monitor_index=int(monitor_index),
                 analysis_callback=self._on_frame,
-                keep_temp_file=False,
                 join_timeout=3.0,
+                **kwargs,
             )
             recorder.start()
         except Exception as exc:  # noqa: BLE001 - reported to the UI, never raised
@@ -140,30 +164,43 @@ class RecordingService(QObject):
         with self._lock:
             self._ticks = 0
         self._last_error = ""
+        self._keep = bool(keep)
         self._recorder = recorder
         self.started.emit(str(recorder.video_path))
         return True
 
     def stop(self) -> RecordingSummary | None:
-        """Stop, join the workers and delete the scratch file."""
+        """Stop, join the workers, and keep or delete the file as requested."""
         recorder, self._recorder = self._recorder, None
         if recorder is None:
             return None
+        raw = recorder.video_path
         summary = RecordingSummary(
             frames=recorder.frames_written,
             seconds=round(float(recorder.recorded_seconds), 1),
             analyses=self.analysis_count,
-            path=str(recorder.video_path or ""),
+            path=str(raw or ""),
         )
         self._safe_cleanup(recorder)
+        if self._keep:
+            summary = self._with_saved_path(summary, raw)
         self.stopped.emit(summary)
         return summary
 
     def shutdown(self) -> None:
-        """Stop everything without emitting further signals.  Idempotent."""
+        """Stop everything without emitting further signals.  Idempotent.
+
+        A recording made with ``keep=True`` still survives a shutdown: the file
+        is renamed and left in ``save_dir``.
+        """
         self._closed = True
         recorder, self._recorder = self._recorder, None
+        if recorder is None:
+            return
+        raw = recorder.video_path
         self._safe_cleanup(recorder)
+        if self._keep:
+            self._save_file(raw)
 
     def poll(self) -> RecordingStatus:
         """Return the current counters, and stop cleanly if capture failed."""
@@ -211,6 +248,40 @@ class RecordingService(QObject):
             self.analysis.emit(tick)  # queued to the GUI thread by Qt
         except RuntimeError:  # pragma: no cover - receiver already gone
             pass
+
+    def _with_saved_path(self, summary: RecordingSummary, raw) -> RecordingSummary:
+        saved = self._save_file(raw)
+        if saved is None:
+            return summary
+        return RecordingSummary(
+            frames=summary.frames,
+            seconds=summary.seconds,
+            analyses=summary.analyses,
+            path=str(saved),
+            kept=True,
+        )
+
+    @staticmethod
+    def _save_file(raw) -> Path | None:
+        """Rename a kept scratch file to ``fpscoach-recording-<stamp>.mp4``."""
+        if raw is None:
+            return None
+        path = Path(raw)
+        if not path.exists():
+            return None
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        target = path.with_name(f"fpscoach-recording-{stamp}{path.suffix}")
+        counter = 2
+        while target.exists():
+            target = path.with_name(f"fpscoach-recording-{stamp}-{counter}{path.suffix}")
+            counter += 1
+        try:
+            path.replace(target)
+        except OSError:
+            LOGGER.exception("could not rename the kept recording %s", path)
+            return path
+        LOGGER.info("recording saved to %s", target)
+        return target
 
     @staticmethod
     def _safe_cleanup(recorder) -> None:

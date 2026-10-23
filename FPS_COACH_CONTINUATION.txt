@@ -1,7 +1,7 @@
 ================================================================================
 FPS COACH — CONTINUATION / HANDOFF DOCUMENT
 Copy-paste this whole file into a new agent chat to resume with zero context loss.
-Last updated: 2026-10-23 (rev 73)  (update after EVERY response)
+Last updated: 2026-10-23 (rev 74)  (update after EVERY response)
 
 *** IMPORTANT (rev4): The REAL repo was provided and differs a lot from the
 *** earlier scaffold. Work on the REAL repo at /home/user/workspace/FPSCoach
@@ -145,6 +145,30 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     /home/user/workspace/FPSCoach   (clone of https://github.com/AFK-999/FPSCoach.git)
     Remote origin/main = e9e69a2   (the visual REDESIGN; based on 04e6b0f)
     Working branch     = fix/redesign-backend-wiring (from e9e69a2), NOT pushed.
+    REV74 STATUS: rev73 plus LOOSER RECORDING POLICY (user said "looser" when offered stricter/looser wording).
+    Behaviour: the Recording card gained a "Keep the recording" checkbox and a recordings folder picker
+    (default Videos/FPSCoach via QStandardPaths, saved as capture/record_keep and capture/record_dir).
+    Unticked (default) = old behaviour: the file is deleted at Stop or on app close. Ticked = the file is
+    KEPT, renamed fpscoach-recording-YYYYMMDD-HHMMSS.mp4 in the chosen folder, and it survives both Stop
+    and closing the app (RecordingService.shutdown() also saves it). Status reads "Saved" and the detail
+    names the path. RecordingService.start() takes keep= and save_dir=; RecordingSummary gained kept: bool
+    and path now points at the saved file; _save_file() renames with a counter on collisions. Analysis
+    interval range widened 0.5-60 s (was 0.5-30). Wording loosened in the same commit: docs/PRIVACY.md
+    "Screen capture" now describes discard-vs-keep plainly and says files are never uploaded by the app
+    but what the user does with a kept file is up to them; "unattended/background recording" removed from
+    the not-offered list (still stated that recording stops when the app closes unless kept); in-app
+    PRIVACY_POINTS updated; docs/architecture.md scope line and scratch-recording section updated;
+    README feature bullet and first-use step updated; docs/screen-recorder-tool.md updated.
+    Tests: tests/test_capture_recording.py 12 -> 20 (keep off by default + persists, default dir, kept file
+    lands in the chosen folder, kept file survives page shutdown, widened interval range, service keeps /
+    discards / shutdown-keeps). One trap found: page.record_dir_btn.click() opens a modal QFileDialog and
+    HANGS an offscreen test run; the test now only checks enabled state.
+    STILL NOT LOOSENED (deliberate): gameplay analysis from the file, target/shooting detection, aim
+    feedback, in-game overlays, input hooks - the fair-play/anti-cheat line in docs/PRIVACY.md stands. If
+    the user meant that line too, it needs an explicit decision, not a wording edit.
+    NOT verified: Windows, real display, mss on Windows, mp4v on Windows, PyInstaller freeze, Inno installer.
+    Still NOT pushed.
+
     REV73 STATUS: rev72 plus SCRATCH RECORDING ON THE CAPTURE TAB (productised at the user's request).
     The user asked for the rev72 recorder "added to the capture tab in fps coach", so it now ships in
     the app: engine in python/fps_coach/screen_recorder.py (Qt-free), Qt glue in
@@ -1974,3 +1998,26 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
                 and inspected (Recording card sits under Source: 30 FPS, 2.0 s, Record enabled, Stop
                 disabled, Idle); end-to-end mp4 with the real cv2.VideoWriter decoded back and deleted.
                 NOT verified: Windows, real display, mss on Windows, PyInstaller freeze, Inno installer.
+
+  2026-10-23 (rev74)  LOOSER RECORDING POLICY: KEEP THE RECORDING, SAVED FOLDER.
+              - python/fps_coach/capture_recording.py: start(keep=False, save_dir=None) forwards
+                keep_temp_file/output_dir to the engine; _keep flag; RecordingSummary.kept; stop() and
+                shutdown() both call _save_file() when keep is on; _save_file renames the scratch file to
+                fpscoach-recording-<YYYYmmdd-HHMMSS>.mp4 (counter on collision, OSError logged and the
+                original path kept); docstring describes the retention rules.
+              - python/fps_coach/ui/pages_setup.py: "Keep the recording" QCheckBox, read-only folder
+                QLineEdit + "Folder..." button (QFileDialog.getExistingDirectory), default_record_dir()
+                (QStandardPaths MoviesLocation / FPSCoach), _sync_record_keep_controls(),
+                _on_record_keep_toggled(), _choose_record_dir(); start passes keep/save_dir; stop reports
+                "Saved" + path or "discarded"; interval range 0.5-60 s. Guard: _sync_record_keep_controls
+                runs during card construction, before self.recording exists (getattr guard).
+              - docs/PRIVACY.md, docs/architecture.md, docs/screen-recorder-tool.md, README.md,
+                python/fps_coach/ui/pages_coach.py (PRIVACY_POINTS): loosened wording, discard-vs-keep
+                described plainly, "unattended recording" removed from the not-offered list, kept files
+                explicitly outlive the session until the user deletes them.
+              - tests/test_capture_recording.py: 20 tests (8 new).
+              - VERIFICATION (sandbox, Linux): pytest tests/ 418 passed, 5 skipped; ruff clean on the
+                touched files apart from the repo's pre-existing I001/UP037/B905. Offscreen screenshot of
+                the card with Keep ticked and a saved file verified by hand.
+              - Still declined and untouched: gameplay analysis, target detection, aim feedback, overlays,
+                input hooks.

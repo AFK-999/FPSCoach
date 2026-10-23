@@ -12,7 +12,15 @@ from dataclasses import replace  # noqa: F401  (kept for parity with curve helpe
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QElapsedTimer, QRect, QSignalBlocker, Qt, QTimer, Signal
+from PySide6.QtCore import (
+    QElapsedTimer,
+    QRect,
+    QSignalBlocker,
+    QStandardPaths,
+    Qt,
+    QTimer,
+    Signal,
+)
 from PySide6.QtGui import QColor, QImage, QKeySequence, QPainter, QShortcut
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -23,6 +31,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -731,8 +740,8 @@ class CapturePage(QWidget):
         """Card under Source: scratch recording of the primary display."""
         card, lay = _card(
             "Recording",
-            "Writes a scratch video of the primary display while you record, and samples the "
-            "newest frame on a timer. The file is deleted when you stop.",
+            "Records the primary display while you record, and samples the newest frame on a "
+            "timer. Keep the video or let it be discarded when you stop.",
         )
         form = QGridLayout()
         form.setHorizontalSpacing(12)
@@ -750,7 +759,7 @@ class CapturePage(QWidget):
 
         form.addWidget(_label("Analysis every", "formLabel"), 1, 0)
         self.record_interval = QDoubleSpinBox()
-        self.record_interval.setRange(0.5, 30.0)
+        self.record_interval.setRange(0.5, 60.0)
         self.record_interval.setSingleStep(0.5)
         self.record_interval.setDecimals(1)
         self.record_interval.setSuffix(" s")
@@ -761,6 +770,29 @@ class CapturePage(QWidget):
         )
         form.addWidget(self.record_interval, 1, 1)
         lay.addLayout(form)
+
+        self.record_keep = QCheckBox("Keep the recording")
+        self.record_keep.setToolTip(
+            "Save the video instead of discarding it. Saved files stay on this machine "
+            "until you delete them."
+        )
+        self.record_keep.setChecked(bool(_settings().value("capture/record_keep", False, type=bool)))
+        self.record_keep.toggled.connect(self._on_record_keep_toggled)
+        lay.addWidget(self.record_keep)
+
+        dir_row = QHBoxLayout()
+        dir_row.setSpacing(8)
+        self.record_dir_edit = QLineEdit(self._record_dir())
+        self.record_dir_edit.setReadOnly(True)
+        self.record_dir_edit.setToolTip("Where kept recordings are written")
+        self.record_dir_btn = QPushButton(" Folder…")
+        self.record_dir_btn.setObjectName("secondary")
+        set_glyph(self.record_dir_btn, "download")
+        self.record_dir_btn.clicked.connect(self._choose_record_dir)
+        dir_row.addWidget(self.record_dir_edit, 1)
+        dir_row.addWidget(self.record_dir_btn)
+        lay.addLayout(dir_row)
+        self._sync_record_keep_controls()
 
         row = QHBoxLayout()
         row.setSpacing(8)
@@ -792,8 +824,37 @@ class CapturePage(QWidget):
             "cardSubtitle",
             wrap=True,
         )
+        self.record_detail.setToolTip("")
         lay.addWidget(self.record_note)
         return card
+
+    @staticmethod
+    def default_record_dir() -> str:
+        """Videos/FPSCoach (or Home/FPSCoach when the platform has no Movies folder)."""
+        base = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.MoviesLocation)
+        return str(Path(base or Path.home()) / "FPSCoach")
+
+    def _record_dir(self) -> str:
+        return str(_settings().value("capture/record_dir", self.default_record_dir()))
+
+    def _sync_record_keep_controls(self) -> None:
+        """The folder row only matters when the recording is kept."""
+        keep = self.record_keep.isChecked()
+        usable, _message = RecordingService.availability()
+        # Called once while the card is being built, before the service exists.
+        recording = bool(getattr(self, "recording", None) and self.recording.is_recording)
+        self.record_dir_edit.setEnabled(keep and usable and not recording)
+        self.record_dir_btn.setEnabled(keep and usable and not recording)
+
+    def _on_record_keep_toggled(self, checked: bool) -> None:
+        _settings().setValue("capture/record_keep", bool(checked))
+        self._sync_record_keep_controls()
+
+    def _choose_record_dir(self) -> None:
+        chosen = QFileDialog.getExistingDirectory(self, "Recordings folder", self.record_dir_edit.text())
+        if chosen:
+            self.record_dir_edit.setText(chosen)
+            _settings().setValue("capture/record_dir", chosen)
 
     def _on_record_fps_changed(self, index: int) -> None:
         fps = self.record_fps.itemData(index)
@@ -805,16 +866,21 @@ class CapturePage(QWidget):
         self.record_start_btn.setEnabled(usable)
         self.record_fps.setEnabled(usable)
         self.record_interval.setEnabled(usable)
+        self.record_keep.setEnabled(usable)
+        self._sync_record_keep_controls()
         if not usable:
             self._set_record_status("Unavailable", "bad")
             self._show_record_detail(message)
             self.record_note.setText("Install the recorder extra to enable this card.")
 
     def _start_recording(self) -> None:
+        keep = self.record_keep.isChecked()
         started = self.recording.start(
             fps=float(self.record_fps.currentData() or 30),
             analysis_interval=float(self.record_interval.value()),
             monitor_index=1,
+            keep=keep,
+            save_dir=self.record_dir_edit.text() if keep else None,
         )
         if started:
             self._set_record_buttons(recording=True)
@@ -834,13 +900,17 @@ class CapturePage(QWidget):
 
     def _on_recording_stopped(self, summary: RecordingSummary) -> None:
         self._set_record_buttons(recording=False)
-        self._set_record_status(
-            f"Stopped · {summary.frames:,} frames · {summary.seconds:.1f} s", ""
-        )
-        self._show_record_detail(
-            f"Scratch video deleted after {summary.analyses} analysis "
-            f"call{'s' if summary.analyses != 1 else ''}."
-        )
+        calls = f"{summary.analyses} analysis call{'s' if summary.analyses != 1 else ''}"
+        if summary.kept:
+            self._set_record_status(
+                f"Saved · {summary.frames:,} frames · {summary.seconds:.1f} s", "good"
+            )
+            self._show_record_detail(f"Recording saved to {summary.path} ({calls}).")
+        else:
+            self._set_record_status(
+                f"Stopped · {summary.frames:,} frames · {summary.seconds:.1f} s", ""
+            )
+            self._show_record_detail(f"Scratch video discarded after {calls}.")
         self.record_analysis.setVisible(False)
 
     def _on_recording_failed(self, message: str) -> None:
@@ -874,6 +944,13 @@ class CapturePage(QWidget):
         self.record_stop_btn.setEnabled(recording)
         self.record_fps.setEnabled(usable and not recording)
         self.record_interval.setEnabled(usable and not recording)
+        self.record_keep.setEnabled(usable and not recording)
+        self.record_dir_edit.setEnabled(
+            usable and not recording and self.record_keep.isChecked()
+        )
+        self.record_dir_btn.setEnabled(
+            usable and not recording and self.record_keep.isChecked()
+        )
 
     def _set_record_status(self, text: str, state: str) -> None:
         self.record_status.setText(text)
@@ -886,7 +963,7 @@ class CapturePage(QWidget):
         self.record_detail.setVisible(bool(message))
 
     def shutdown(self) -> None:
-        """Stop the scratch recording and delete its file. Called on window close."""
+        """Stop the recording on window close; kept files stay on disk."""
         self.recording.shutdown()
         self.record_start_btn.setEnabled(False)
         self.record_stop_btn.setEnabled(False)

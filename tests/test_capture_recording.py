@@ -189,7 +189,7 @@ def test_record_writes_a_scratch_file_and_stop_deletes_it(make_page, qapp):
     assert page.record_status.text().startswith("Stopped")
     assert page.record_start_btn.isEnabled()
     assert not page.record_stop_btn.isEnabled()
-    assert "Scratch video deleted" in page.record_detail.text()
+    assert "discarded" in page.record_detail.text()
     # The log line reports the real counters, not placeholders.
     assert "frames" in page.record_status.text()
 
@@ -212,6 +212,65 @@ def test_analysis_ticks_reach_the_card(make_page, qapp):
     finally:
         page._stop_recording()
         qapp.processEvents()
+
+
+def test_keep_is_off_by_default_and_persists_when_toggled(make_page, saved):
+    page = make_page(Harness())
+    assert not page.record_keep.isChecked()
+    assert not page.record_dir_edit.isEnabled()  # folder row only matters when keeping
+    page.record_keep.setChecked(True)
+    assert bool(saved.value("capture/record_keep")) is True
+    assert page.record_dir_edit.isEnabled()
+    assert page.record_dir_btn.isEnabled()
+    page.record_keep.setChecked(False)
+    assert bool(saved.value("capture/record_keep")) is False
+
+
+def test_default_record_dir_is_under_movies(make_page):
+    page = make_page(Harness())
+    assert Path(page.record_dir_edit.text()).name == "FPSCoach"
+
+
+def test_kept_recording_is_saved_to_the_chosen_folder(make_page, qapp, tmp_path):
+    harness = Harness()
+    page = make_page(harness)
+    page.record_keep.setChecked(True)
+    page.record_dir_edit.setText(str(tmp_path / "recordings"))
+    page._start_recording()
+    assert pump(qapp, lambda: harness.writer.frames, page=page)
+
+    page._stop_recording()
+    qapp.processEvents()
+
+    assert page.record_status.text().startswith("Saved")
+    assert "Recording saved to" in page.record_detail.text()
+    saved = list((tmp_path / "recordings").glob("fpscoach-recording-*.mp4"))
+    assert len(saved) == 1, "the kept recording was not written to the chosen folder"
+    assert saved[0].stat().st_size > 0
+    assert str(saved[0]) in page.record_detail.text()
+    assert page.record_start_btn.isEnabled()
+
+
+def test_kept_recording_survives_closing_the_page(make_page, qapp, tmp_path):
+    harness = Harness()
+    page = make_page(harness)
+    page.record_keep.setChecked(True)
+    page.record_dir_edit.setText(str(tmp_path))
+    page._start_recording()
+    assert pump(qapp, lambda: harness.writer.frames, page=page)
+
+    page.shutdown()  # what MainWindow.closeEvent does
+    qapp.processEvents()
+    assert not page.recording.is_recording
+    saved = list(Path(tmp_path).glob("fpscoach-recording-*.mp4"))
+    assert len(saved) == 1
+    assert saved[0].stat().st_size > 0
+
+
+def test_analysis_interval_range_was_widened(make_page):
+    page = make_page(Harness())
+    assert page.record_interval.minimum() == pytest.approx(0.5)
+    assert page.record_interval.maximum() == pytest.approx(60.0)  # was 30 s
 
 
 def test_shutdown_while_recording_deletes_the_file(make_page, qapp):
@@ -282,6 +341,41 @@ def test_service_emits_started_analysis_and_stopped(qapp):
     assert 0.0 <= tick.mean <= 255.0
     assert not service.is_recording
     assert not harness.writers[-1].path.exists()
+
+
+def test_service_keeps_the_file_when_asked(qapp, tmp_path):
+    harness = Harness()
+    service = _service(qapp, harness)
+    assert service.start(fps=60.0, analysis_interval=5.0, keep=True, save_dir=str(tmp_path / "out"))
+    assert pump(qapp, lambda: harness.writers and harness.writers[-1].frames, timeout=8.0)
+
+    summary = service.stop()
+    assert summary is not None and summary.kept is True
+    saved = Path(summary.path)
+    assert saved.exists()
+    assert saved.parent == (tmp_path / "out").resolve()
+    assert saved.name.startswith("fpscoach-recording-")
+    assert not list(saved.parent.glob("bg_capture_*")), "the scratch name must be replaced"
+
+
+def test_service_discards_the_file_by_default(qapp):
+    harness = Harness()
+    service = _service(qapp, harness)
+    assert service.start(fps=60.0, analysis_interval=5.0)
+    assert pump(qapp, lambda: harness.writers and harness.writers[-1].frames, timeout=8.0)
+    summary = service.stop()
+    assert summary is not None and summary.kept is False
+    assert not Path(summary.path).exists()
+
+
+def test_service_shutdown_keeps_a_requested_file(qapp, tmp_path):
+    harness = Harness()
+    service = _service(qapp, harness)
+    assert service.start(fps=60.0, analysis_interval=5.0, keep=True, save_dir=str(tmp_path))
+    assert pump(qapp, lambda: harness.writers and harness.writers[-1].frames, timeout=8.0)
+    service.shutdown()
+    saved = list(Path(tmp_path).glob("fpscoach-recording-*.mp4"))
+    assert len(saved) == 1
 
 
 def test_service_poll_reports_capture_errors_and_stops(qapp):

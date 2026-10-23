@@ -31,9 +31,9 @@ Future pixel models should add a D3D11 compute shader (or DirectML execution pro
 
 `screen_recorder.py` is a Qt-free engine: a capture thread grabs the primary display with `mss`, writes BGRA→BGR frames into a `cv2.VideoWriter`, and publishes each frame into a single-slot, sequence-numbered `LatestFrameBuffer` (readers always get a private copy; old frames are overwritten so a slow consumer adds no latency). A second thread fires an `analysis_callback` every `analysis_interval` seconds on an absolute schedule, skips ticks that arrive before the first frame, does not replay missed ticks, and survives callback exceptions.
 
-`capture_recording.py` owns one instance as `RecordingService` and republishes its state as Qt signals (`started`, `analysis`, `stopped`, `failed`), so the page never touches a worker thread. The Capture tab's Recording card starts and stops it; its 250 ms stats timer polls the raw counters. `stop()`/`shutdown()` join both threads, release the encoder, close the `mss` handle on the capture thread that created it, and unlink the temporary file; `MainWindow.closeEvent` calls `shutdown()` so closing the app never leaves a recording behind. If `mss`, `numpy` or `opencv-python-headless` is missing (the `recorder` extra), the card disables itself and says what to install.
+`capture_recording.py` owns one instance as `RecordingService` and republishes its state as Qt signals (`started`, `analysis`, `stopped`, `failed`), so the page never touches a worker thread. The Capture tab's Recording card starts and stops it; its 250 ms stats timer polls the raw counters. `stop()`/`shutdown()` join both threads, release the encoder, close the `mss` handle on the capture thread that created it, and then either unlink the file (default) or move it to `fpscoach-recording-<stamp>.mp4` in the folder chosen with **Keep the recording**; `MainWindow.closeEvent` calls `shutdown()`, so closing the app stops the recording and honours that choice. If `mss`, `numpy` or `opencv-python-headless` is missing (the `recorder` extra), the card disables itself and says what to install.
 
-The recording is a scratch file for the user's own review: it is deleted when recording stops, is never uploaded, and is not analysed for targets, aim, or gameplay events. The analysis tick only samples frame statistics (size and mean brightness) as a pipeline health check. `tools/screen_recorder.py` is a command-line front end for the same engine.
+Recordings are user-controlled files for the user's own review. By default they are discarded at Stop; with **Keep** they stay in the chosen folder until deleted by the user. Nothing is uploaded, and the file is not analysed for targets, aim, or gameplay events: the analysis tick samples frame statistics (size and mean brightness) as a pipeline health check. `tools/screen_recorder.py` is a command-line front end for the same engine.
 
 ## Movement model
 
@@ -76,7 +76,7 @@ Intentionally excluded:
 - game-process access, memory reading, or DLL injection,
 - target/enemy detection,
 - input hooks, synthetic mouse input, recoil compensation, or aim automation,
-- background or unattended recording, telemetry, automatic uploads, or automatic model downloads (the scratch recording is user-started, stops with the app, and is deleted on stop),
+- unattended recording that keeps running without the app open, telemetry, automatic uploads, or automatic model downloads (recording is started by the user and stops when the app closes; the file may be kept locally on request),
 - automatic modification of game or driver settings.
 
 The application should remain useful when capture is disabled. Game-specific policy always takes precedence; users should close capture where external capture software is prohibited.

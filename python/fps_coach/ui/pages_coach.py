@@ -848,11 +848,12 @@ class AIChatPage(QWidget):
 
 
 PRIVACY_POINTS: tuple[str, ...] = (
-        "The live capture preview is processed in memory and is not written to disk.",
-        "Scratch recording (Capture tab) is off unless you start it. While it runs it writes a "
-        "temporary video of the primary display to your temp folder and deletes it when you "
-        "press Stop or close the app. It is never uploaded, and nothing is kept after the app "
-        "closes. Its analysis timer samples frame statistics only, never targets or gameplay events.",
+        "The live capture preview is processed in memory for the calibration analysis.",
+        "Recording (Capture tab) is off unless you start it. It records the primary display. "
+        "Without \"Keep the recording\" the file is deleted when you stop or close the app; with "
+        "it, the video is saved to the folder you pick and stays there until you delete it. "
+        "Recordings are never uploaded by the app. The analysis timer samples frame statistics "
+        "only, never targets or gameplay events.",
         "AI requests are sent only to the endpoint you configure in Settings.",
         "Voice recognition can run fully offline via a local model.",
         "The crosshair overlay is off by default. When it is on, or while you edit its "

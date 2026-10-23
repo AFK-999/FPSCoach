@@ -10,7 +10,7 @@ A lightweight, local-first foundation for an FPS movement/sensitivity coach. It 
 - **Desktop Duplication capture** (`IDXGIOutput1::DuplicateOutput`) on a dedicated C++ worker.
 - **Integrated-GPU support** by creating D3D11 on the selected output's owning adapter and defaulting to a bounded 640×360 GPU-side crop.
 - **Latest-frame buffering** so a slow preview drops stale work instead of accumulating latency.
-- **Scratch recording on the Capture tab** — records the primary display to a temporary video in the background, samples the newest frame on a configurable analysis timer, and deletes the file when you stop or close the app.
+- **Recording on the Capture tab** — records the primary display in the background and samples the newest frame on a configurable analysis timer. Discard the file when you stop (default) or keep it in a folder you choose.
 - **Display-change recovery** for `DXGI_ERROR_ACCESS_LOST`.
 - **In-app 12-target calibration** with ~125 Hz sampling during an explicit session.
 - **Native movement model** that measures path efficiency, overshoot, underreach, corrections, oscillation, endpoint error, speed, and duration.
@@ -76,7 +76,7 @@ python -m fps_coach
 ## First-use flow
 
 1. Open **Beginner guide** and retain a copy of your current mouse/game profile.
-2. In **Capture**, select the output that shows your borderless-windowed game. Start with **Center 640×360** and 30 or 60 FPS on integrated graphics. The **Recording** card below it can write a scratch recording of the primary display for your own review; it is deleted when you stop.
+2. In **Capture**, select the output that shows your borderless-windowed game. Start with **Center 640×360** and 30 or 60 FPS on integrated graphics. The **Recording** card below it can record the primary display for your own review: untick **Keep the recording** to discard it at Stop, or leave it ticked to save it to the folder you choose.
 3. In **Calibration**, click all 12 targets using your normal grip and sensitivity.
 4. Review **Recommendation**. The `x` coordinate is normalized input speed and `y` is normalized output speed.
 5. In **Recommendation**, select **Custom Curve 4 (.cc4)** or **Custom Curve 3 / legacy (.ccurve)**, then import or export explicitly. Export creates a profile file; it never applies one.

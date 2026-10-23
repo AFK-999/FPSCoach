@@ -1,6 +1,6 @@
 # FPS Coach (Vantage) Privacy Policy
 
-Last updated: 2026-10-23 (rev73)
+Last updated: 2026-10-23 (rev74)
 
 This policy describes what FPS Coach stores, what it sends, and what it never does.
 The same statements appear in the app on the Privacy page.
@@ -16,14 +16,18 @@ The same statements appear in the app on the Privacy page.
 
 ## Screen capture
 
-- The live capture preview is processed in memory for the app's own calibration analysis
-  and is not written to disk.
-- **Scratch recording (Capture tab, Recording card) is off unless you start it.** While it
-  runs it writes a temporary video of the **primary display** to your system temp folder,
-  and it deletes that file as soon as you press Stop or close the app. It is not uploaded,
-  not copied elsewhere, and no recording is kept after the app closes.
-- The recording's analysis timer samples frame statistics only (size and mean brightness)
-  as a pipeline health check. It does not look for targets, shooting, or gameplay events.
+- The live capture preview is processed in memory for the app's own calibration analysis.
+- **Recording (Capture tab, Recording card) is off unless you start it.** While it runs it
+  writes a video of the **primary display**, either to your temp folder or, if you tick
+  **Keep the recording**, to the folder you choose (`Videos/FPSCoach` by default).
+  - Without **Keep**, the file is deleted when you press Stop or close the app.
+  - With **Keep**, the file is yours: it stays in that folder until you delete it,
+    including across app restarts, and it is named `fpscoach-recording-<date>-<time>.mp4`
+    so you can find it later.
+  - Recordings are never uploaded by the app. Anything you do with the file afterwards
+    (send it, sync it, open it elsewhere) is up to you.
+- The recording's analysis timer samples frame statistics (size and mean brightness) as a
+  pipeline health check. It does not look for targets, shooting, or gameplay events.
 - The capture window list reads window titles and process names only, so you can choose
   a window. It does not read or write any process's memory.
 
@@ -47,8 +51,11 @@ The same statements appear in the app on the Privacy page.
 
 - Gameplay-based feedback drawn over a game.
 - Detection of enemy targets or shooting from game footage.
-- Unattended or background recording, and any recording that outlives the app session.
 
 These were requested and then declined, because they would give a player an advantage
 in live play and break the rules of games that use anti-cheat systems. They are not
 built, and this policy does not describe them as features.
+
+Recording is available and user-controlled: it starts when you press Record, stops when
+you press Stop or close the app, and only outlives the session if you ask it to. It is a
+file for your own review, not part of any in-play assistance.

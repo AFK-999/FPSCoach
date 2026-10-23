@@ -1,8 +1,9 @@
 # Screen recorder (Capture tab)
 
-The Capture tab has a **Recording** card that records the primary display to a
-scratch video in the background while an analysis timer samples the newest frame
-at a fixed interval. The file is deleted when recording stops or the app closes.
+The Capture tab has a **Recording** card that records the primary display in the
+background while an analysis timer samples the newest frame at a fixed interval.
+By default the file is deleted when you stop or close the app; tick **Keep the
+recording** to save it to a folder you choose instead.
 
 ```
 Capture tab page  (ui/pages_setup.py, class CapturePage)
@@ -21,19 +22,24 @@ codec checks and timing experiments outside the app.
 
 ## What the card does
 
-- **Recording rate** (15 / 30 / 60 FPS) and **Analysis every** (0.5 – 30 s) are
+- **Recording rate** (15 / 30 / 60 FPS) and **Analysis every** (0.5 – 60 s) are
   saved in `QSettings` as `capture/record_fps` and `capture/record_interval`.
-- **Record** writes to a temporary `.mp4` (fourcc `mp4v`) in the system temp
-  folder; the status line ticks up with elapsed time, frames and analyses.
+- **Keep the recording** and the recordings folder are saved as
+  `capture/record_keep` and `capture/record_dir` (default `Videos/FPSCoach`).
+- **Record** writes an `.mp4` (fourcc `mp4v`) to the system temp folder, or to
+  the chosen folder when keeping; the status line ticks up with elapsed time,
+  frames and analyses.
 - **Stop** joins both worker threads, releases the encoder, closes the `mss`
-  handle on the capture thread that created it, and deletes the file. The
-  status then reports frames, seconds and how many analysis calls ran.
+  handle on the capture thread that created it, and then either deletes the
+  file (default) or renames it to `fpscoach-recording-<date>-<time>.mp4` in the
+  chosen folder. The status reports frames, seconds and the analysis calls.
 - The analysis line shows `#count · frame sequence · W×H · mean brightness` — a
   pipeline health check, not a gameplay analysis.
 - If `mss`, `numpy` or `opencv-python-headless` is missing, the card disables
   itself and tells you to install the `recorder` extra.
 - `MainWindow.closeEvent` calls `CapturePage.shutdown()`, so closing the app
-  mid-recording still deletes the scratch file.
+  mid-recording still tidies up: the file is deleted unless **Keep** is ticked,
+  in which case it is saved like a normal Stop.
 
 The card records the **primary display** through `mss`, independently of the
 native D3D11/DXGI preview above it. It is not tied to the game window selection:
@@ -89,7 +95,9 @@ holds the synthetic screen and fake encoder both suites share.
 
 ## Scope
 
-Recording is user-started and short-lived: it stops with the app and the file is
-deleted on stop. It is never uploaded, and it is not analysed for targets, aim,
-or gameplay events. `docs/PRIVACY.md` and `docs/architecture.md` document the
-same boundary.
+Recording is user-controlled. It starts when you press Record and stops when you
+press Stop or close the app; the file is discarded at Stop unless **Keep the
+recording** is ticked, in which case it stays in the folder you chose until you
+delete it. Nothing is uploaded by the app, and the recording is not analysed for
+targets, aim, or gameplay events (the timer samples frame statistics only).
+`docs/PRIVACY.md` and `docs/architecture.md` document the same boundary.
