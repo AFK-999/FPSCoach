@@ -152,6 +152,8 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     decides the exact value), not 1120 px. To reach 1120 px the tabs would have to shrink. That is a
     design choice, not made here. Tests: tests/test_topbar_fit.py (3; they fail on the previous code).
     Suite 370 passed, 2 skipped (native fake build). Wiring 32/32. ruff F clean. NOT verified on Windows.
+    PUSHED: origin/fix/redesign-backend-wiring (new remote branch, user push; the PR can be opened from
+    that branch). origin/main is NOT changed; main is still at the older commit 9cce612 locally.
     REV71 STATUS: Serious mode. The Dashboard has a "Serious mode" checkbox. When it is on, the six
     dashboard tiles leave the grid and bounce around the dashboard like the DVD screensaver: each starts at
     its grid cell with a random direction (20 to 70 degrees), turns at the edges of the stage, and can
