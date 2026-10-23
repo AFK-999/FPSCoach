@@ -324,6 +324,7 @@ class MainWindow(QMainWindow):
         self.settings_page.stop_speaking_requested.connect(self._on_stop_speaking)
         self.settings_page.text_size_changed.connect(self._on_reply_text_size)
         self.settings_page.settings_changed.connect(self._on_settings_changed)
+        self.settings_page.bounce_speed_changed.connect(self.dashboard_page.set_bounce_speed)
         self.training_page.session_recorded.connect(self._on_session_recorded)
         self.crosshair_page.edited.connect(self._on_crosshair_edited)
         self.crosshair_page.activation_changed.connect(self._set_crosshair_overlay)

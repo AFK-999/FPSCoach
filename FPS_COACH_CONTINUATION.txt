@@ -1,7 +1,7 @@
 ================================================================================
 FPS COACH — CONTINUATION / HANDOFF DOCUMENT
 Copy-paste this whole file into a new agent chat to resume with zero context loss.
-Last updated: 2026-10-23 (rev 70)  (update after EVERY response)
+Last updated: 2026-10-23 (rev 71)  (update after EVERY response)
 
 *** IMPORTANT (rev4): The REAL repo was provided and differs a lot from the
 *** earlier scaffold. Work on the REAL repo at /home/user/workspace/FPSCoach
@@ -145,6 +145,22 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     /home/user/workspace/FPSCoach   (clone of https://github.com/AFK-999/FPSCoach.git)
     Remote origin/main = e9e69a2   (the visual REDESIGN; based on 04e6b0f)
     Working branch     = fix/redesign-backend-wiring (from e9e69a2), NOT pushed.
+    REV71 STATUS: Serious mode. The Dashboard has a "Serious mode" checkbox. When it is on, the six
+    dashboard tiles leave the grid and bounce around the dashboard like the DVD screensaver: each starts at
+    its grid cell with a random direction (20 to 70 degrees), turns at the edges of the stage, and can
+    overlap. Clicking a moving tile still opens it. While the tiles move, their reorder and hide buttons
+    are hidden. Turning the mode off puts the tiles back in the grid. The mode is saved (dashboard/serious_mode)
+    and comes back on restart. Speed: Settings > Interface > "Serious mode speed", a slider from 25% to
+    300% (default 100%, shown exactly and updated while dragged). 100% is 150 px/s. The speed is saved as
+    dashboard/bounce_speed and applies on the next frame. The movement uses the real frame time, capped at
+    50 ms, so a stall never makes a tile jump. The timer runs only while the Dashboard is on screen.
+    Theme changes rebuild the tiles, and the tiles keep bouncing (the old tiles are hidden before Qt deletes
+    them). DECISIONS TO CHECK: (a) "application's shortcuts" was read as the dashboard tiles, the clickable
+    shortcuts to each page. The top navigation bar and the other cards do not move. (b) Serious mode runs
+    even when Settings > Interface > "Enable animations" is off: the explicit toggle wins. (c) The stage is
+    420 px tall at least, and tiles keep their size from when the mode starts. A window resize does not
+    resize them. (d) Tiles pass through each other, as DVD logos do. NOT verified on Windows (no GPU or
+    display check). Still NOT pushed.
     REV70 STATUS: Capture preview cause found and fixed; window capture changed to record only the
     selected window. (1) Cause of the visual delay, in order of size: the native worker slept after each
     copy, so a frame that arrived during the sleep waited up to one frame interval; the UI polled for new
@@ -1319,6 +1335,25 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
               - Native stress: 23,832 pulls in tight loops and 3 start/stop rounds, 0 torn frames.
               - Full suite 342 passed. ruff F clean. Wiring 32/32.
               - Harness used for the baseline: committed HEAD built with the same fake layer.
+
+  2026-10-23 (rev71)  SERIOUS MODE: DASHBOARD TILES BOUNCE; SPEED IN SETTINGS.
+              - python/fps_coach/dashboard_config.py: BOUNCE_SPEED_MIN/MAX/DEFAULT (25/300/100),
+                BOUNCE_BASE_SPEED (150 px/s), clamp_bounce_speed().
+              - python/fps_coach/ui/pages_setup.py: DashboardPage: "Serious mode" QCheckBox, set_serious_mode(),
+                set_bounce_speed(), _enter_bounce/_leave_bounce, _bounce_step (QTimer 16 ms, QElapsedTimer
+                frame time capped at 50 ms), showEvent/hideEvent start and stop the timer, _rebuild_tiles keeps
+                bouncing and hides old tiles before deleteLater. _Tile.edit_buttons + set_editing().
+              - python/fps_coach/ui/pages_coach.py: SettingsPage "Serious mode speed" ValueSlider in the
+                Interface card; bounce_speed_changed(int) signal; saves dashboard/bounce_speed.
+              - python/fps_coach/ui/main_window.py: settings_page.bounce_speed_changed -> dashboard_page.set_bounce_speed.
+              - tests/test_serious_mode.py (16): clamping, enter/leave, saved mode across restart, theme rebuild
+                without duplicates, hidden page does not move, bounds over a long run, speed scaling, stall cap,
+                clicks while moving, edit buttons hidden, Settings slider readout and save, main-window wiring.
+              - Full suite 367 passed, 2 skipped. ruff F clean. Wiring 32/32.
+              - Found, NOT fixed (pre-existing on HEAD): deleting a parentless SettingsPage from Python prints
+                "shared QObject was deleted directly" and once corrupted the heap on teardown (malloc_consolidate).
+                The app keeps its pages for its whole run, so this affects shutdown only, in tests. Tests keep
+                the page alive (_KEEP_ALIVE).
 
   2026-10-23 (rev70)  CAPTURE: PREVIEW LATENCY AND WINDOW-ONLY CAPTURE.
               - native/include/fpscoach/capture.hpp: CapturedFrame.arrival_us; CaptureStats.capture_mode,

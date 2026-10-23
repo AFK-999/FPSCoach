@@ -69,3 +69,21 @@ def move(order: list[str], key: str, delta: int) -> list[str]:
     items.pop(index)
     items.insert(new_index, key)
     return items
+
+
+# Serious mode: the dashboard tiles bounce around like the DVD screensaver.
+# The speed is a percentage of BOUNCE_BASE_SPEED (pixels per second at 100 %).
+BOUNCE_SPEED_MIN = 25
+BOUNCE_SPEED_MAX = 300
+BOUNCE_SPEED_DEFAULT = 100
+BOUNCE_BASE_SPEED = 150.0
+
+
+def clamp_bounce_speed(value) -> int:
+    """A stored or slider value as a whole percentage in range. Bad input gives the default."""
+    try:
+        number = int(float(value))
+    except (TypeError, ValueError):
+        return BOUNCE_SPEED_DEFAULT
+    return max(BOUNCE_SPEED_MIN, min(BOUNCE_SPEED_MAX, number))
+

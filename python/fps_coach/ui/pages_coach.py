@@ -34,6 +34,12 @@ from fps_coach.ai_curve_actions import apply_adjustment, parse_adjustment
 from fps_coach.analytics import AnalyticsStore
 from fps_coach.local_data import clear_calibration_history, count_calibration_records
 from fps_coach.chat_suggestions import suggest
+from fps_coach.dashboard_config import (
+    BOUNCE_SPEED_DEFAULT,
+    BOUNCE_SPEED_MAX,
+    BOUNCE_SPEED_MIN,
+    clamp_bounce_speed,
+)
 from fps_coach.curve_adjust import apply_preset, normalized_overlay
 
 from .styles import active_palette, fx_enabled
@@ -964,6 +970,7 @@ class PrivacyPage(QWidget):
 
 class SettingsPage(QWidget):
     settings_changed = Signal()
+    bounce_speed_changed = Signal(int)  # serious-mode speed percentage, sent on every slider step
     stop_speaking_requested = Signal()  # Settings > Replies > Stop speaking
     text_size_changed = Signal(int)  # Settings > Replies > Reply text size, sent while dragging
 
@@ -1128,8 +1135,24 @@ class SettingsPage(QWidget):
         self.coach_panel.toggled.connect(self._on_ui_changed)
         form.addWidget(self.coach_panel, 3, 0, 1, 2)
 
+        # Serious mode (dashboard): how fast the tiles bounce. Its own signal, so a drag does not
+        # rebuild the dashboard the way a theme change does.
+        form.addWidget(_label("Serious mode speed", "formLabel"), 4, 0)
+        self.bounce_speed = ValueSlider(
+            BOUNCE_SPEED_MIN, BOUNCE_SPEED_MAX, fmt=lambda v: f"{v}%"
+        )
+        self.bounce_speed.setValue(clamp_bounce_speed(self.s.value("dashboard/bounce_speed", BOUNCE_SPEED_DEFAULT)))
+        self.bounce_speed.setToolTip("How fast the dashboard tiles bounce in serious mode.")
+        self.bounce_speed.valueChanged.connect(self._on_bounce_speed_changed)
+        form.addWidget(self.bounce_speed, 4, 1)
+
         lay.addLayout(form)
         return card
+
+    def _on_bounce_speed_changed(self, value: int) -> None:
+        value = clamp_bounce_speed(value)
+        self.s.setValue("dashboard/bounce_speed", value)
+        self.bounce_speed_changed.emit(value)
 
     def _on_ui_changed(self, *_args):
         self.s.setValue("ui/mode", self.mode.currentText())

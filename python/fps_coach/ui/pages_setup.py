@@ -5,12 +5,14 @@ logic is carried over unchanged from the previous window.
 """
 from __future__ import annotations
 
+import math
+import random
 from copy import deepcopy
 from dataclasses import replace  # noqa: F401  (kept for parity with curve helpers)
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QRect, Qt, QTimer, Signal
+from PySide6.QtCore import QElapsedTimer, QRect, QSignalBlocker, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QImage, QKeySequence, QPainter, QShortcut
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -30,6 +32,11 @@ from PySide6.QtWidgets import (
 )
 
 from fps_coach.ai_chat import AIChatClient  # noqa: F401  (re-exported for tests that patch this module)
+from fps_coach.dashboard_config import (
+    BOUNCE_BASE_SPEED,
+    BOUNCE_SPEED_DEFAULT,
+    clamp_bounce_speed,
+)
 from fps_coach.curve_adjust import adjust_from_recommendation, normalized_overlay
 from fps_coach.curve_io import (
     CurveFormatError,
@@ -73,8 +80,13 @@ class _Tile(QFrame):
     def __init__(self, key: str, parent=None):
         super().__init__(parent)
         self.key = key
+        self.edit_buttons: list[QWidget] = []  # reorder and hide buttons, hidden in serious mode
         self.setObjectName("tile")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def set_editing(self, on: bool) -> None:
+        for button in self.edit_buttons:
+            button.setVisible(on)
 
     def mouseReleaseEvent(self, event):  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton and self.rect().contains(event.position().toPoint()):
@@ -82,8 +94,33 @@ class _Tile(QFrame):
         super().mouseReleaseEvent(event)
 
 
+class _Bouncer:
+    """One tile while serious mode moves it: its position (floats) and unit direction."""
+
+    __slots__ = ("tile", "x", "y", "ux", "uy")
+
+    def __init__(self, tile: "_Tile", x: float, y: float, ux: float, uy: float):
+        self.tile = tile
+        self.x = x
+        self.y = y
+        self.ux = ux
+        self.uy = uy
+
+
+BOUNCE_FRAME_MS = 16  # about 60 frames a second
+BOUNCE_MAX_STEP_S = 0.05  # a long stall moves tiles at most this far, so they never jump
+BOUNCE_MIN_TILE_W = 220
+BOUNCE_MIN_STAGE_H = 420
+_NO_LIMIT = 16777215  # Qt's QWIDGETSIZE_MAX
+
+
 class DashboardPage(QWidget):
-    """Six module tiles. Click to open; reorder and hide them; values are live."""
+    """Six module tiles. Click to open; reorder and hide them; values are live.
+
+    Serious mode: the tiles leave the grid and bounce around the dashboard, like the DVD screensaver.
+    While they move, reordering and hiding are paused (their buttons are hidden). Turning the mode off
+    puts the tiles back in the grid. Clicking a moving tile still opens it.
+    """
 
     TILES = [
         ("capture", "Capture", "Live source status"),
@@ -94,6 +131,7 @@ class DashboardPage(QWidget):
         ("chat", "AI Coach", "Conversation history"),
     ]
     COLUMNS = 3
+    GRID_GAP = 14
 
     navigate = Signal(str)
 
@@ -113,12 +151,32 @@ class DashboardPage(QWidget):
         self._value_labels: dict[str, QLabel] = {}
         self._caption_labels: dict[str, QLabel] = {}
         self._titles = {t[0]: t for t in self.TILES}
+        self._tiles: list[_Tile] = []  # visible tiles in display order, in the grid or bouncing
+
+        self._serious = bool(self.s.value("dashboard/serious_mode", False, type=bool))
+        self._bounce_speed = clamp_bounce_speed(self.s.value("dashboard/bounce_speed", BOUNCE_SPEED_DEFAULT))
+        self._bouncers: list[_Bouncer] = []
+        self._rng = random.Random()
+        self._frame_clock = QElapsedTimer()
+        self._bounce_timer = QTimer(self)
+        self._bounce_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._bounce_timer.setInterval(BOUNCE_FRAME_MS)
+        self._bounce_timer.timeout.connect(self._bounce_step)
+
+        self.serious_check = QCheckBox("Serious mode")
+        self.serious_check.setToolTip(
+            "Tiles bounce around the dashboard like the DVD screensaver. Click a tile to open it. "
+            "Speed is set in Settings > Interface."
+        )
+        self.serious_check.setChecked(self._serious)
+        self.serious_check.toggled.connect(self.set_serious_mode)
+        outer.addWidget(self.serious_check, 0, Qt.AlignmentFlag.AlignLeft)
 
         self.grid_host = QWidget()
         self.grid = QGridLayout(self.grid_host)
         self.grid.setContentsMargins(0, 0, 0, 0)
-        self.grid.setHorizontalSpacing(14)
-        self.grid.setVerticalSpacing(14)
+        self.grid.setHorizontalSpacing(self.GRID_GAP)
+        self.grid.setVerticalSpacing(self.GRID_GAP)
         outer.addWidget(self.grid_host)
 
         self.restore_btn = QPushButton(" Show hidden tiles")
@@ -157,13 +215,130 @@ class DashboardPage(QWidget):
         self.s.setValue("dashboard/order", ",".join(self._order))
         self.s.setValue("dashboard/enabled", ",".join(k for k, v in self._enabled.items() if v))
 
+    # --- serious mode --------------------------------------------------------
+    @property
+    def serious_mode(self) -> bool:
+        return self._serious
+
+    @property
+    def bounce_speed(self) -> int:
+        """Current speed as a percentage (the Settings slider value)."""
+        return self._bounce_speed
+
+    def set_serious_mode(self, on: bool) -> None:
+        on = bool(on)
+        self._serious = on
+        self.s.setValue("dashboard/serious_mode", on)
+        with QSignalBlocker(self.serious_check):
+            self.serious_check.setChecked(on)
+        self._sync_bounce()
+
+    def set_bounce_speed(self, percent: int) -> None:
+        """Takes effect on the next frame. The Settings page saves the value."""
+        self._bounce_speed = clamp_bounce_speed(percent)
+
+    def _sync_bounce(self) -> None:
+        """Bring the layout and the timer in line with the mode and with whether the page is on screen."""
+        if not self._serious:
+            self._leave_bounce()
+        elif not self._bouncers and self.isVisible():
+            self._enter_bounce()
+        self._update_timer()
+
+    def _enter_bounce(self) -> None:
+        if self._bouncers or not self._tiles:
+            return
+        width = self.grid_host.width()
+        if width <= 0:
+            return  # not laid out yet; showEvent tries again
+        gap = self.GRID_GAP
+        tile_w = max(BOUNCE_MIN_TILE_W, (width - gap * (self.COLUMNS - 1)) // self.COLUMNS)
+        tile_h = max(tile.sizeHint().height() for tile in self._tiles)
+        rows = -(-len(self._tiles) // self.COLUMNS)
+        stage_h = max(rows * tile_h + (rows - 1) * gap, BOUNCE_MIN_STAGE_H)
+        self.grid_host.setFixedHeight(stage_h)
+        for index, tile in enumerate(self._tiles):
+            self.grid.removeWidget(tile)
+            tile.setFixedSize(tile_w, tile_h)
+            tile.set_editing(False)
+            x = (index % self.COLUMNS) * (tile_w + gap)
+            y = (index // self.COLUMNS) * (tile_h + gap)
+            tile.move(x, y)
+            tile.show()
+            # Random starting direction between 20 and 70 degrees off the horizontal, in any quadrant.
+            angle = self._rng.uniform(0.35, 1.2)
+            ux = math.cos(angle) * self._rng.choice((-1.0, 1.0))
+            uy = math.sin(angle) * self._rng.choice((-1.0, 1.0))
+            self._bouncers.append(_Bouncer(tile, float(x), float(y), ux, uy))
+
+    def _drop_bouncers(self) -> None:
+        """Stop moving the tiles and give back the size limits and fixed stage height."""
+        self._bounce_timer.stop()
+        for bouncer in self._bouncers:
+            bouncer.tile.setMinimumSize(0, 0)
+            bouncer.tile.setMaximumSize(_NO_LIMIT, _NO_LIMIT)
+        self._bouncers = []
+        self.grid_host.setMinimumHeight(0)
+        self.grid_host.setMaximumHeight(_NO_LIMIT)
+
+    def _leave_bounce(self) -> None:
+        if not self._bouncers:
+            return
+        self._drop_bouncers()
+        for index, tile in enumerate(self._tiles):
+            self.grid.addWidget(tile, index // self.COLUMNS, index % self.COLUMNS)
+            tile.set_editing(True)
+            tile.show()
+
+    def _update_timer(self) -> None:
+        if self._bouncers and self.isVisible():
+            if not self._bounce_timer.isActive():
+                self._frame_clock.restart()
+                self._bounce_timer.start()
+        else:
+            self._bounce_timer.stop()
+
+    def _bounce_step(self) -> None:
+        """Move each tile by its speed times the frame time, and turn it at the edges."""
+        dt = min(BOUNCE_MAX_STEP_S, self._frame_clock.restart() / 1000.0)
+        step = BOUNCE_BASE_SPEED * (self._bounce_speed / 100.0) * dt
+        width, height = self.grid_host.width(), self.grid_host.height()
+        for bouncer in self._bouncers:
+            tile = bouncer.tile
+            max_x = max(0, width - tile.width())
+            max_y = max(0, height - tile.height())
+            bouncer.x += bouncer.ux * step
+            bouncer.y += bouncer.uy * step
+            if bouncer.x <= 0:
+                bouncer.x, bouncer.ux = 0.0, abs(bouncer.ux)
+            elif bouncer.x >= max_x:
+                bouncer.x, bouncer.ux = float(max_x), -abs(bouncer.ux)
+            if bouncer.y <= 0:
+                bouncer.y, bouncer.uy = 0.0, abs(bouncer.uy)
+            elif bouncer.y >= max_y:
+                bouncer.y, bouncer.uy = float(max_y), -abs(bouncer.uy)
+            tile.move(round(bouncer.x), round(bouncer.y))
+
+    def showEvent(self, event):  # noqa: N802 - Qt naming
+        super().showEvent(event)
+        self._sync_bounce()
+        if self._serious and not self._bouncers:
+            # The grid may not have its final width yet; try again once the event loop has run.
+            QTimer.singleShot(0, self._sync_bounce)
+
+    def hideEvent(self, event):  # noqa: N802 - Qt naming
+        super().hideEvent(event)
+        self._update_timer()
+
     # --- tiles -------------------------------------------------------------
     def _rebuild_tiles(self):
+        self._drop_bouncers()
         while self.grid.count():
-            item = self.grid.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
+            self.grid.takeAt(0)
+        for tile in self._tiles:
+            tile.hide()  # deleteLater runs later; a hidden old tile cannot show at its old position
+            tile.deleteLater()
+        self._tiles = []
         self._value_labels.clear()
         self._caption_labels.clear()
 
@@ -171,10 +346,12 @@ class DashboardPage(QWidget):
         for index, key in enumerate(visible):
             _kind, title, subtitle = self._titles[key]
             tile = self._build_tile(key, title, subtitle)
+            self._tiles.append(tile)
             self.grid.addWidget(tile, index // self.COLUMNS, index % self.COLUMNS)
         for col in range(self.COLUMNS):
             self.grid.setColumnStretch(col, 1)
         self.restore_btn.setVisible(len(visible) < len(self.TILES))
+        self._sync_bounce()
 
     def _build_tile(self, key, title, subtitle):
         tile = _Tile(key)
@@ -197,12 +374,14 @@ class DashboardPage(QWidget):
             btn.setToolTip("Move tile " + ("up" if step < 0 else "down"))
             btn.clicked.connect(lambda _c=False, k=key, d=step: self._move(k, d))
             head.addWidget(btn)
+            tile.edit_buttons.append(btn)
         hide_btn = QToolButton()
         set_glyph(hide_btn, "close")
         hide_btn.setObjectName("iconButton")
         hide_btn.setToolTip("Hide tile")
         hide_btn.clicked.connect(lambda _c=False, k=key: self._hide(k))
         head.addWidget(hide_btn)
+        tile.edit_buttons.append(hide_btn)
         lay.addLayout(head)
 
         value = QLabel("\u2014")
