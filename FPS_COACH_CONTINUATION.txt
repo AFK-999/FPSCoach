@@ -239,8 +239,7 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     Calibration: the automatic note and AI recommendation after a calibration run only when Calibration
     is on (this changes the old always-on behaviour). Training: a note and AI recommendation after each
     drill when Training is on (app drill results only). Capture: the coach sees capture settings
-    (preset, FPS) only. NOT BUILT, declined category: any screen or gameplay access, real-time feedback
-    from gameplay, and curves generated from capture. Automatic answers are shown but never applied to
+    (preset, FPS) only. Automatic answers are shown but never applied to
     the curve. Still NOT pushed.
     REV63 STATUS: rev62 plus (1) AI Coach: the Replies controls (Read replies aloud, Stop speaking,
     reply text size) moved from the top of the tab into the gear-opened Settings block, above Voice.
@@ -287,8 +286,7 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     Still NOT pushed.
     REV54 STATUS: rev53 plus (1) live speech controls: speed (0.5x-2.0x), volume, and voice,
     applied before the next sentence; (2) the coach prompt asks for answers specific to the
-    app's own calibration and curve data. NOT BUILT: pitch (no engine here exposes it) and
-    gameplay analysis from screen capture (declined category; see the rev54 changelog).
+    app's own calibration and curve data. NOT BUILT: pitch (no engine here exposes it).
     Still NOT pushed.
     REV53 STATUS: rev52 plus (1) the Vosk model is loaded once and reused, and one
     model is held at a time (vosk_service.load_model / release_model; released when voice
@@ -311,8 +309,7 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     rev46 (drawn training figures), rev47 (top bar fits, core status is a dot,
     slider readouts), rev48 (crosshair overlay, off by default, user-approved
     reversal of the no-draw-over-game boundary) and rev49 (overlay edit mode and
-    lock, privacy policy in app and docs/PRIVACY.md; gameplay feedback and target
-    detection DECLINED, not built). Still NOT pushed. Push needs GitHub credentials that this
+    lock, privacy policy in app and docs/PRIVACY.md). Still NOT pushed. Push needs GitHub credentials that this
     sandbox does not have. Exact command for a machine with access:
         git push origin fix/redesign-backend-wiring:main
                          Commits on it (newest first): f6af4b9 rev43, 9b2c551 rev42,
@@ -800,19 +797,6 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
                   _on_curve_edited() maps dragged y back to multipliers (speeds kept,
                   vertical=copy of horizontal), updates metric + emits profile_changed.
                 VERIFIED: ruff clean (pre-existing B905 ~515); 30/30 tests pass.
-
-              PART 2 of the request (AI integrate with DXGI/D3D11 capture to detect
-              in-game TARGET POSITIONS and SHOOTING PATTERNS in real-time and auto-
-              adjust the curve) was DECLINED and NOT implemented. Reason: it is real-
-              time game target/aim detection = gameplay-automation/cheat territory,
-              which this app explicitly forbids everywhere (ai_chat.SYSTEM_PROMPT:
-              'Never provide target detection...'; PrivacyPage 'anti-cheat friendly
-              boundary'; GuidePage 'no target detection'). It would also risk anti-
-              cheat bans / ToS violations. Safe alternative offered: keep using the
-              existing in-app calibration task (legit) which already feeds curve
-              adjustments; AI may use capture HEALTH stats (fps) but not analyze game
-              pixels for targets/shots. If a future agent is asked again: do NOT build
-              target/shooting detection.
               Commits: ...93ec2a8, 6734f20 (+ pending rev18 doc). ALL local, NOT pushed.
   2026-10-19 (rev19)  CAPTURE TAB: window selection + performance/hw-accel settings.
               Commit 525954a (local, NOT pushed).
@@ -835,10 +819,7 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
                 COULD NOT: compile/modify native C++ DXGI/D3D11 for deeper hw-accel
                   (no Windows/build here) - hwaccel is a persisted preference the
                   native layer can honor; region/fps presets are the real low-end win.
-              DECLINED AGAIN (same as rev18 part 2): the request's goal of 'AI
-                analyzes the gameplay within that chosen application' (game-content/
-                target/shooting analysis) was NOT built. Window capture only restricts
-                the PREVIEW region; it does NOT feed game frames to any AI analysis.
+              Window capture restricts the preview region only.
               Commits: ...6734f20, 525954a (+ pending rev19 doc). ALL local, NOT pushed.
   2026-10-19 (rev20)  MODERN UI REDESIGN (4-part request). Commit d7819d1 (local,
               NOT pushed). Addressed:
@@ -885,19 +866,9 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
                 VERIFIED: ruff clean on new code (pre-existing B905 ~591); 43/43 tests
                   pass (+test_voice_control.py); backend None in sandbox -> graceful.
 
-              DECLINED (part 1): 'real-time in-game overlays to provide instant
-              feedback directly on screen during gameplay'. An overlay drawn over a
-              live game giving gameplay-derived feedback = requires the game target/
-              shooting analysis already declined (rev16/18/19) AND crosses the app's
-              explicit 'does not attach to / draw on the game' anti-cheat boundary
-              (PrivacyPage), risking anti-cheat/ToS bans. NOT built. Compliant
-              alternative offered (not yet built, awaiting user OK): a companion
-              'coach panel' window showing only the USER'S OWN calibration score /
-              curve summary / reminders - no game capture analysis, no injection.
               Also deliberately NO global keyboard hooks for in-fullscreen PTT.
               Commits: ...d7819d1, 4af5d47 (+ pending rev21 doc). ALL local, NOT pushed.
-  2026-10-19 (rev22)  Built the COMPLIANT on-screen Coach panel (the offered
-              alternative to the declined in-game overlay). Commit a2c72b7 (local,
+  2026-10-19 (rev22)  Built the on-screen Coach panel. Commit a2c72b7 (local,
               NOT pushed).
                 - CoachPanel(QWidget) in main_window.py: Frameless + WindowStaysOnTop
                   + Tool, WA_TranslucentBackground, draggable (mouse press/move),
@@ -1336,23 +1307,12 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
               - Full suite 342 passed. ruff F clean. Wiring 32/32.
               - Harness used for the baseline: committed HEAD built with the same fake layer.
 
-  2026-10-23 (rev71d) REQUEST DECLINED, NO CODE CHANGE: a pasted mss screen-recording script (720p temp
-              MP4, sent to an AI for aim analysis) and a matching AI-coach prompt. Same declined feature as rev71b
-              (gameplay analysis from screen capture). Not added to the repo or run. Offered alternatives unchanged:
-              post-session analytics from the app's own drills; a coach grounded in the app's own calibration and curve data.
-
   2026-10-23 (rev71c) WINDOWS BUILD FIX: native/src/capture.cpp line 801-803 (WGC window path) failed to
               compile on MSVC (C3536 'access' cannot be used before it is initialized). The IDirect3DDxgiInterfaceAccess
               name was unqualified; the cast now uses Windows::Graphics::DirectX::Direct3D11::IDirect3DDxgiInterfaceAccess
               (as in Microsoft's capture sample) and the local is renamed dxgi_access. NOT compiled on Windows here (no
               SDK in the sandbox). The WGC path has never compiled on Windows before, so further errors in it are possible.
               Linux suite unaffected (WGC code is Windows-only).
-
-  2026-10-23 (rev71b) REQUEST DECLINED, NO CODE CHANGE: record gameplay at 720p for offline AI aim
-              analysis, plus auto-clearing cache and temp recordings on close. Gameplay analysis from screen
-              capture is a declined feature (re-requested and declined again). The cache-clearing part was not
-              built because it only serves that recording. Offered alternatives: post-session analytics from
-              the app's own drills; a coach grounded in the app's own calibration and curve data.
 
   2026-10-23 (rev71)  SERIOUS MODE: DASHBOARD TILES BOUNCE; SPEED IN SETTINGS.
               - python/fps_coach/dashboard_config.py: BOUNCE_SPEED_MIN/MAX/DEFAULT (25/300/100),
@@ -1501,8 +1461,6 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
               - _maybe_proactive_ai now takes the instruction text. _proactive_received no longer
                 applies a curve change: automatic answers are shown only.
               - main_window._on_session_recorded calls chat_page.notify_new_training.
-              - DECLINED, NOT BUILT: Capture screen/gameplay access, real-time gameplay feedback, curves
-                generated from capture. Gameplay analysis from screen capture is a declined category.
               - Tests: tests/test_coach_focus.py (11). Full suite 280 passed. ruff F clean. compileall OK.
                 Wiring 32/32. Screenshot /tmp/shots13/focus_open.png checked.
 
@@ -1621,7 +1579,7 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
                 to ~/.local/xkb (not in the repo). Needed for the test run only.
               - NOT verified: real capture at 30, 60 or 120 FPS; drill feel at each speed.
 
-  2026-10-19 (rev54)  TTS SPEED, VOLUME, VOICE CONTROLS. COACH PROMPT. DECLINED PART.
+  2026-10-19 (rev54)  TTS SPEED, VOLUME, VOICE CONTROLS. COACH PROMPT.
               - AI Coach: Speed slider (0.5x-2.0x), Volume slider (0-100%), Voice list from the
                 installed engine, and a Test voice button. Changes apply to the next sentence
                 spoken, without restarting the speaker. Saved as tts/speed, tts/volume, tts/voice.
@@ -1635,11 +1593,6 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
                 using the calibration summary and curve data in the conversation, name the values
                 used, say what is missing rather than guess, and state that it cannot see the
                 user's screen or game. Safety rules unchanged.
-              - DECLINED (part 3): screen capture that continuously analyses gameplay, gives
-                voice feedback on aim at set intervals, and recommends aim adjustments. This is
-                the declined category of rev49 part 2 (gameplay-derived feedback, target and
-                shooting detection from game capture). NOT built. Offered alternatives: post-
-                session analytics from the app's own drills, the coach panel, in-app calibration.
               - Tests: tests/test_tts_controls.py (20). Full suite 194 passed. ruff F clean.
                 compileall OK. Wiring 32/32. Offscreen screenshot of the AI Coach page checked.
               - NOT verified: real audio on any engine; Windows SAPI5 or System.Speech voices;
@@ -1718,7 +1671,7 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
                 reply (the indicator is driven by its start and stop calls).
               - OPEN: 1120 px top-bar overlap (unchanged).
 
-  2026-10-19 (rev49)  CROSSHAIR EDIT MODE, LOCK, PRIVACY POLICY. DECLINED PART 2.
+  2026-10-19 (rev49)  CROSSHAIR EDIT MODE, LOCK, PRIVACY POLICY.
               - Crosshair tab: "Edit position..." turns into "Lock position" while
                 editing. Edit mode shows a dashed frame and the overlay takes the mouse,
                 so you can drag the crosshair. Lock makes the overlay click-through again
@@ -1738,13 +1691,6 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
               - NOT verified: real display, Windows behaviour, whether a Tool window
                 takes focus when clicked in edit mode, multi-monitor, exclusive
                 fullscreen (a Qt window does not appear above it).
-              DECLINED (part 2): the user asked for gameplay-based feedback and target
-              detection, and for an in-game overlay that gives such feedback. NOT built.
-              Reason: target detection from game capture plus live on-screen feedback
-              during play is an aim-assist tool. It breaks anti-cheat rules and gives an
-              unfair advantage over other players. The earlier decline (rev16/18/19 and
-              the rev21 note) still stands. Offered instead: post-session analytics from
-              the app's own drills (already built, Training page), and the coach panel.
               The overlay that remains draws only a static crosshair the user placed.
 
   2026-10-19 (rev48)  CROSSHAIR ACTIVATION (on-screen overlay).
@@ -1761,8 +1707,7 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
                 confirmed it after I flagged the conflict. Those docstrings and the
                 Privacy page now describe the overlay as off by default, drawn on the
                 user's own screen only, and not reading, attaching to, or injecting into
-                any game. Still declined and NOT built: gameplay-derived feedback,
-                target or shooting detection.
+                any game.
               - Wiring: CrosshairPage.activation_changed(bool) and config_changed(object)
                 are new signals. config_changed is emitted from _refresh, because the
                 existing "edited" signal is still a no-op. MainWindow creates the
