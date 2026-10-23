@@ -20,6 +20,8 @@ dependencies = [
 dev = [
   "pytest>=8",
   "ruff>=0.6",
+  # tools/screen_recorder.py and its tests (tests are headless, no cv2 needed).
+  "numpy>=1.24",
 ]
 build = [
   "pyinstaller>=6",
@@ -37,6 +39,12 @@ voice-offline = [
 tts = [
   # Offline text-to-speech for AI responses.
   "pyttsx3>=2.90",
+]
+recorder = [
+  # tools/screen_recorder.py, a developer capture utility. Not used by the app.
+  "mss>=10",
+  "numpy>=1.24",
+  "opencv-python-headless>=4.8",
 ]
 
 [project.scripts]

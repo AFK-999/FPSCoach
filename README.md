@@ -34,6 +34,7 @@ A lightweight, local-first foundation for an FPS movement/sensitivity coach. It 
 │   └── ui/                     # PySide6 pages and calibration canvas
 ├── docs/architecture.md
 ├── scripts/bootstrap.ps1
+├── tools/screen_recorder.py    # developer screen-capture utility (not shipped)
 └── tests/                      # Python reference-model tests
 ```
 

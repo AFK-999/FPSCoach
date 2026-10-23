@@ -1,7 +1,7 @@
 ================================================================================
 FPS COACH — CONTINUATION / HANDOFF DOCUMENT
 Copy-paste this whole file into a new agent chat to resume with zero context loss.
-Last updated: 2026-10-23 (rev 71)  (update after EVERY response)
+Last updated: 2026-10-23 (rev 72)  (update after EVERY response)
 
 *** IMPORTANT (rev4): The REAL repo was provided and differs a lot from the
 *** earlier scaffold. Work on the REAL repo at /home/user/workspace/FPSCoach
@@ -145,6 +145,29 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     /home/user/workspace/FPSCoach   (clone of https://github.com/AFK-999/FPSCoach.git)
     Remote origin/main = e9e69a2   (the visual REDESIGN; based on 04e6b0f)
     Working branch     = fix/redesign-backend-wiring (from e9e69a2), NOT pushed.
+    REV72 STATUS: rev71c plus a screen-recorder DEVELOPER TOOL (tools/, not in the app).
+    What: tools/screen_recorder.py records the primary monitor with mss into a temp video on a background
+    thread, keeps the newest frame in a lock-protected single-slot buffer (LatestFrameBuffer, private copy per
+    read, sequence counter), and runs a second thread ("screen-analysis") that calls a configurable callback
+    every analysis_interval seconds. ScreenRecorder is a context manager: __exit__ -> cleanup() always runs,
+    which sets the stop event, joins both workers (join_timeout), releases cv2.VideoWriter and closes the mss
+    handle on the capture thread that made them (mss handles are per-thread), clears the buffer and unlinks
+    the temp file (idempotent; atexit hook covers interpreter exit). Tests: tests/test_screen_recorder.py,
+    32 headless tests (fake mss + fake writer, no display, no codec). Docs: docs/screen-recorder-tool.md.
+    DEPENDENCIES: new pyproject extra "recorder" (mss, numpy, opencv-python-headless); numpy added to "dev"
+    for the tests. README layout lists tools/.
+    BOUNDARY: the tool is NOT imported by fps_coach and is not in the wheel (wheel.packages is
+    python/fps_coach). It contains no game analysis and is not wired into the UI, so the fair-play boundary in
+    docs/PRIVACY.md and docs/architecture.md is unchanged and the rev71b decline still stands for product
+    features. DECISION TO CHECK: rev71b declined "record gameplay at 720p for offline AI aim analysis plus
+    auto-clearing temp recordings"; this rev adds the same mechanics only as an out-of-package developer
+    diagnostic utility (codec/timing experiments, synthetic test frames), not as a gameplay feature. Say the
+    word and it is removed, or moved into python/fps_coach to productise it (that WOULD change the boundary).
+    NOT verified: real display, Windows capture, real codec output on Windows (the encoder path was checked on
+    Linux with OpenCV 4.11: 320x240 @ 20 fps mp4 written and decoded back). Full repo pytest suite not run
+    here (PySide6 is not installed in the sandbox); the new file passes its own 32 tests and ruff.
+    Still NOT pushed.
+
     REV71 STATUS: Serious mode. The Dashboard has a "Serious mode" checkbox. When it is on, the six
     dashboard tiles leave the grid and bounce around the dashboard like the DVD screensaver: each starts at
     its grid cell with a random direction (20 to 70 degrees), turns at the edges of the stage, and can
@@ -1867,3 +1890,27 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
       The build pulls the Ollama tag qwen3:1.7b; the license has not been confirmed.
   [ ] Ollama redistribution terms for the embedded Full build (not confirmed).
   [ ] Target Windows arch and minimum OS. Installers are x64; no minimum OS is set.
+
+  2026-10-23 (rev72)  SCREEN RECORDER DEVELOPER TOOL (out of package).
+              - tools/screen_recorder.py (new, 909 lines): ScreenRecorder context manager on mss + cv2.VideoWriter;
+                LatestFrameBuffer (single slot, lock, sequence, copy-on-read, Event for wait_for_frame);
+                capture loop ("screen-capture") grabs the primary monitor, writes the frame, publishes it
+                (copy=False, fresh array per tick), drift-free pacing, 5 tolerated transient grab errors;
+                analysis loop ("screen-analysis") fires analysis_callback(frame_copy, sequence) on an absolute
+                schedule via Event.wait (no drift, no catch-up burst, callback exceptions logged and the timer
+                continues, ticks before the first frame skipped); stop()/cleanup()/__exit__/atexit teardown;
+                injectable sct_factory and writer_factory; CLI (--duration, --fps, --analysis-interval,
+                --monitor, --output-dir, --keep, --log-level).
+              - tests/test_screen_recorder.py (new, 32 tests): buffer integrity under three concurrent readers
+                (no torn frames), monotonic sequence, timer cadence and spacing, callback receives a private
+                copy, callback exception does not stop the timer, no callback before the first frame, stop from
+                inside the callback, cleanup after an exception in the with body, idempotent cleanup, keep /
+                output_dir, capture and writer failures reported via capture_error, atexit hook, param checks.
+              - docs/screen-recorder-tool.md (new); README layout lists tools/; pyproject extra "recorder"
+                (mss, numpy, opencv-python-headless) and numpy added to "dev".
+              - VERIFICATION (sandbox, Linux): pytest tests/test_screen_recorder.py 32/32; ruff check (repo
+                config) clean on both files; end-to-end with the REAL cv2.VideoWriter: 320x240 @ 20 fps mp4,
+                13 frames, decoded back with cv2.VideoCapture, temp file removed on exit; 20 start/stop cycles
+                left no threads, writers, or mss handles behind. NOT verified: real display, Windows, real
+                monitor sizes, GPU load. Full suite not run (PySide6 absent).
+              - Boundary: not imported by fps_coach, not in the wheel, no game analysis, no UI wiring.
