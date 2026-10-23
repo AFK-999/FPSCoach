@@ -713,6 +713,17 @@ class CalibrationPage(QWidget):
             shortcut.activated.connect(handler)
         self._update_history_buttons()
 
+    def clear_recommendation_state(self) -> None:
+        """Forget the last recommendation and the Undo/Redo steps (Privacy > Local data).
+
+        The curve on the chart and the curve Export writes are kept: they are the current curve,
+        not history.
+        """
+        self._last_recommendation = None
+        self._undo.clear()
+        self._redo.clear()
+        self._update_history_buttons()
+
     def _on_progress(self, completed: int, total: int):
         self.progress.setRange(0, max(1, total))
         self.progress.setValue(completed)
@@ -995,6 +1006,20 @@ class RecommendationPage(QWidget):
         self.empty_label.setVisible(False)
         self.chart.update()
         self.recommendation_ready.emit(recommendation)
+
+    def clear_result(self) -> None:
+        """Show the empty "awaiting calibration" state again (Privacy > Local data)."""
+        self.title_label.setText("Awaiting calibration")
+        self.multiplier_value.setText("\u2014")
+        self.confidence_value.setText("\u2014")
+        self.trials_value.setText("\u2014")
+        self.summary.setText("No recommendation yet. Run the calibration task first.")
+        self.reasons_label.setText("")
+        self.chart.previous_points = None
+        self.chart.points = []
+        self.chart.setVisible(False)
+        self.empty_label.setVisible(True)
+        self.chart.update()
 
     def _generate(self):
         summary = dict(self._backend.analyzer.summary())

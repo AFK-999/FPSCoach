@@ -44,6 +44,7 @@ from PySide6.QtWidgets import (
 
 from fps_coach.analytics import AnalyticsStore
 from fps_coach.backend import CoreBackend
+from fps_coach.local_data import CALIBRATION_HISTORY_NAME
 
 from .pages_coach import AIChatPage, PrivacyPage, SettingsPage
 from .crosshair_overlay import CrosshairOverlay
@@ -282,7 +283,12 @@ class MainWindow(QMainWindow):
         self.recommendation_page = RecommendationPage(self._backend)
         self.crosshair_page = CrosshairPage()
         self.chat_page = AIChatPage()
-        self.privacy_page = PrivacyPage(self._analytics_store, self.chat_page)
+        self.privacy_page = PrivacyPage(
+            self._analytics_store,
+            self.chat_page,
+            calibration_path=Path(__file__).resolve().parents[3] / CALIBRATION_HISTORY_NAME,
+        )
+        self.privacy_page.calibration_cleared.connect(self._on_calibration_cleared)
         self.settings_page = SettingsPage()
 
         self._pages = {
@@ -614,6 +620,16 @@ class MainWindow(QMainWindow):
         mult = float(recommendation.get("sensitivity_multiplier", 1.0))
         self.coach_panel.say(f"Applied the recommended curve (\u00d7{mult:.2f}) to the Calibration chart.")
         self._select_page("calibration")
+
+    def _on_calibration_cleared(self):
+        """Privacy > Local data > Clear calibration and recommendation history."""
+        self._backend.analyzer.reset()  # the trials Generate recommendation would use
+        self._last_summary = None
+        self._last_recommendation = None
+        self.calibration_page.clear_recommendation_state()
+        self.recommendation_page.clear_result()
+        self._refresh_dashboard()
+        self.coach_panel.say("Cleared the calibration and recommendation history.")
 
     def _on_recommendation(self, result):
         self._last_recommendation = dict(result)

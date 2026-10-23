@@ -1,7 +1,7 @@
 ================================================================================
 FPS COACH — CONTINUATION / HANDOFF DOCUMENT
 Copy-paste this whole file into a new agent chat to resume with zero context loss.
-Last updated: 2026-10-22 (rev 65)  (update after EVERY response)
+Last updated: 2026-10-22 (rev 66)  (update after EVERY response)
 
 *** IMPORTANT (rev4): The REAL repo was provided and differs a lot from the
 *** earlier scaffold. Work on the REAL repo at /home/user/workspace/FPSCoach
@@ -145,6 +145,14 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     /home/user/workspace/FPSCoach   (clone of https://github.com/AFK-999/FPSCoach.git)
     Remote origin/main = e9e69a2   (the visual REDESIGN; based on 04e6b0f)
     Working branch     = fix/redesign-backend-wiring (from e9e69a2), NOT pushed.
+    REV66 STATUS: rev65 plus Privacy > Local data: a new button "Clear calibration and recommendation
+    history". It empties .fpscoach_calibration_history.json (the rev14 file, the only saved calibration
+    record; it currently holds 4 records from 2026-10-19), resets the analyzer's trials, the Calibration
+    page's last recommendation and Undo/Redo steps (the curve on the chart is kept), and the Recommendation
+    page's shown result (back to "Awaiting calibration"). It asks for confirmation first. The training
+    clear button and the chat are unchanged. NOTE: the app adds no new calibration results to the file
+    (rev15), so the saved count stays at zero after a clear. Not reintroduced: the button only empties a
+    file. Still NOT pushed.
     REV65 STATUS: rev64 plus (1) AI Coach Focus: the "All three" master toggle is REMOVED. Capture,
     Calibration and Training are independent checkboxes and can be selected together freely (the
     user's request). Their saved values (coach/focus/*) and their behaviour are unchanged. (2) Test
@@ -1236,6 +1244,25 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
               slider and the new capture arguments); app.py quit run exit 0, no traceback.
               NOT verified: real display, Win32 window list, native capture, real Ollama,
               real game curve files, Windows build.
+
+  2026-10-22 (rev66)  PRIVACY > LOCAL DATA: CLEAR CALIBRATION AND RECOMMENDATION HISTORY.
+              - NEW python/fps_coach/local_data.py (Qt-free): CALIBRATION_HISTORY_NAME,
+                count_calibration_records(path), clear_calibration_history(path) (writes "[]", keeps the
+                file; a missing file is not created). calibration_history.py is NOT changed (left as
+                the user asked).
+              - pages_coach.py PrivacyPage: new calibration_path argument; second block in the Local data
+                card: note on the file, saved-count label, "Clear calibration and recommendation history"
+                button, confirmation, status. Emits calibration_cleared. The training clear is unchanged.
+              - pages_setup.py: CalibrationPage.clear_recommendation_state() (forgets last recommendation and
+                Undo/Redo; keeps the curve). RecommendationPage.clear_result() (back to "Awaiting calibration").
+              - main_window.py: passes the project-folder path; _on_calibration_cleared() resets the analyzer
+                (backend.analyzer.reset()), _last_summary, _last_recommendation, both pages, and the dashboard.
+              - Tests: tests/test_clear_calibration_history.py (13): helper (missing, none, clear, unreadable),
+                button placement in the Local data card, Yes/No paths, page resets, main-window clear of real
+                analyzer trials. Tests use temp paths only; the repo's real history file is not touched.
+              - Full suite 300 passed. ruff F clean. compileall OK. Wiring 32/32. Screenshot /tmp/shots14/privacy.png.
+              - Environment note: PySide6 6.12.0, pytest, ruff, pyttsx3 reinstalled with pip; libxkbcommon0
+                re-extracted to /home/user/.local/xkb (apt-get download + dpkg-deb -x).
 
   2026-10-22 (rev65)  FOCUS: MASTER TOGGLE REMOVED. TEST VOICE: REAL CAUSE FIXED (FRESH ENGINE + WATCHDOG).
               - pages_coach.py: "All three" checkbox, _sync_focus_master and _on_focus_master_toggled removed.

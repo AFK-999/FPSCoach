@@ -32,6 +32,7 @@ from fps_coach.ai_chat import ChatSettings, curve_context
 from fps_coach.tts_service import SPEED_MAX, SPEED_MIN, VOLUME_MAX, VOLUME_MIN, SpeechOptions
 from fps_coach.ai_curve_actions import apply_adjustment, parse_adjustment
 from fps_coach.analytics import AnalyticsStore
+from fps_coach.local_data import clear_calibration_history, count_calibration_records
 from fps_coach.chat_suggestions import suggest
 from fps_coach.curve_adjust import apply_preset, normalized_overlay
 
@@ -43,6 +44,7 @@ from .widgets import (
     _card,
     _content_page,
     _curve_samples,
+    _divider,
     _label,
     _page_header,
     _page_root,
@@ -856,10 +858,15 @@ PRIVACY_POINTS: tuple[str, ...] = (
 class PrivacyPage(QWidget):
     """What stays on this machine, and a real way to delete the stored history."""
 
-    def __init__(self, store: AnalyticsStore | None = None, chat_page=None, parent=None):
+    # The main window clears the in-session calibration and recommendation state on this.
+    calibration_cleared = Signal()
+
+    def __init__(self, store: AnalyticsStore | None = None, chat_page=None, parent=None,
+                 calibration_path=None):
         super().__init__(parent)
         self._store = store
         self._chat = chat_page
+        self.calibration_path = calibration_path  # saved calibration history file (may be None)
 
         scroll, outer = _content_page(960)
         _page_root(self, scroll)
@@ -893,6 +900,22 @@ class PrivacyPage(QWidget):
         lay2.addWidget(self.clear_btn, 0, Qt.AlignmentFlag.AlignLeft)
         self.status = _label("", "statusLabel", wrap=True)
         lay2.addWidget(self.status)
+
+        lay2.addWidget(_divider())
+        lay2.addWidget(_label(
+            "Calibration and recommendation history is saved to .fpscoach_calibration_history.json "
+            "in the project folder. The app does not add new calibration results to it.",
+            "cardSubtitle", wrap=True,
+        ))
+        self.calibration_count_label = _label("", "cardSubtitle")
+        lay2.addWidget(self.calibration_count_label)
+        self.clear_calibration_btn = QPushButton(" Clear calibration and recommendation history")
+        self.clear_calibration_btn.setObjectName("secondary")
+        set_glyph(self.clear_calibration_btn, "trash")
+        self.clear_calibration_btn.clicked.connect(self._clear_calibration)
+        lay2.addWidget(self.clear_calibration_btn, 0, Qt.AlignmentFlag.AlignLeft)
+        self.calibration_status = _label("", "statusLabel", wrap=True)
+        lay2.addWidget(self.calibration_status)
         outer.addWidget(card2)
         outer.addStretch(1)
         self.refresh()
@@ -900,6 +923,27 @@ class PrivacyPage(QWidget):
     def refresh(self) -> None:
         count = len(self._store.sessions) if self._store is not None else 0
         self.count_label.setText(f"{count} saved training session{'s' if count != 1 else ''}.")
+        saved = count_calibration_records(self.calibration_path)
+        self.calibration_count_label.setText(
+            f"{saved} saved calibration result{'s' if saved != 1 else ''}."
+        )
+
+    def _clear_calibration(self):
+        answer = QMessageBox.question(
+            self,
+            "Vantage",
+            "Delete the saved calibration and recommendation history, and clear the calibration "
+            "and recommendation shown on screen? This cannot be undone.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        removed = clear_calibration_history(self.calibration_path)
+        self.calibration_cleared.emit()
+        self.refresh()
+        self.calibration_status.setText(
+            f"Cleared {removed} saved calibration result{'s' if removed != 1 else ''} "
+            "and the recommendation on screen."
+        )
 
     def _clear(self):
         answer = QMessageBox.question(
