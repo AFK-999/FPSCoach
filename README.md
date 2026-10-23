@@ -16,6 +16,7 @@ A lightweight, local-first foundation for an FPS movement/sensitivity coach. It 
 - **Native movement model** that measures path efficiency, overshoot, underreach, corrections, oscillation, endpoint error, speed, and duration.
 - **Conservative custom curve recommendation** with monotonic points, sensitivity multiplier, confidence, and plain-language reasons.
 - **Custom Curve compatibility** for importing/exporting modern `.cc4` JSON profiles and legacy `.ccurve` text profiles, selected explicitly in the UI.
+- **In-Game Mode (Settings)** — off at every launch. Turn it on for a session, pick your game, and enter your DPI and in-game sensitivity; Vantage converts that to cm/360°, shows what its recommendation means in that game's units, and can ask the coach for a specific value. It never reads or changes the game.
 - **Optional AI coach** using local Ollama models (defaults to `qwen3:1.7b`, with `phi4-mini` as an option) or a user-configured OpenAI-compatible online API.
 - **Portable Python reference analyzer** so UI/model work can be previewed without the Windows extension.
 

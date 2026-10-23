@@ -324,6 +324,8 @@ class MainWindow(QMainWindow):
         self.settings_page.stop_speaking_requested.connect(self._on_stop_speaking)
         self.settings_page.text_size_changed.connect(self._on_reply_text_size)
         self.settings_page.settings_changed.connect(self._on_settings_changed)
+        self.settings_page.ingame_changed.connect(self._sync_ingame_context)
+        self.settings_page.ingame_question.connect(self._on_ingame_question)
         self.settings_page.bounce_speed_changed.connect(self.dashboard_page.set_bounce_speed)
         self.training_page.session_recorded.connect(self._on_session_recorded)
         self.crosshair_page.edited.connect(self._on_crosshair_edited)
@@ -601,9 +603,29 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     def _on_calibration_result(self, summary: dict, recommendation: dict):
         self._last_summary = dict(summary)
+        self._last_recommendation = dict(recommendation)
         self.recommendation_page.update_result(summary, recommendation)
         self.chat_page.notify_new_calibration(summary, recommendation)
+        # In-Game Mode shows what the multiplier means in the selected game's units.
+        self.settings_page.set_recommendation(recommendation)
         self._select_page("recommendation")
+
+    # ------------------------------------------------------------------
+    def _sync_ingame_context(self):
+        """Hand the In-Game Mode block (or nothing) to the coach.
+
+        The block is empty while the mode is off, so the model never receives
+        in-game numbers the user did not enable for this session.
+        """
+        self.chat_page.set_ingame_context(self.settings_page.ingame_context())
+
+    def _on_ingame_question(self, question: str):
+        """Ask-the-coach: drop the prepared question in the chat and show it."""
+        if not question:
+            return
+        self.chat_page.input.setText(question)
+        self._select_page("chat")  # AI Coach lives under the "chat" key
+        self.chat_page.input.setFocus()
 
     def _on_profile_changed(self, profile):
         self.coach_panel.say("Calibration profile updated.")

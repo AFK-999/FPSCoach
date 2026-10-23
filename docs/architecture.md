@@ -35,6 +35,16 @@ Future pixel models should add a D3D11 compute shader (or DirectML execution pro
 
 Recordings are user-controlled files for the user's own review. By default they are discarded at Stop; with **Keep** they stay in the chosen folder until deleted by the user. Nothing is uploaded, and the file is not analysed for targets, aim, or gameplay events: the analysis tick samples frame statistics (size and mean brightness) as a pipeline health check. `tools/screen_recorder.py` is a command-line front end for the same engine.
 
+## In-Game Mode (Settings)
+
+`ingame.py` is pure arithmetic over values the user types: a small catalog of games (`yaw` degrees per mouse count at in-game sensitivity 1.0), a cm/360° conversion with an optional measured 360° distance that overrides the catalog constant, and an `InGameMode` state holder. The Settings card (`SettingsPage._build_ingame_card`) exposes the session toggle, game, DPI, in-game sensitivity, measured distance, a live conversion line, and an **Ask the coach** button.
+
+The mode is **off at every launch by construction**: `InGameMode.enabled` starts `False` and the toggle is never written to `QSettings`. Only `ingame/game`, `ingame/dpi`, `ingame/sensitivity` and `ingame/measured_cm360` persist.
+
+When it is on, `MainWindow._sync_ingame_context()` appends `InGameMode.context_block()` to the coach's context; when it is off the block is empty and the model receives nothing. The block states the game, DPI, sensitivity, cm/360°, and what the app's current multiplier would be in-game, so the coach can answer with a concrete in-game number. `ai_chat.SYSTEM_PROMPT` describes that block and requires the model to present suggestions as the user's to apply, small and reversible, and never to claim it can read or change the game.
+
+No part of this module touches a game: there is no window enumeration, input injection, process access, file access, or capture. `tests/test_ingame_mode.py` asserts that by walking the module's AST (stdlib `dataclasses` only, no `open`, `subprocess`, `ctypes`, or window/input APIs) as well as checking the behaviour.
+
 ## Movement model
 
 Calibration gives the native analyzer timestamped pointer positions plus each known target. Per trial it extracts:

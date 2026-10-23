@@ -1,6 +1,6 @@
 # FPS Coach (Vantage) Privacy Policy
 
-Last updated: 2026-10-23 (rev74)
+Last updated: 2026-10-23 (rev75)
 
 This policy describes what FPS Coach stores, what it sends, and what it never does.
 The same statements appear in the app on the Privacy page.
@@ -31,6 +31,23 @@ The same statements appear in the app on the Privacy page.
 - The capture window list reads window titles and process names only, so you can choose
   a window. It does not read or write any process's memory.
 
+## In-Game Mode
+
+- **Off at every launch.** It only turns on when you enable it in Settings, and it goes
+  back to off the next time the app starts; the on/off state is not saved.
+- When it is on, the values you type (game, mouse DPI, in-game sensitivity, and an
+  optional measured 360° distance) are kept in your settings store so the card is
+  pre-filled next time. They are small numbers you entered; Vantage does not read them
+  from your mouse, your game, or your configuration files.
+- Vantage never reads, hooks, or changes the game: no window access, no memory access,
+  no input injection, and no capture of the game for this feature. The conversion is
+  arithmetic on your numbers.
+- While the mode is on, those numbers (and the resulting cm/360° and in-game suggestion)
+  are included in the context sent to your configured AI endpoint — the same endpoint
+  described under Network. With the mode off, nothing in-game is sent.
+- If software you use while playing requires other applications to be closed, keep this
+  mode off; the app's own Capture and crosshair features have the same consideration.
+
 ## Crosshair overlay
 
 - The overlay is **off by default**.
@@ -51,6 +68,8 @@ The same statements appear in the app on the Privacy page.
 
 - Gameplay-based feedback drawn over a game.
 - Detection of enemy targets or shooting from game footage.
+- Reading or changing game settings, memory, or input. In-Game Mode works only from
+  numbers you type and never suggests that Vantage applies them.
 
 These were requested and then declined, because they would give a player an advantage
 in live play and break the rules of games that use anti-cheat systems. They are not

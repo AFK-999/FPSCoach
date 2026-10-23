@@ -13,6 +13,7 @@ from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDoubleSpinBox,
     QFileDialog,
     QGridLayout,
     QHBoxLayout,
@@ -29,6 +30,7 @@ from PySide6.QtWidgets import (
 
 from fps_coach import scenarios as scenario_defs
 from fps_coach.ai_chat import ChatSettings, curve_context
+from fps_coach.ingame import GAMES, InGameMode
 from fps_coach.tts_service import SPEED_MAX, SPEED_MIN, VOLUME_MAX, VOLUME_MIN, SpeechOptions
 from fps_coach.ai_curve_actions import apply_adjustment, parse_adjustment
 from fps_coach.analytics import AnalyticsStore
@@ -187,6 +189,7 @@ class AIChatPage(QWidget):
         self._messages: list[dict[str, str]] = []
         self._summary_context = ""
         self._calibration_context = ""
+        self._ingame_context = ""
         self._base_profile = None
         self._adjusted_profile = None
         self._proactive_pending = None
@@ -394,6 +397,20 @@ class AIChatPage(QWidget):
         )
         return f"{context}\n\n{line}" if context else line
 
+    def set_ingame_context(self, block: str) -> None:
+        """Take the In-Game Mode block (game, DPI, cm/360°, suggestion) from Settings.
+
+        The block is built by ``fps_coach.ingame.InGameMode.context_block`` and is
+        empty while the mode is off, in which case the coach sees no in-game data.
+        """
+        self._ingame_context = str(block or "")
+        self._refresh_context()
+
+    def _with_ingame(self, context: str) -> str:
+        if not self._ingame_context:
+            return context
+        return f"{context}\n\n{self._ingame_context}" if context else self._ingame_context
+
     def set_base_profile(self, profile) -> None:
         """Receive the imported curve so suggestions and AI adjustments can build on it."""
         self._base_profile = deepcopy(profile) if profile is not None else None
@@ -422,7 +439,7 @@ class AIChatPage(QWidget):
                 f"({self._base_profile.source_format}); horizontal speed,gain points: {pts}. "
                 "When asked for adjustments, modify THIS curve rather than designing a new one."
             )
-        self._calibration_context = self._with_capture_focus(context)
+        self._calibration_context = self._with_ingame(self._with_capture_focus(context))
 
     def _local_proactive_note(self, summary: dict, recommendation: dict) -> str:
         title = str(recommendation.get("title", "Recommendation"))
@@ -854,6 +871,10 @@ PRIVACY_POINTS: tuple[str, ...] = (
         "it, the video is saved to the folder you pick and stays there until you delete it. "
         "Recordings are never uploaded by the app. The analysis timer samples frame statistics "
         "only, never targets or gameplay events.",
+        "In-Game Mode (Settings) is off at every launch and only turns on when you enable it "
+        "for that session. It never reads or changes the game: you type your game, DPI, and "
+        "in-game sensitivity, and the app converts those numbers. While it is on, those numbers "
+        "are included in the context sent to your configured AI endpoint.",
         "AI requests are sent only to the endpoint you configure in Settings.",
         "Voice recognition can run fully offline via a local model.",
         "The crosshair overlay is off by default. When it is on, or while you edit its "
@@ -978,6 +999,8 @@ class SettingsPage(QWidget):
     bounce_speed_changed = Signal(int)  # serious-mode speed percentage, sent on every slider step
     stop_speaking_requested = Signal()  # Settings > Replies > Stop speaking
     text_size_changed = Signal(int)  # Settings > Replies > Reply text size, sent while dragging
+    ingame_changed = Signal()  # In-Game Mode toggle or any of its values changed
+    ingame_question = Signal(str)  # "Ask the coach" with a ready-made question
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1003,6 +1026,7 @@ class SettingsPage(QWidget):
         right = QVBoxLayout()
         right.setSpacing(20)
         right.addWidget(self._build_ui_card())
+        right.addWidget(self._build_ingame_card())
         right.addWidget(self._build_replies_card())
         right.addWidget(self._build_advanced_card())
         right.addStretch(1)
@@ -1242,6 +1266,184 @@ class SettingsPage(QWidget):
 
         self.refresh_replies()
         return card
+
+    # ---- In-Game Mode -----------------------------------------------------
+    def _build_ingame_card(self):
+        """Session-only mode: name the game, get the conversion, ask the coach.
+
+        Off at every launch by design: ``InGameMode`` starts disabled and the
+        checkbox state is never written to QSettings, so a restart always lands
+        back in the off state. Only the game, DPI, and the user's own
+        sensitivity are remembered.
+        """
+        card, lay = _card(
+            "In-Game Mode",
+            "Tell Vantage which game you are practising and what sensitivity you use there, so "
+            "the coach can talk in that game's numbers.",
+        )
+
+        self.ingame_enabled = QCheckBox("Enable In-Game Mode (this session only)")
+        self.ingame_enabled.setToolTip(
+            "Turns off automatically every time Vantage starts. Vantage does not read or change "
+            "your game; you enter these values yourself."
+        )
+        self.ingame_enabled.setChecked(False)  # never restored from settings
+        self.ingame_enabled.toggled.connect(self._on_ingame_toggled)
+        lay.addWidget(self.ingame_enabled)
+
+        form = QGridLayout()
+        form.setHorizontalSpacing(12)
+        form.setVerticalSpacing(10)
+
+        form.addWidget(_label("Game", "formLabel"), 0, 0)
+        self.ingame_game = QComboBox()
+        for game in GAMES:
+            self.ingame_game.addItem(game.name, game.key)
+        saved_key = str(self.s.value("ingame/game", GAMES[0].key))
+        index = self.ingame_game.findData(saved_key)
+        self.ingame_game.setCurrentIndex(index if index >= 0 else 0)
+        self.ingame_game.currentIndexChanged.connect(self._on_ingame_values_changed)
+        form.addWidget(self.ingame_game, 0, 1)
+
+        form.addWidget(_label("Mouse DPI", "formLabel"), 1, 0)
+        self.ingame_dpi = QDoubleSpinBox()
+        self.ingame_dpi.setRange(100.0, 32000.0)
+        self.ingame_dpi.setSingleStep(50.0)
+        self.ingame_dpi.setDecimals(0)
+        self.ingame_dpi.setValue(float(self.s.value("ingame/dpi", 800.0, type=float)))
+        self.ingame_dpi.valueChanged.connect(self._on_ingame_values_changed)
+        form.addWidget(self.ingame_dpi, 1, 1)
+
+        form.addWidget(_label("In-game sensitivity", "formLabel"), 2, 0)
+        self.ingame_sens = QDoubleSpinBox()
+        self.ingame_sens.setRange(0.001, 100.0)
+        self.ingame_sens.setSingleStep(0.01)
+        self.ingame_sens.setDecimals(3)
+        self.ingame_sens.setValue(float(self.s.value("ingame/sensitivity", 1.0, type=float)))
+        self.ingame_sens.valueChanged.connect(self._on_ingame_values_changed)
+        form.addWidget(self.ingame_sens, 2, 1)
+
+        form.addWidget(_label("Measured 360°", "formLabel"), 3, 0)
+        self.ingame_measured = QDoubleSpinBox()
+        self.ingame_measured.setRange(0.0, 200.0)
+        self.ingame_measured.setSingleStep(0.5)
+        self.ingame_measured.setDecimals(1)
+        self.ingame_measured.setSuffix(" cm")
+        self.ingame_measured.setSpecialValueText("Not measured")
+        self.ingame_measured.setValue(float(self.s.value("ingame/measured_cm360", 0.0, type=float)))
+        self.ingame_measured.setToolTip(
+            "Optional: swipe a full turn in game, measure the distance, and enter it here. "
+            "The conversion then uses your measurement instead of the published constant."
+        )
+        self.ingame_measured.valueChanged.connect(self._on_ingame_values_changed)
+        form.addWidget(self.ingame_measured, 3, 1)
+
+        lay.addLayout(form)
+
+        self.ingame_result = _label("", "cardSubtitle", wrap=True)
+        lay.addWidget(self.ingame_result)
+
+        ask_row = QHBoxLayout()
+        self.ingame_ask_btn = QPushButton(" Ask the coach")
+        self.ingame_ask_btn.setObjectName("secondary")
+        set_glyph(self.ingame_ask_btn, "chat")
+        self.ingame_ask_btn.clicked.connect(self._ask_ingame)
+        ask_row.addWidget(self.ingame_ask_btn)
+        ask_row.addStretch(1)
+        lay.addLayout(ask_row)
+
+        self.ingame_note = _label(
+            "Vantage never reads, hooks, or changes the game. If other software must stay "
+            "closed while you play, keep this mode off.",
+            "cardSubtitle",
+            wrap=True,
+        )
+        lay.addWidget(self.ingame_note)
+
+        self._ingame = InGameMode(
+            game_key=saved_key,
+            dpi=self.ingame_dpi.value(),
+            sensitivity=self.ingame_sens.value(),
+            measured_cm360=self.ingame_measured.value(),
+        )
+        self._ingame_multiplier: float | None = None
+        self.ingame_stats = _label("", "cardSubtitle", wrap=True)
+        lay.addWidget(self.ingame_stats)
+        self._sync_ingame_controls()
+        self._refresh_ingame_result()
+        return card
+
+    def ingame_model(self) -> InGameMode:
+        """The session state, used by MainWindow to build the AI context."""
+        return self._ingame
+
+    def ingame_context(self) -> str:
+        """AI context block for the current state (empty while the mode is off)."""
+        return self._ingame.context_block(self._ingame_multiplier)
+
+    def set_recommendation(self, recommendation: dict | None) -> None:
+        """Show what the app's current recommendation means in this game's units."""
+        multiplier = None
+        if recommendation:
+            try:
+                value = float(recommendation.get("sensitivity_multiplier", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                value = 0.0
+            if value > 0:
+                multiplier = value
+        self._ingame_multiplier = multiplier
+        self._refresh_ingame_result()
+        self.ingame_changed.emit()
+
+    def _on_ingame_toggled(self, checked: bool) -> None:
+        # Session only: the flag is intentionally not written to QSettings.
+        if checked:
+            self._ingame.enable()
+        else:
+            self._ingame.disable()
+        self._sync_ingame_controls()
+        self._refresh_ingame_result()
+        self.ingame_changed.emit()
+
+    def _on_ingame_values_changed(self, *_args) -> None:
+        game_key = self.ingame_game.currentData()
+        self._ingame.set_game(str(game_key) if game_key else GAMES[0].key)
+        self._ingame.set_dpi(self.ingame_dpi.value())
+        self._ingame.set_sensitivity(self.ingame_sens.value())
+        self._ingame.set_measured_cm360(self.ingame_measured.value())
+        self.s.setValue("ingame/game", self._ingame.game.key)
+        self.s.setValue("ingame/dpi", float(self.ingame_dpi.value()))
+        self.s.setValue("ingame/sensitivity", float(self.ingame_sens.value()))
+        self.s.setValue("ingame/measured_cm360", float(self.ingame_measured.value()))
+        self._refresh_ingame_result()
+        self.ingame_changed.emit()
+
+    def _sync_ingame_controls(self) -> None:
+        active = self._ingame.enabled
+        for widget in (self.ingame_game, self.ingame_dpi, self.ingame_sens,
+                       self.ingame_measured, self.ingame_ask_btn):
+            widget.setEnabled(active)
+        self.ingame_result.setEnabled(active)
+
+    def _refresh_ingame_result(self) -> None:
+        if not self._ingame.enabled:
+            self.ingame_result.setText("Off. Enable it to see your cm / 360° and the suggestion.")
+            self.ingame_stats.setText("")
+            return
+        self.ingame_result.setText(self._ingame.feedback(self._ingame_multiplier))
+        self.ingame_stats.setText(
+            f"{self._ingame.counts_per_360:,.0f} counts per 360°. "
+            + (
+                "Using your measured distance."
+                if self._ingame.measured_cm360 > 0
+                else f"Using the {self._ingame.game.name} scale (measure your 360° to refine it)."
+            )
+        )
+
+    def _ask_ingame(self) -> None:
+        if not self._ingame.enabled:
+            return
+        self.ingame_question.emit(self._ingame.question(self._ingame_multiplier))
 
     def refresh_replies(self) -> None:
         """Show the saved read-aloud and text-size values. Signals stay quiet.

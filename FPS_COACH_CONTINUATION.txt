@@ -1,7 +1,7 @@
 ================================================================================
 FPS COACH — CONTINUATION / HANDOFF DOCUMENT
 Copy-paste this whole file into a new agent chat to resume with zero context loss.
-Last updated: 2026-10-23 (rev 74)  (update after EVERY response)
+Last updated: 2026-10-23 (rev 75)  (update after EVERY response)
 
 *** IMPORTANT (rev4): The REAL repo was provided and differs a lot from the
 *** earlier scaffold. Work on the REAL repo at /home/user/workspace/FPSCoach
@@ -145,6 +145,50 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     /home/user/workspace/FPSCoach   (clone of https://github.com/AFK-999/FPSCoach.git)
     Remote origin/main = e9e69a2   (the visual REDESIGN; based on 04e6b0f)
     Working branch     = fix/redesign-backend-wiring (from e9e69a2), NOT pushed.
+    REV75 STATUS: rev74 plus IN-GAME MODE (Settings > In-Game Mode), off at every launch.
+    Requirement as given: a Settings section; when enabled it lets the user pick the game and gives
+    sensitivity feedback, so the AI can suggest in-game sensitivity values; it must be DISABLED BY
+    DEFAULT AT EVERY LAUNCH.
+    What was built: python/fps_coach/ingame.py (new, 316 lines, no Qt, no I/O): GameProfile catalog
+    (CS2/Source yaw 0.022, VALORANT 0.07, Overwatch 2 0.0066, Apex 0.022, fallback "Other" 0.022),
+    counts_per_360(), cm_per_360(), sensitivity_for_cm_per_360(), effective_yaw() (an optional
+    MEASURED 360 distance overrides the catalog constant), and InGameMode (enabled starts False and is
+    never persisted; game/dpi/sensitivity/measured setters with validation; feedback(), context_block(),
+    question(), suggested_sensitivity(mult), suggestion_cm_per_360(mult)).
+    UI: pages_coach.SettingsPage._build_ingame_card() in the right column between Interface and Replies:
+    "Enable In-Game Mode (this session only)" checkbox (always unchecked at construction), Game combo,
+    Mouse DPI, In-game sensitivity, optional "Measured 360°" (0 = Not measured), live line "GAME: 0.400
+    at 800 DPI = 40.8 cm / 360°. A 1.06× change is 0.424 (38.5 cm / 360°).", counts line, "Ask the coach"
+    button, and a note that Vantage never reads/hooks/changes the game. Controls are disabled while the
+    mode is off. SettingsPage new signals ingame_changed, ingame_question; set_recommendation() and
+    ingame_context()/ingame_model() helpers.
+    AI: MainWindow._sync_ingame_context() pushes the block to AIChatPage.set_ingame_context() ->
+    _with_ingame() appends it to _calibration_context (empty while off). _on_ingame_question() prefills
+    chat_page.input and switches to the chat tab (key "chat"). _on_calibration_result() now also stores
+    _last_recommendation and calls settings_page.set_recommendation(). ai_chat.SYSTEM_PROMPT gained an
+    "In-Game Mode is ON" paragraph: convert cm/360 to the game's units, name a specific in-game value,
+    present it as the user's to apply, small and reversible, never claim to read/measure/change the game,
+    never ask the user to keep the mode on while playing.
+    PERSISTENCE RULE: only ingame/game, ingame/dpi, ingame/sensitivity, ingame/measured_cm360 are saved.
+    ingame/enabled is never written; a test asserts saved.contains("ingame/enabled") is False and that a
+    pre-seeded True still launches unchecked.
+    BOUNDARY: user-typed numbers only. No game/window/process access, no input injection, no capture, no
+    file reads. tests/test_ingame_mode.py walks ingame.py's AST: imports must be stdlib dataclasses/
+    __future__/typing only; no open/exec/eval/compile/__import__ calls; no ShellExecute/keybd_event/
+    mouse_event/SendInput/Popen/run/system attribute calls. Nothing in-game is sent to the AI while the
+    mode is off.
+    Tests: tests/test_ingame_mode.py (new, 28): catalog, maths, round trips, measured override, session
+    toggle, context empty/off, feedback/question text, launch-reset, flag not persisted, disabled
+    controls, persistence of the four values, card text with and without a recommendation, ask-the-coach,
+    chat page receives the block, prompt contains the paragraph, MainWindow context/prefill/recommendation
+    wiring, AST boundary check.
+    VERIFICATION (sandbox, Linux): pytest 446 passed, 5 skipped (full suite); ruff clean on the touched
+    files apart from the repo's pre-existing I001; Settings card rendered offscreen and inspected with
+    VALORANT / 800 DPI / 0.400 / 1.06x -> 0.424 shown.
+    NOT verified: Windows, real Ollama/online model replies to the new block (no model in the sandbox),
+    real game values (catalog yaw constants are published approximations).
+    Still NOT pushed.
+
     REV74 STATUS: rev73 plus LOOSER RECORDING POLICY (user said "looser" when offered stricter/looser wording).
     Behaviour: the Recording card gained a "Keep the recording" checkbox and a recordings folder picker
     (default Videos/FPSCoach via QStandardPaths, saved as capture/record_keep and capture/record_dir).
@@ -2021,3 +2065,26 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
                 the card with Keep ticked and a saved file verified by hand.
               - Still declined and untouched: gameplay analysis, target detection, aim feedback, overlays,
                 input hooks.
+
+  2026-10-23 (rev75)  IN-GAME MODE IN SETTINGS (off at every launch).
+              - python/fps_coach/ingame.py (new): GameProfile + GAMES catalog, counts_per_360, cm_per_360,
+                sensitivity_for_cm_per_360, effective_yaw (measured distance overrides the catalog), and
+                InGameMode with enabled=False at construction and no persistence of the flag; feedback(),
+                context_block(mult), question(mult).
+              - python/fps_coach/ui/pages_coach.py: SettingsPage._build_ingame_card() (session toggle, game,
+                DPI, sensitivity, measured 360, live conversion, counts line, Ask the coach, boundary note);
+                ingame_changed/ingame_question signals; set_recommendation(), ingame_model(),
+                ingame_context(); _on_ingame_toggled/_on_ingame_values_changed/_sync_ingame_controls/
+                _refresh_ingame_result/_ask_ingame. AIChatPage: _ingame_context, set_ingame_context(),
+                _with_ingame() in _refresh_context(). PRIVACY_POINTS gained the In-Game Mode point.
+              - python/fps_coach/ai_chat.py: SYSTEM_PROMPT paragraph for the "In-Game Mode is ON" block.
+              - python/fps_coach/ui/main_window.py: ingame_changed -> _sync_ingame_context();
+                ingame_question -> _on_ingame_question() (prefill + go to chat); _on_calibration_result also
+                stores _last_recommendation and calls settings_page.set_recommendation().
+              - docs/PRIVACY.md (rev75, new "In-Game Mode" section), docs/architecture.md (new section),
+                README.md (feature bullet).
+              - tests/test_ingame_mode.py (new, 28 tests) including an AST check that ingame.py has no I/O
+                or game access.
+              - VERIFICATION (sandbox, Linux): full suite 446 passed, 5 skipped; ruff clean apart from
+                pre-existing I001; card rendered offscreen and inspected.
+              - Still declined: engine-side game reading, input automation, target detection.

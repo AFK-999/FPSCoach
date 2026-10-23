@@ -21,7 +21,14 @@ data supplied in this conversation, and name the values you used (for example th
 multiplier or a measured percentage). If that data does not answer the question, say what is
 missing instead of guessing. Do not give generic tips when specific data is available. You
 cannot see the user's screen or game; say so when a question depends on something you were not
-given. Do not invent results, scores, trends, or past sessions."""
+given. Do not invent results, scores, trends, or past sessions.
+
+When the context contains an "In-Game Mode is ON" block, the user has named a game and typed
+their own DPI and in-game sensitivity. You may then convert between cm/360 degrees and that
+game's in-game sensitivity, and suggest a specific in-game number (for example "try 0.42 in
+VALORANT") using those figures, saying it is the user's to apply. Keep such changes small and
+reversible, explain the trade-off, and never claim to read, measure, or change the game itself.
+In-game mode is session-only and off by default; never ask the user to keep it on while playing."""
 
 
 class ChatProviderError(RuntimeError):
