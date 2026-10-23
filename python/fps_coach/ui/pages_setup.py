@@ -652,6 +652,15 @@ class CapturePage(QWidget):
         self.hwaccel.setToolTip("Use the GPU (D3D11) for capture and scaling")
         self.hwaccel.setChecked(s.value("capture/hwaccel", True, type=bool))
         self.hwaccel.toggled.connect(lambda v: s.setValue("capture/hwaccel", bool(v)))
+        if not getattr(backend, "native_available", False):
+            # mss reads the composited desktop on the CPU; a ticked GPU option that
+            # does nothing is worse than no option at all.
+            self.hwaccel.setChecked(False)
+            self.hwaccel.setEnabled(False)
+            self.hwaccel.setToolTip(
+                "GPU capture needs the native C++ core. Live capture is running "
+                "through mss on the CPU instead."
+            )
         form.addWidget(self.hwaccel, 5, 1)
         lay.addLayout(form)
 
@@ -696,6 +705,9 @@ class CapturePage(QWidget):
         right_lay.setContentsMargins(0, 0, 0, 0)
         right_lay.setSpacing(16)
         right_lay.addWidget(card)
+        self.live_source_note = _label("", "cardSubtitle", wrap=True)
+        self.live_source_note.setVisible(False)
+        right_lay.addWidget(self.live_source_note)
         right_lay.addWidget(self._build_recording_card())
         right_lay.addStretch(1)
         right.setMinimumWidth(340)
@@ -717,6 +729,7 @@ class CapturePage(QWidget):
         self.record_start_btn.clicked.connect(self._start_recording)
         self.record_stop_btn.clicked.connect(self._stop_recording)
         self._apply_recording_availability()
+        self._apply_capture_backend_note()
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._refresh_stats)
@@ -732,6 +745,30 @@ class CapturePage(QWidget):
         self._frame_timer.timeout.connect(self._pump_frame)
         self._load_outputs()
         self._load_windows()
+
+    # --- live capture backend note ----------------------------------------
+    def _apply_capture_backend_note(self) -> None:
+        """Tell the user which engine feeds the preview, and what it cannot do.
+
+        Without the native core this card used to look broken (no outputs, Start
+        greyed out) because nothing said why. The Python path exists so the live
+        preview still works; the note names its two limits.
+        """
+        if getattr(self._backend, "native_available", False):
+            self.live_source_note.setVisible(False)
+            return
+        if getattr(self._backend, "uses_python_capture", False):
+            self.live_source_note.setText(
+                "Live preview is running through mss (Python) because the native core is "
+                "not built. Up to 60 FPS, and a window is captured as the screen area "
+                "behind it."
+            )
+        else:
+            self.live_source_note.setText(
+                "Live capture is unavailable: the native core is not built and mss is not "
+                'installed. Install it with: pip install -e ".[recorder]"'
+            )
+        self.live_source_note.setVisible(True)
 
     # --- recording (scratch video + analysis timer) ------------------------
     RECORD_FPS_CHOICES = (15, 30, 60)

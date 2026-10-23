@@ -27,6 +27,21 @@ The default 640×360 center region at 60 FPS is roughly 55 MiB/s of tight BGRA d
 
 Future pixel models should add a D3D11 compute shader (or DirectML execution provider) and keep tensors on the GPU. The current foundation intentionally avoids claiming a GPU downscale that it does not implement.
 
+## Capture without the native core (rev78)
+
+`fps_coach_native` is optional (`FPSCOACH_SKIP_NATIVE`, see `docs/build-and-packaging.md`). When it is absent, `fps_coach.python_capture.PythonDesktopCapture` stands in and `CoreBackend` picks it automatically:
+
+| native method | Python equivalent |
+| --- | --- |
+| `enumerate_outputs()` | `sct.monitors[1:]`, one entry per physical monitor |
+| `start(...)` | `plan_region()` + a grab thread |
+| `stats()` | same twelve keys, including `capture_mode`, `notice`, `last_frame_age_ms` |
+| `latest_frame()` / `latest_sequence()` | same frame dict, BGRA bytes and sequence number |
+
+`plan_region()` reproduces the preset semantics the native path has: `left`/`top` of `-1` centers the region in the monitor (that is what **Balanced** and **Performance** send), any other value is a window origin and is clamped so the grab never leaves the monitor. The Python path is capped at 60 FPS and reports that in `stats()["notice"]` when 120 was requested; it cannot capture an occluded window, so **Window** selection captures the screen area behind it and says so. Enumerating displays returns `[]` with the reason in `CoreBackend.capture_error` when no display can be opened (RDP, locked session), instead of raising during page construction.
+
+`tests/test_python_capture.py` covers all of this with an injected `mss` double; no test touches a display.
+
 ## Scratch recording (Capture tab)
 
 `screen_recorder.py` is a Qt-free engine: a capture thread grabs the primary display with `mss`, writes BGRA→BGR frames into a `cv2.VideoWriter`, and publishes each frame into a single-slot, sequence-numbered `LatestFrameBuffer` (readers always get a private copy; old frames are overwritten so a slow consumer adds no latency). A second thread fires an `analysis_callback` every `analysis_interval` seconds on an absolute schedule, skips ticks that arrive before the first frame, does not replay missed ticks, and survives callback exceptions.

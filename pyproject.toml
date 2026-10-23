@@ -41,7 +41,8 @@ tts = [
   "pyttsx3>=2.90",
 ]
 recorder = [
-  # tools/screen_recorder.py, a developer capture utility. Not used by the app.
+  # Live capture fallback (fps_coach/python_capture.py) and the Capture tab's
+  # Recording card (python/fps_coach/screen_recorder.py).
   "mss>=10",
   "numpy>=1.24",
   "opencv-python-headless>=4.8",

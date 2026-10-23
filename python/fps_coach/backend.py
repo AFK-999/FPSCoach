@@ -3,13 +3,18 @@
 The fallback analyzer keeps the guide/calibration UI usable on developer
 machines. Production Windows builds use ``fpscoach_native`` for analysis and
 Desktop Duplication.
+
+Capture has two paths that share one interface: the native Desktop Duplication
+extension when it is built, otherwise :class:`fps_coach.python_capture.
+PythonDesktopCapture` (``mss`` on a thread), so the Capture tab's live preview
+works without a C++ toolchain (rev78).
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import math
 import statistics
+from dataclasses import dataclass
 from typing import Any
 
 try:
@@ -17,6 +22,7 @@ try:
 except ImportError:
     _native = None
 
+from . import python_capture
 
 OLD_NATIVE_WINDOW_NOTE = (
     "This build of the native capture module cannot capture single windows. "
@@ -148,19 +154,50 @@ class _FallbackAnalyzer:
 class CoreBackend:
     """Owns one capture worker and one calibration analyzer."""
 
-    def __init__(self) -> None:
+    def __init__(self, capture_factory=None) -> None:
         self.native_available = _native is not None
         self.analyzer = _native.MovementAnalyzer() if _native else _FallbackAnalyzer()
-        self.capture = _native.DesktopCapture() if _native else None
+        if capture_factory is not None:
+            # Tests inject a capture double here instead of touching a display.
+            self.capture = capture_factory()
+        elif _native is not None:
+            self.capture = _native.DesktopCapture()
+        elif python_capture.available():
+            # No native core (FPSCOACH_SKIP_NATIVE installs, developer machines):
+            # mss still gives the Capture tab a real-time preview.
+            self.capture = python_capture.PythonDesktopCapture()
+        else:
+            self.capture = None
+        self.capture_error = ""
+
+    @property
+    def uses_python_capture(self) -> bool:
+        """True when live capture runs on mss rather than Desktop Duplication."""
+        return isinstance(self.capture, python_capture.PythonDesktopCapture)
 
     @property
     def core_label(self) -> str:
-        return "Native C++ core" if self.native_available else "Python preview mode"
+        if self.native_available:
+            return "Native C++ core"
+        if self.capture is not None:
+            return "Python capture (mss)"
+        return "Python preview mode"
 
     def outputs(self) -> list[dict[str, Any]]:
+        """Display outputs, or [] with ``capture_error`` set.
+
+        Enumerating displays talks to the OS/Python capture backend, which fails on a
+        headless or locked session. Building the Capture page must not depend on that.
+        """
         if not self.capture:
             return []
-        return list(self.capture.enumerate_outputs())
+        try:
+            found = list(self.capture.enumerate_outputs())
+        except Exception as exc:  # noqa: BLE001 - surfaced through capture_error
+            self.capture_error = str(exc) or exc.__class__.__name__
+            return []
+        self.capture_error = ""
+        return found
 
     def start_capture(
         self,
@@ -227,9 +264,15 @@ class CoreBackend:
                 "running": False,
                 "capture_fps": 0.0,
                 "frames_captured": 0,
-                "last_error": "Native Windows core is not loaded.",
+                "last_error": (
+                    "Live capture is unavailable: the native core is not loaded and "
+                    'mss is not installed (pip install -e ".[recorder]").'
+                ),
             }
-        return dict(self.capture.stats())
+        stats = dict(self.capture.stats())
+        if self.capture_error and not stats.get("frames_captured"):
+            stats["last_error"] = self.capture_error
+        return stats
 
     @property
     def fast_frame_sequence(self) -> bool:

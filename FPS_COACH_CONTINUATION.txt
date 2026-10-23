@@ -1,7 +1,7 @@
 ================================================================================
 FPS COACH — CONTINUATION / HANDOFF DOCUMENT
 Copy-paste this whole file into a new agent chat to resume with zero context loss.
-Last updated: 2026-10-23 (rev 77)  (update after EVERY response)
+Last updated: 2026-10-23 (rev 78)  (update after EVERY response)
 
 *** IMPORTANT (rev4): The REAL repo was provided and differs a lot from the
 *** earlier scaffold. Work on the REAL repo at /home/user/workspace/FPSCoach
@@ -23,6 +23,18 @@ Last updated: 2026-10-23 (rev 77)  (update after EVERY response)
               - VERIFICATION (sandbox, Linux): skip=1 configures with a bogus compiler, wheel has no native
                 binaries, editable install + MainWindow carry the fallback analyzer; skip=0 builds the analysis
                 core and ctest passes; pytest 455 passed, 5 skipped; ruff clean on the new test.
+
+  2026-10-23 (rev78)  FIX: LIVE CAPTURE PREVIEW WITHOUT THE NATIVE CORE.
+              - python/fps_coach/python_capture.py (new): mss-backed PythonDesktopCapture with the native
+                object's interface + plan_region() preset semantics; guarded mss import, 60 FPS cap.
+              - backend.py: native -> Python capture -> None selection, uses_python_capture, capture_error,
+                outputs() cannot raise on a headless session.
+              - ui/pages_setup.py: live_source_note under the Source card, GPU checkbox disabled without
+                the native core.
+              - tests/test_python_capture.py (new, 20): fake-sct tests, no display touched.
+              - README / docs/architecture.md / pyproject: three capture tiers documented.
+              - VERIFICATION: pytest 476 passed, 5 skipped; offscreen MainWindow capture run painted frames
+                at 60 FPS through the Python path.
 
 ================================================================================
 
@@ -159,6 +171,49 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     /home/user/workspace/FPSCoach   (clone of https://github.com/AFK-999/FPSCoach.git)
     Remote origin/main = e9e69a2   (the visual REDESIGN; based on 04e6b0f)
     Working branch     = fix/redesign-backend-wiring (from e9e69a2), NOT pushed.
+    REV78 STATUS: rev77 plus FIX: THE CAPTURE TAB'S LIVE SECTION WORKS WITHOUT THE NATIVE CORE.
+    Reported by the user: "i only see the recording section where is the real-time capture section for this
+    tool?" The live section (left-hand preview stage + Source card) has existed since the redesign, but on
+    their machine it was inert: CoreBackend built capture only from _native, so with no fpscoach_native the
+    page showed "No display output found", Start disabled and "No frame yet" - the Recording card was the
+    only usable thing, which read as if the capture feature was missing.
+    What was built:
+      - python/fps_coach/python_capture.py (new, ~430 lines): PythonDesktopCapture, an mss-backed stand-in
+        with the native object's exact interface (enumerate_outputs, start, stop, running, stats,
+        latest_sequence, latest_frame). Threaded grab loop, drift-free pacing, single-slot latest frame,
+        rolling 1 s FPS, region clamping, at most 5 tolerated grab failures. mss is imported lazily behind
+        a guard (module must import without the recorder extra). Uses mss.MSS() when present (mss 10
+        deprecates mss.mss()).
+      - plan_region(): reproduces the native preset semantics - left/top of -1 centres the region in the
+        monitor (what Balanced/Performance send), any other value is a window origin clamped inside the
+        monitor; reports capture_mode "output" or "region".
+      - backend.CoreBackend: picks native -> PythonDesktopCapture (when mss is present) -> None; new
+        uses_python_capture, core_label "Python capture (mss)", capture_factory= for tests; outputs() never
+        raises (a headless/locked session stores capture_error and returns []), so the window always opens.
+      - ui/pages_setup.CapturePage: the Source card is untouched; added a live_source_note under it
+        ("Live preview is running through mss (Python) because the native core is not built. Up to 60 FPS,
+        and a window is captured as the screen area behind it." / or the pip install line when nothing is
+        available), and the GPU capture (D3D11) checkbox is unstyled-and-disabled when no native core
+        exists, because mss reads the composited desktop on the CPU.
+    Limits kept honest: capped at 60 FPS (reported when 120 was asked for), no occluded-window capture
+    (window mode = screen area behind it), no cursor overlay.
+    tests/test_python_capture.py (new, 20): guarded import, install hint, output enumeration from fake
+    monitors, plan_region centring/full-output/clamping/degenerate, frame publishing with native-shaped
+    fields and stride, stats key parity, FPS cap notice, grab-failure shutdown, double start, idempotent
+    stop closing the handle, missing monitor in the caller's thread, backend selection (native / python /
+    neither), and two CapturePage tests (usable with mss; explains the install when nothing is available).
+    Every test injects a fake sct - no display is touched.
+    Docs: README (feature bullet + a three-tier table for the Capture tab + first-use step now says press
+    Start), docs/architecture.md ("Capture without the native core (rev78)" with a native-vs-Python method
+    table), pyproject recorder-extra comment (no longer "not used by the app").
+    VERIFICATION (sandbox, Linux, no display): pytest 476 passed, 5 skipped; ruff clean on the new files
+    (backend/pages_setup keep their pre-existing I001); end-to-end by hand - MainWindow -> Capture tab with
+    an injected fake sct reports "Monitor 1 - Python (mss) - 1920x1080", Start enabled, GPU box off and
+    disabled, live note shown, preview painted, stats "60.0 FPS - 73 frames - 960x540 - Python (mss)".
+    Screenshot: deliverables/screenshots/capture-live-python-backend.png.
+    NOT verified: a real display, real mss on Windows, and the native path (unchanged).
+    Still NOT pushed.
+
     REV77 STATUS: rev76 plus FIX: the native C++ core is optional (compiler-free install).
     Reported from the user's Windows machine (Python 3.13.5 at C:/Python313, VS 2022 Community, MSVC 19.44,
     CMake 3.31.6, scikit-build-core 1.1.1, pybind11 3.1.0, Windows SDK 10.0.26100):

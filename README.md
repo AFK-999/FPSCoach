@@ -8,6 +8,7 @@ A lightweight, local-first foundation for an FPS movement/sensitivity coach. It 
 
 - **Beginner guide UI** with a measure → adjust → verify workflow.
 - **Desktop Duplication capture** (`IDXGIOutput1::DuplicateOutput`) on a dedicated C++ worker.
+- **Python capture fallback** — without the native core, the Capture tab still streams a live preview through `mss` (up to 60 FPS), so a `FPSCOACH_SKIP_NATIVE` install or a developer machine is not left with an empty page.
 - **Integrated-GPU support** by creating D3D11 on the selected output's owning adapter and defaulting to a bounded 640×360 GPU-side crop.
 - **Latest-frame buffering** so a slow preview drops stale work instead of accumulating latency.
 - **Recording on the Capture tab** — records the primary display in the background and samples the newest frame on a configurable analysis timer. Discard the file when you stop (default) or keep it in a folder you choose.
@@ -75,9 +76,9 @@ py -3.12 -m venv .venv
 pip install -e ".[dev,recorder]"
 ```
 
-With the native core missing, `fps_coach.backend` uses its portable fallback analyzer and
-the Capture page reports that the native core is unavailable; recording and In-Game Mode
-are pure Python and work normally.
+With the native core missing, `fps_coach.backend` uses its portable fallback analyzer, and
+the Capture tab switches to `mss` for the live preview (when it is installed) or explains
+what to install; recording and In-Game Mode are pure Python and work normally either way.
 
 ## Build and run
 
@@ -101,12 +102,18 @@ python -m fps_coach
 
 `pip install -e .` invokes scikit-build-core/CMake and installs `fpscoach_native.pyd` beside the Python package.
 
-The app runs without the optional `recorder` extra (`mss`, `numpy`, `opencv-python-headless`); only the Capture tab's Recording card needs it, and it says so when the packages are missing. Install them with `pip install -e ".[dev,recorder]"`.
+The Capture tab works in three tiers, and each one says which is in use:
+
+1. **Native C++ core** (default Windows build): Desktop Duplication on the GPU, up to 120 FPS, can capture a single window even when other windows cover it.
+2. **`mss` fallback** (no native core, `mss` installed): live preview of any display up to 60 FPS on the CPU. A window is captured as the screen area behind it, and **GPU capture (D3D11)** is disabled because it does not apply.
+3. **Neither**: the Capture card lists no outputs, Start stays disabled, and the card names the command to install.
+
+`numpy`, `mss` and `opencv-python-headless` — the `recorder` extra — cover both the live fallback and the Recording card. Install them with `pip install -e ".[dev,recorder]"`; the app starts without them and explains what is missing.
 
 ## First-use flow
 
 1. Open **Beginner guide** and retain a copy of your current mouse/game profile.
-2. In **Capture**, select the output that shows your borderless-windowed game. Start with **Center 640×360** and 30 or 60 FPS on integrated graphics. The **Recording** card below it can record the primary display for your own review: untick **Keep the recording** to discard it at Stop, or leave it ticked to save it to the folder you choose.
+2. In **Capture**, select the output that shows your borderless-windowed game and press **Start** — the preview above updates live. Start with **Center 640×360** and 30 or 60 FPS on integrated graphics. The **Recording** card below it can record the primary display for your own review: untick **Keep the recording** to discard it at Stop, or leave it ticked to save it to the folder you choose.
 3. In **Calibration**, click all 12 targets using your normal grip and sensitivity.
 4. Review **Recommendation**. The `x` coordinate is normalized input speed and `y` is normalized output speed.
 5. In **Recommendation**, select **Custom Curve 4 (.cc4)** or **Custom Curve 3 / legacy (.ccurve)**, then import or export explicitly. Export creates a profile file; it never applies one.
