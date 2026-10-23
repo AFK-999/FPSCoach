@@ -76,7 +76,10 @@ public:
     void start(const CaptureConfig& config);
     void stop();
     [[nodiscard]] bool running() const;
-    [[nodiscard]] std::optional<CapturedFrame> latest_frame() const;
+    // The newest frame, shared rather than copied. Frames are never changed once published.
+    [[nodiscard]] std::shared_ptr<const CapturedFrame> latest_frame() const;
+    // Number of the newest frame (0 before the first). Copies no pixels.
+    [[nodiscard]] std::uint64_t latest_sequence() const;
     [[nodiscard]] CaptureStats stats() const;
 
     static std::vector<OutputInfo> enumerate_outputs();

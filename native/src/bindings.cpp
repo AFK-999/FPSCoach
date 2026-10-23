@@ -93,6 +93,7 @@ PYBIND11_MODULE(fpscoach_native, module) {
         .def("stats", [](const DesktopDuplicationCapture& capture) {
             return stats_dict(capture.stats());
         })
+        .def("latest_sequence", &DesktopDuplicationCapture::latest_sequence)
         .def("latest_frame", [](const DesktopDuplicationCapture& capture) -> py::object {
             const auto frame = capture.latest_frame();
             if (!frame) {

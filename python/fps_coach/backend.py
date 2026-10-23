@@ -188,6 +188,17 @@ class CoreBackend:
             }
         return dict(self.capture.stats())
 
+    @property
+    def fast_frame_sequence(self) -> bool:
+        """True when the native core can report the newest frame number without copying pixels."""
+        return bool(self.capture) and callable(getattr(self.capture, "latest_sequence", None))
+
+    def latest_sequence(self) -> int | None:
+        """Number of the newest frame (0 before the first). None when the native core cannot say cheaply."""
+        if not self.fast_frame_sequence:
+            return None
+        return int(self.capture.latest_sequence())
+
     def latest_frame(self) -> dict[str, Any] | None:
         return self.capture.latest_frame() if self.capture else None
 

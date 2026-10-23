@@ -10,8 +10,8 @@ from dataclasses import replace  # noqa: F401  (kept for parity with curve helpe
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QImage, QKeySequence, QPixmap, QShortcut
+from PySide6.QtCore import QRect, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QImage, QKeySequence, QPainter, QShortcut
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -39,6 +39,7 @@ from fps_coach.curve_io import (
     save_curve,
 )
 from fps_coach.window_enum import get_window_rect, list_windows
+from .styles import STAGE
 
 from .calibration import CalibrationCanvas
 from .widgets import (
@@ -291,6 +292,60 @@ class GuidePage(QWidget):
 # Capture
 # ---------------------------------------------------------------------------
 
+FRAME_INTERVAL_MS = 16  # about 60 Hz: the preview keeps up with 60 FPS capture
+
+
+class FramePreview(QWidget):
+    """Shows the newest captured frame, scaled to fit, painted straight from its pixels.
+
+    The frame is wrapped as a QImage without a second copy, and painted on demand. There is no
+    per-frame QPixmap conversion or smooth scaling: the preview is for watching a live feed, and
+    that work is what costs the most on low-end machines. Only the newest frame is kept.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._image: QImage | None = None
+        self._data: bytes | None = None  # keeps the bytes behind the QImage alive
+        self.setMinimumSize(520, 292)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+    def has_frame(self) -> bool:
+        return self._image is not None
+
+    def set_frame(self, data, width: int, height: int, stride: int) -> bool:
+        """Show a BGRA frame. Returns False (and keeps the old frame) if the buffer is too short."""
+        if width <= 0 or height <= 0 or stride < width * 4:
+            return False
+        if not isinstance(data, bytes):
+            data = bytes(data)
+        if len(data) < stride * height:
+            return False
+        self._data = data
+        self._image = QImage(data, width, height, stride, QImage.Format.Format_ARGB32)
+        self.update()
+        return True
+
+    def clear_frame(self) -> None:
+        self._image = None
+        self._data = None
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        if self._image is None or self._image.isNull():
+            painter.setPen(QColor(STAGE["stage_text"]))
+            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "No frame yet")
+            painter.end()
+            return
+        iw, ih = self._image.width(), self._image.height()
+        scale = min(self.width() / iw, self.height() / ih)
+        w, h = max(1, int(iw * scale)), max(1, int(ih * scale))
+        target = QRect((self.width() - w) // 2, (self.height() - h) // 2, w, h)
+        painter.drawImage(target, self._image)
+        painter.end()
+
+
 class CapturePage(QWidget):
     """Capture controls wired to the native backend (CoreBackend).
 
@@ -334,11 +389,7 @@ class CapturePage(QWidget):
         stage.setObjectName("stage")
         stage_lay = QVBoxLayout(stage)
         stage_lay.setContentsMargins(12, 12, 12, 12)
-        self.preview = QLabel("No frame yet")
-        self.preview.setObjectName("stageText")
-        self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview.setMinimumSize(520, 292)
-        self.preview.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.preview = FramePreview()
         stage_lay.addWidget(self.preview, 1)
         left.addWidget(stage, 1)
         self.stats_label = _label("", "cardSubtitle")
@@ -449,6 +500,14 @@ class CapturePage(QWidget):
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._refresh_stats)
         self._timer.start(250)
+
+        # Frames are pulled at display rate, but only while this tab is visible and capture runs.
+        # An older native build cannot report the frame number cheaply, so it keeps the 250 ms poll.
+        self._fast_frames = bool(getattr(backend, "fast_frame_sequence", False))
+        self._frame_timer = QTimer(self)
+        self._frame_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._frame_timer.setInterval(FRAME_INTERVAL_MS if self._fast_frames else 250)
+        self._frame_timer.timeout.connect(self._pump_frame)
         self._load_outputs()
         self._load_windows()
 
@@ -543,9 +602,39 @@ class CapturePage(QWidget):
         else:
             self._set_status("Idle", "")
             self.stats_label.setText("")
-            self.preview.clear()
-            self.preview.setText("No frame yet")
+            self.preview.clear_frame()
+            self._last_sequence = -1
+        self._sync_frame_timer()
         self._update_buttons()
+
+    def _sync_frame_timer(self) -> None:
+        """Pull frames only while capture runs and this tab is on screen."""
+        if self.stop_btn.isEnabled() and self.isVisible():
+            if not self._frame_timer.isActive():
+                self._frame_timer.start()
+        else:
+            self._frame_timer.stop()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._sync_frame_timer()
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self._sync_frame_timer()
+
+    def _pump_frame(self) -> None:
+        """Show the newest frame if it is new. Cheap when nothing changed (no pixels are copied)."""
+        if self._fast_frames:
+            sequence = self._backend.latest_sequence()
+            if not sequence or sequence == self._last_sequence:
+                return
+        frame = self._backend.latest_frame()
+        if not frame or int(frame["sequence"]) == self._last_sequence:
+            return
+        if self.preview.set_frame(frame["bgra"], int(frame["width"]), int(frame["height"]),
+                                  int(frame["stride"])):
+            self._last_sequence = int(frame["sequence"])
 
     def _set_status(self, text, state):
         self.status_label.setText(text)
@@ -574,24 +663,6 @@ class CapturePage(QWidget):
         height = int(stats.get("capture_height", 0))
         adapter = str(stats.get("adapter_name", ""))
         self.stats_label.setText(f"{fps:.1f} FPS · {frames:,} frames · {width}×{height} · {adapter}")
-
-        frame = self._backend.latest_frame()
-        if not frame or int(frame["sequence"]) == self._last_sequence:
-            return
-        self._last_sequence = int(frame["sequence"])
-        image = QImage(
-            bytes(frame["bgra"]),
-            int(frame["width"]),
-            int(frame["height"]),
-            int(frame["stride"]),
-            QImage.Format.Format_ARGB32,
-        ).copy()
-        pixmap = QPixmap.fromImage(image).scaled(
-            self.preview.size(),
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
-        self.preview.setPixmap(pixmap)
 
 # ---------------------------------------------------------------------------
 # Calibration

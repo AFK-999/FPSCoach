@@ -1,7 +1,7 @@
 ================================================================================
 FPS COACH — CONTINUATION / HANDOFF DOCUMENT
 Copy-paste this whole file into a new agent chat to resume with zero context loss.
-Last updated: 2026-10-23 (rev 68)  (update after EVERY response)
+Last updated: 2026-10-23 (rev 69)  (update after EVERY response)
 
 *** IMPORTANT (rev4): The REAL repo was provided and differs a lot from the
 *** earlier scaffold. Work on the REAL repo at /home/user/workspace/FPSCoach
@@ -145,6 +145,17 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     /home/user/workspace/FPSCoach   (clone of https://github.com/AFK-999/FPSCoach.git)
     Remote origin/main = e9e69a2   (the visual REDESIGN; based on 04e6b0f)
     Working branch     = fix/redesign-backend-wiring (from e9e69a2), NOT pushed.
+    REV69 STATUS: Capture preview pipeline optimised for 60 FPS. The preview now shows the newest frame
+    within about one frame (measured median 17 ms old, previously 130-140 ms; the old 4 Hz poll is gone).
+    Changes: (1) native worker publishes frames as shared pointers, so a pull copies pixels once (not twice),
+    reuses its pixel buffer instead of allocating and zeroing one per frame, copies packed rows in one
+    memcpy, and exposes latest_sequence() (no pixel copy). (2) Python: FramePreview paints the QImage
+    directly (no per-frame QPixmap conversion or smooth scaling); the frame timer runs at 16 ms only while
+    capture runs and the Capture tab is visible; the stats timer stays at 250 ms. An older native build
+    without latest_sequence keeps the 250 ms poll. NOT verified on Windows: the native edits compile and run
+    on Linux against a fake DXGI layer (native/tests/fake_dxgi), not against real Desktop Duplication.
+    NOT measured on low-end hardware (the sandbox has 2 vCPUs). Next step if still slow on low-end machines:
+    downscale on the GPU before readback (the Quality preset reads back full 1080p at 120 FPS).
     REV68 STATUS: rev67 plus Calibration chart: the handles are chosen from the curve. The line still runs
     through every point. Handles are the bends the curve needs (Ramer-Douglas-Peucker, tolerance 0.005 of
     the 0..1 chart, about 1.4 px). A straight run has 2 handles; a wiggly curve has many; any length. Up to
@@ -1261,6 +1272,31 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
               slider and the new capture arguments); app.py quit run exit 0, no traceback.
               NOT verified: real display, Win32 window list, native capture, real Ollama,
               real game curve files, Windows build.
+
+  2026-10-23 (rev69)  CAPTURE PREVIEW: 60 FPS PIPELINE.
+              - native/include/fpscoach/capture.hpp, native/src/capture.cpp, native/src/bindings.cpp:
+                latest_frame() returns shared_ptr<const CapturedFrame> (no C++ copy under the lock);
+                new latest_sequence(); worker reuses its pixel buffer (recycled_pixels_, worker thread
+                only; a buffer is reused only when use_count()==1); packed rows copied in one memcpy.
+              - python/fps_coach/backend.py: fast_frame_sequence (property), latest_sequence().
+              - python/fps_coach/ui/pages_setup.py: FramePreview widget (paints QImage, aspect fit,
+                no per-frame pixmap or smooth scaling); CapturePage._pump_frame on FRAME_INTERVAL_MS (16)
+                while capturing and visible (showEvent/hideEvent); _refresh_stats now stats only.
+              - tests/test_capture_preview.py (13): widget, no-copy-when-unchanged, hidden tab, old-build
+                fallback, backend wrapper.
+              - native/tests/fake_dxgi/: Linux stand-in for DXGI/D3D11 (synthetic 60 Hz desktop) with
+                smoke and stress scripts. Used to build and run the real worker on Linux.
+              - verify_mainwindow_wiring.py (outside repo): preview checks use has_frame() and open the
+                Capture tab first. 32/32.
+              - Measured (same machine, real native worker on the fake desktop, 5 s, 60 FPS capture):
+                  balanced 960x540: before 4.0 pulls/s, frame on screen median 134 ms (max 264);
+                                    after 59.6 pulls/s, median 16.6 ms (max 33).
+                  quality 1080p:    before pull median 5.2 ms, 19 UI passes over 8 ms (worst 25 ms),
+                                    median age 143 ms; after pull median 1.5 ms, 0 passes over 8 ms, median 18 ms.
+                  low 640x360:      before pull median 0.39 ms, age 130 ms; after 0.15 ms, age 17 ms.
+              - Native stress: 23,832 pulls in tight loops and 3 start/stop rounds, 0 torn frames.
+              - Full suite 342 passed. ruff F clean. Wiring 32/32.
+              - Harness used for the baseline: committed HEAD built with the same fake layer.
 
   2026-10-23 (rev68)  CALIBRATION CHART: ADAPTIVE HANDLES.
               - NEW python/fps_coach/curve_sampling.py (Qt-free): KEY_TOLERANCE = 0.005; key_indices(xs, ys,

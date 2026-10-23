@@ -16,6 +16,7 @@
 #include <chrono>
 #include <cstring>
 #include <iterator>
+#include <memory>
 #include <mutex>
 #include <sstream>
 #include <stdexcept>
@@ -262,10 +263,15 @@ struct DuplicationResources {
                             static_cast<std::size_t>(frame.height));
 
         const auto* source_bytes = static_cast<const std::uint8_t*>(mapped.pData);
-        for (int row = 0; row < frame.height; ++row) {
-            std::memcpy(frame.pixels.data() + static_cast<std::size_t>(row * frame.stride),
-                        source_bytes + static_cast<std::size_t>(row) * mapped.RowPitch,
-                        static_cast<std::size_t>(frame.stride));
+        if (mapped.RowPitch == static_cast<UINT>(frame.stride)) {
+            // Rows are packed already: one copy for the whole frame.
+            std::memcpy(frame.pixels.data(), source_bytes, frame.pixels.size());
+        } else {
+            for (int row = 0; row < frame.height; ++row) {
+                std::memcpy(frame.pixels.data() + static_cast<std::size_t>(row * frame.stride),
+                            source_bytes + static_cast<std::size_t>(row) * mapped.RowPitch,
+                            static_cast<std::size_t>(frame.stride));
+            }
         }
         return AcquireResult::frame;
     }
@@ -310,9 +316,14 @@ public:
 
     [[nodiscard]] bool running() const { return running_; }
 
-    [[nodiscard]] std::optional<CapturedFrame> latest_frame() const {
+    [[nodiscard]] std::shared_ptr<const CapturedFrame> latest_frame() const {
         std::scoped_lock lock(frame_mutex_);
         return latest_;
+    }
+
+    [[nodiscard]] std::uint64_t latest_sequence() const {
+        std::scoped_lock lock(frame_mutex_);
+        return latest_ ? latest_->sequence : 0;
     }
 
     [[nodiscard]] CaptureStats stats() const {
@@ -372,17 +383,24 @@ private:
 
             while (running_ && !recreate) {
                 const auto iteration_start = Clock::now();
-                CapturedFrame frame;
-                const auto result = resources.acquire(frame, timeout_ms, error);
+                // Reuse a pixel buffer from an earlier frame instead of allocating and zeroing one per frame.
+                auto frame = std::make_shared<CapturedFrame>();
+                frame->pixels.swap(recycled_pixels_);
+                const auto result = resources.acquire(*frame, timeout_ms, error);
                 switch (result) {
                 case DuplicationResources::AcquireResult::frame: {
-                    frame.sequence = ++sequence;
-                    last_frame_timestamp_us_ = frame.timestamp_us;
+                    frame->sequence = ++sequence;
+                    last_frame_timestamp_us_ = frame->timestamp_us;
                     ++frames_captured_;
                     ++fps_window_frames;
                     {
                         std::scoped_lock lock(frame_mutex_);
-                        latest_ = std::move(frame);
+                        // Only this thread and the lock create or hand out references. If nobody else
+                        // still holds the old frame, its buffer is free for the next frame.
+                        if (latest_ && latest_.use_count() == 1) {
+                            recycled_pixels_.swap(latest_->pixels);
+                        }
+                        latest_ = frame;
                     }
                     break;
                 }
@@ -397,6 +415,10 @@ private:
                     set_error(error);
                     recreate = true;
                     break;
+                }
+
+                if (result != DuplicationResources::AcquireResult::frame) {
+                    recycled_pixels_.swap(frame->pixels);  // not published: keep its buffer
                 }
 
                 const auto now = Clock::now();
@@ -430,7 +452,8 @@ private:
     std::thread worker_;
 
     mutable std::mutex frame_mutex_;
-    std::optional<CapturedFrame> latest_;
+    std::shared_ptr<CapturedFrame> latest_;
+    std::vector<std::uint8_t> recycled_pixels_;  // worker thread only
 
     mutable std::mutex state_mutex_;
     double capture_fps_{};
@@ -451,9 +474,10 @@ DesktopDuplicationCapture::~DesktopDuplicationCapture() = default;
 void DesktopDuplicationCapture::start(const CaptureConfig& config) { impl_->start(config); }
 void DesktopDuplicationCapture::stop() { impl_->stop(); }
 bool DesktopDuplicationCapture::running() const { return impl_->running(); }
-std::optional<CapturedFrame> DesktopDuplicationCapture::latest_frame() const {
+std::shared_ptr<const CapturedFrame> DesktopDuplicationCapture::latest_frame() const {
     return impl_->latest_frame();
 }
+std::uint64_t DesktopDuplicationCapture::latest_sequence() const { return impl_->latest_sequence(); }
 CaptureStats DesktopDuplicationCapture::stats() const { return impl_->stats(); }
 
 std::vector<OutputInfo> DesktopDuplicationCapture::enumerate_outputs() {
