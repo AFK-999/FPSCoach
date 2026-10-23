@@ -133,13 +133,18 @@ class CoachStrip(QFrame):
         self.closed.emit()
 
 
+# Smallest window size. The width can be raised (never lowered) to fit the top bar; see
+# MainWindow._fit_minimum_width.
+MIN_WINDOW_SIZE = (1120, 680)
+
+
 class MainWindow(QMainWindow):
     def __init__(self, backend: CoreBackend | None = None):
         super().__init__()
         self._backend = backend if backend is not None else CoreBackend()
         self.setWindowTitle("Vantage")
         self.resize(1360, 860)
-        self.setMinimumSize(1120, 680)
+        self.setMinimumSize(*MIN_WINDOW_SIZE)
         self.s = _settings()
 
         self._nav_buttons: dict[str, QPushButton] = {}
@@ -163,10 +168,8 @@ class MainWindow(QMainWindow):
         root.setSpacing(0)
 
         topbar = self._build_topbar()
+        self._topbar_frame = topbar
         root.addWidget(topbar)
-        # The window cannot be narrower than the top bar needs: brand, every tab (so AI Coach
-        # is never cut off), the core dot, and the utility buttons. Measured from the layout.
-        self.setMinimumWidth(topbar.layout().totalMinimumSize().width())
 
         self.coach_panel = CoachStrip(self)
         self.coach_panel.closed.connect(self._on_coach_closed)
@@ -481,6 +484,15 @@ class MainWindow(QMainWindow):
         self._refresh_nav_icons()
         self.dashboard_page._rebuild_tiles()
         self._refresh_dashboard()
+        self._fit_minimum_width()
+
+    def _fit_minimum_width(self) -> None:
+        """The window cannot be narrower than the top bar needs: brand, every tab (so AI Coach is
+        never cut off), the core dot, and the utility buttons. The need is measured from the
+        layout after the stylesheet is applied, because the theme's padding changes it (measured
+        at construction it was 21 px too small, and the bar overlapped). MIN_WINDOW_SIZE stays the floor."""
+        needed = self._topbar_frame.layout().totalMinimumSize().width()
+        self.setMinimumWidth(max(MIN_WINDOW_SIZE[0], needed))
 
     def _sync_tts(self):
         enabled = self.s.value("ui/tts_enabled", False, type=bool)

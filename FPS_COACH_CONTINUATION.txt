@@ -1,7 +1,7 @@
 ================================================================================
 FPS COACH — CONTINUATION / HANDOFF DOCUMENT
 Copy-paste this whole file into a new agent chat to resume with zero context loss.
-Last updated: 2026-10-23 (rev 71)  (update after EVERY response)
+Last updated: 2026-10-23 (rev 72)  (update after EVERY response)
 
 *** IMPORTANT (rev4): The REAL repo was provided and differs a lot from the
 *** earlier scaffold. Work on the REAL repo at /home/user/workspace/FPSCoach
@@ -145,6 +145,13 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     /home/user/workspace/FPSCoach   (clone of https://github.com/AFK-999/FPSCoach.git)
     Remote origin/main = e9e69a2   (the visual REDESIGN; based on 04e6b0f)
     Working branch     = fix/redesign-backend-wiring (from e9e69a2), NOT pushed.
+    REV72 STATUS: the 1120 px top-bar overlap is FIXED. The window's minimum width is now the top bar's
+    measured need, re-measured after every theme change (it was measured once at start-up, before the
+    stylesheet, and came out 21 px short: 1223 px against a 1244 px need). At the narrowest size the tab
+    strip no longer runs under the core dot. The window's floor is now 1244 px in the sandbox (the font
+    decides the exact value), not 1120 px. To reach 1120 px the tabs would have to shrink. That is a
+    design choice, not made here. Tests: tests/test_topbar_fit.py (3; they fail on the previous code).
+    Suite 370 passed, 2 skipped (native fake build). Wiring 32/32. ruff F clean. NOT verified on Windows.
     REV71 STATUS: Serious mode. The Dashboard has a "Serious mode" checkbox. When it is on, the six
     dashboard tiles leave the grid and bounce around the dashboard like the DVD screensaver: each starts at
     its grid cell with a random direction (20 to 70 degrees), turns at the edges of the stage, and can
@@ -1306,6 +1313,17 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
               - Native stress: 23,832 pulls in tight loops and 3 start/stop rounds, 0 torn frames.
               - Full suite 342 passed. ruff F clean. Wiring 32/32.
               - Harness used for the baseline: committed HEAD built with the same fake layer.
+
+  2026-10-23 (rev72)  TOP BAR: 1120 PX OVERLAP FIXED.
+              - main_window.py: MIN_WINDOW_SIZE = (1120, 680) constant. The width minimum is set by
+                _fit_minimum_width(), which runs at the end of _apply_theme(). It is max(1120, the top bar's
+                layout minimum). The old one-time measurement in __init__ is removed.
+              - Repro: at 1000-1243 px the tab strip ran under the core dot (window 1223 px, bar need 1244 px).
+                Now the window is 1244 px minimum and nothing overlaps (1000, 1120, 1223, 1244, 1300 px).
+              - tests/test_topbar_fit.py (3): minimum matches the bar's need after construction; no overlap at
+                the narrowest size; minimum follows a theme change. All 3 fail on the previous code.
+              - Suite 370 passed, 2 skipped (native fake build). Wiring 32/32. ruff F clean.
+              - NOT verified on Windows (font metrics differ there, so the exact minimum will too).
 
   2026-10-23 (rev71c) WINDOWS BUILD FIX: native/src/capture.cpp line 801-803 (WGC window path) failed to
               compile on MSVC (C3536 'access' cannot be used before it is initialized). The IDirect3DDxgiInterfaceAccess
