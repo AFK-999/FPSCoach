@@ -1336,6 +1336,11 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
               - Full suite 342 passed. ruff F clean. Wiring 32/32.
               - Harness used for the baseline: committed HEAD built with the same fake layer.
 
+  2026-10-23 (rev71d) REQUEST DECLINED, NO CODE CHANGE: a pasted mss screen-recording script (720p temp
+              MP4, sent to an AI for aim analysis) and a matching AI-coach prompt. Same declined feature as rev71b
+              (gameplay analysis from screen capture). Not added to the repo or run. Offered alternatives unchanged:
+              post-session analytics from the app's own drills; a coach grounded in the app's own calibration and curve data.
+
   2026-10-23 (rev71c) WINDOWS BUILD FIX: native/src/capture.cpp line 801-803 (WGC window path) failed to
               compile on MSVC (C3536 'access' cannot be used before it is initialized). The IDirect3DDxgiInterfaceAccess
               name was unqualified; the cast now uses Windows::Graphics::DirectX::Direct3D11::IDirect3DDxgiInterfaceAccess
