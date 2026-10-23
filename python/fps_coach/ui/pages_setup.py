@@ -17,6 +17,7 @@ from PySide6.QtGui import QColor, QImage, QKeySequence, QPainter, QShortcut
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDoubleSpinBox,
     QFileDialog,
     QFrame,
     QGridLayout,
@@ -45,6 +46,7 @@ from fps_coach.curve_io import (
     recommendation_profile,
     save_curve,
 )
+from fps_coach.capture_recording import AnalysisTick, RecordingService, RecordingSummary
 from fps_coach.window_enum import get_window_rect, list_windows
 from .styles import STAGE
 
@@ -534,6 +536,11 @@ class CapturePage(QWidget):
     the selected preset, shows live stats from backend.capture_stats(), and
     previews the newest frame from backend.latest_frame(). Without the native
     core, start is disabled and the reason is shown.
+
+    The Recording card is independent of the native capture: it records the
+    primary display to a scratch video through fps_coach.screen_recorder while
+    an analysis timer samples the newest frame. The scratch file is deleted when
+    recording stops or the window closes.
     """
 
     # (label, stored value, region side, target fps). Matches the original presets:
@@ -675,15 +682,32 @@ class CapturePage(QWidget):
         lay.addWidget(self.notice_label)
         lay.addStretch(1)
 
-        card.setMinimumWidth(340)
-        card.setMaximumWidth(420)
-        body.addWidget(card, 2)
+        right = QWidget()
+        right_lay = QVBoxLayout(right)
+        right_lay.setContentsMargins(0, 0, 0, 0)
+        right_lay.setSpacing(16)
+        right_lay.addWidget(card)
+        right_lay.addWidget(self._build_recording_card())
+        right_lay.addStretch(1)
+        right.setMinimumWidth(340)
+        right.setMaximumWidth(420)
+        body.addWidget(right, 2)
         outer.addLayout(body, 1)
 
         self.start_btn.clicked.connect(self._start)
         self.stop_btn.clicked.connect(self._stop)
         self.refresh_btn.clicked.connect(self._load_outputs)
         self.window_refresh_btn.clicked.connect(self._load_windows)
+
+        # Recording card (scratch video + analysis timer, deleted on stop).
+        self.recording = RecordingService(self)
+        self.recording.started.connect(self._on_recording_started)
+        self.recording.stopped.connect(self._on_recording_stopped)
+        self.recording.analysis.connect(self._on_analysis_tick)
+        self.recording.failed.connect(self._on_recording_failed)
+        self.record_start_btn.clicked.connect(self._start_recording)
+        self.record_stop_btn.clicked.connect(self._stop_recording)
+        self._apply_recording_availability()
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._refresh_stats)
@@ -699,6 +723,173 @@ class CapturePage(QWidget):
         self._frame_timer.timeout.connect(self._pump_frame)
         self._load_outputs()
         self._load_windows()
+
+    # --- recording (scratch video + analysis timer) ------------------------
+    RECORD_FPS_CHOICES = (15, 30, 60)
+
+    def _build_recording_card(self):
+        """Card under Source: scratch recording of the primary display."""
+        card, lay = _card(
+            "Recording",
+            "Writes a scratch video of the primary display while you record, and samples the "
+            "newest frame on a timer. The file is deleted when you stop.",
+        )
+        form = QGridLayout()
+        form.setHorizontalSpacing(12)
+        form.setVerticalSpacing(10)
+
+        form.addWidget(_label("Recording rate", "formLabel"), 0, 0)
+        self.record_fps = QComboBox()
+        for fps in self.RECORD_FPS_CHOICES:
+            self.record_fps.addItem(f"{fps} FPS", fps)
+        saved_fps = int(_settings().value("capture/record_fps", 30, type=int))
+        index = self.record_fps.findData(saved_fps)
+        self.record_fps.setCurrentIndex(index if index >= 0 else 1)
+        self.record_fps.currentIndexChanged.connect(self._on_record_fps_changed)
+        form.addWidget(self.record_fps, 0, 1)
+
+        form.addWidget(_label("Analysis every", "formLabel"), 1, 0)
+        self.record_interval = QDoubleSpinBox()
+        self.record_interval.setRange(0.5, 30.0)
+        self.record_interval.setSingleStep(0.5)
+        self.record_interval.setDecimals(1)
+        self.record_interval.setSuffix(" s")
+        self.record_interval.setValue(float(_settings().value("capture/record_interval", 2.0, type=float)))
+        self.record_interval.setToolTip("How often the newest frame is handed to the analysis callback")
+        self.record_interval.valueChanged.connect(
+            lambda value: _settings().setValue("capture/record_interval", float(value))
+        )
+        form.addWidget(self.record_interval, 1, 1)
+        lay.addLayout(form)
+
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        self.record_start_btn = QPushButton(" Record")
+        self.record_start_btn.setObjectName("secondary")
+        set_glyph(self.record_start_btn, "play")
+        self.record_stop_btn = QPushButton(" Stop")
+        self.record_stop_btn.setObjectName("secondary")
+        set_glyph(self.record_stop_btn, "stop")
+        self.record_stop_btn.setEnabled(False)
+        row.addWidget(self.record_start_btn)
+        row.addWidget(self.record_stop_btn)
+        row.addStretch(1)
+        lay.addLayout(row)
+
+        self.record_status = _label("Idle", "statusLabel")
+        lay.addWidget(self.record_status)
+
+        self.record_detail = _label("", "statusLabel", wrap=True)
+        self.record_detail.setVisible(False)
+        lay.addWidget(self.record_detail)
+
+        self.record_analysis = _label("", "cardSubtitle", wrap=True)
+        self.record_analysis.setVisible(False)
+        lay.addWidget(self.record_analysis)
+
+        self.record_note = _label(
+            "Uses the primary display, independent of the Source selection above.",
+            "cardSubtitle",
+            wrap=True,
+        )
+        lay.addWidget(self.record_note)
+        return card
+
+    def _on_record_fps_changed(self, index: int) -> None:
+        fps = self.record_fps.itemData(index)
+        if fps is not None:
+            _settings().setValue("capture/record_fps", int(fps))
+
+    def _apply_recording_availability(self) -> None:
+        usable, message = RecordingService.availability()
+        self.record_start_btn.setEnabled(usable)
+        self.record_fps.setEnabled(usable)
+        self.record_interval.setEnabled(usable)
+        if not usable:
+            self._set_record_status("Unavailable", "bad")
+            self._show_record_detail(message)
+            self.record_note.setText("Install the recorder extra to enable this card.")
+
+    def _start_recording(self) -> None:
+        started = self.recording.start(
+            fps=float(self.record_fps.currentData() or 30),
+            analysis_interval=float(self.record_interval.value()),
+            monitor_index=1,
+        )
+        if started:
+            self._set_record_buttons(recording=True)
+            self._set_record_status("Starting…", "good")
+            self._show_record_detail("")
+
+    def _stop_recording(self) -> None:
+        self.recording.stop()  # emits stopped() -> _on_recording_stopped
+
+    def _on_recording_started(self, path: str) -> None:
+        self._set_record_buttons(recording=True)
+        self._set_record_status("Recording to a scratch file…", "good")
+        self.record_detail.setToolTip(path)
+        self._show_record_detail("")
+        self.record_analysis.setText("")
+        self.record_analysis.setVisible(False)
+
+    def _on_recording_stopped(self, summary: RecordingSummary) -> None:
+        self._set_record_buttons(recording=False)
+        self._set_record_status(
+            f"Stopped · {summary.frames:,} frames · {summary.seconds:.1f} s", ""
+        )
+        self._show_record_detail(
+            f"Scratch video deleted after {summary.analyses} analysis "
+            f"call{'s' if summary.analyses != 1 else ''}."
+        )
+        self.record_analysis.setVisible(False)
+
+    def _on_recording_failed(self, message: str) -> None:
+        self._set_record_buttons(recording=False)
+        self._set_record_status("Recording stopped", "bad")
+        self._show_record_detail(message)
+        self.record_analysis.setVisible(False)
+
+    def _on_analysis_tick(self, tick: AnalysisTick) -> None:
+        self.record_analysis.setText(
+            f"Analysis #{tick.count} · frame {tick.sequence:,} · "
+            f"{tick.width}×{tick.height} · mean {tick.mean:.1f}"
+        )
+        self.record_analysis.setVisible(True)
+
+    def _refresh_recording(self) -> None:
+        status = self.recording.poll()
+        if not status.running:
+            return
+        analyses = f"{status.analyses} analysis" if status.analyses == 1 else (
+            f"{status.analyses} analyses"
+        )
+        self._set_record_status(
+            f"Recording · {status.seconds:.1f} s · {status.frames:,} frames · {analyses}",
+            "good",
+        )
+
+    def _set_record_buttons(self, *, recording: bool) -> None:
+        usable, _message = RecordingService.availability()
+        self.record_start_btn.setEnabled(usable and not recording)
+        self.record_stop_btn.setEnabled(recording)
+        self.record_fps.setEnabled(usable and not recording)
+        self.record_interval.setEnabled(usable and not recording)
+
+    def _set_record_status(self, text: str, state: str) -> None:
+        self.record_status.setText(text)
+        self.record_status.setProperty("state", state)
+        self.record_status.style().unpolish(self.record_status)
+        self.record_status.style().polish(self.record_status)
+
+    def _show_record_detail(self, message: str) -> None:
+        self.record_detail.setText(message)
+        self.record_detail.setVisible(bool(message))
+
+    def shutdown(self) -> None:
+        """Stop the scratch recording and delete its file. Called on window close."""
+        self.recording.shutdown()
+        self.record_start_btn.setEnabled(False)
+        self.record_stop_btn.setEnabled(False)
 
     # --- outputs and windows ----------------------------------------------
     def _load_outputs(self):
@@ -864,6 +1055,7 @@ class CapturePage(QWidget):
         }.get(mode, "Capturing…")
 
     def _refresh_stats(self):
+        self._refresh_recording()
         stats = self._backend.capture_stats()
         running = bool(stats.get("running"))
         if self.stop_btn.isEnabled() and not running:

@@ -1,7 +1,7 @@
 ================================================================================
 FPS COACH — CONTINUATION / HANDOFF DOCUMENT
 Copy-paste this whole file into a new agent chat to resume with zero context loss.
-Last updated: 2026-10-23 (rev 72)  (update after EVERY response)
+Last updated: 2026-10-23 (rev 73)  (update after EVERY response)
 
 *** IMPORTANT (rev4): The REAL repo was provided and differs a lot from the
 *** earlier scaffold. Work on the REAL repo at /home/user/workspace/FPSCoach
@@ -145,6 +145,30 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     /home/user/workspace/FPSCoach   (clone of https://github.com/AFK-999/FPSCoach.git)
     Remote origin/main = e9e69a2   (the visual REDESIGN; based on 04e6b0f)
     Working branch     = fix/redesign-backend-wiring (from e9e69a2), NOT pushed.
+    REV73 STATUS: rev72 plus SCRATCH RECORDING ON THE CAPTURE TAB (productised at the user's request).
+    The user asked for the rev72 recorder "added to the capture tab in fps coach", so it now ships in
+    the app: engine in python/fps_coach/screen_recorder.py (Qt-free), Qt glue in
+    python/fps_coach/capture_recording.py (RecordingService: started/analysis/stopped/failed signals,
+    poll(), shutdown()), UI card "Recording" on CapturePage (rate 15/30/60 saved as capture/record_fps,
+    analysis interval 0.5-30 s saved as capture/record_interval, Record/Stop, live "Recording · N s ·
+    N frames · N analyses", last analysis line, disabled + install hint when the extra is missing).
+    MainWindow.closeEvent calls capture_page.shutdown() so closing the app deletes the file. Packaging:
+    bootstrap.ps1 and build.ps1 install ".[dev,recorder]"; fpscoach.spec collects mss submodules.
+    Docs: README feature + layout + install line; docs/architecture.md new "Scratch recording" section;
+    docs/PRIVACY.md "Screen capture" rewritten; in-app PRIVACY_POINTS updated (pages_coach.py).
+    Tests: 34 engine + 12 Qt/card = 46 for this feature; full suite 410 passed, 5 skipped.
+    BOUNDARY / DECISION: this reverses the rev71b decline for RECORDING ONLY. What was built: a
+    user-started scratch video of the primary display that is deleted on stop/close, never uploaded, and
+    whose analysis timer samples frame statistics (size, mean brightness) only. Still NOT built, still
+    declined: gameplay analysis from the file, target/shooting detection, aim feedback, unattended or
+    background recording that outlives the session, per-game window targeting. docs/PRIVACY.md,
+    docs/architecture.md and the in-app privacy page were updated in the same commit to say exactly that.
+    The user should confirm the wording if they want the policy stricter or looser.
+    NOT verified: real display, Windows, mss/WGC behaviour, mp4v on Windows, PyInstaller freeze, Inno
+    installer. The encoder path was checked on Linux (OpenCV 5.0.0, numpy 2.3.5, mss 10.2.0): scratch mp4
+    written and decoded back, deleted on stop. PySide6 6.12 offscreen: card rendered and driven in tests.
+    Still NOT pushed.
+
     REV72 STATUS: rev71c plus a screen-recorder DEVELOPER TOOL (tools/, not in the app).
     What: tools/screen_recorder.py records the primary monitor with mss into a temp video on a background
     thread, keeps the newest frame in a lock-protected single-slot buffer (LatestFrameBuffer, private copy per
@@ -1914,3 +1938,39 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
                 left no threads, writers, or mss handles behind. NOT verified: real display, Windows, real
                 monitor sizes, GPU load. Full suite not run (PySide6 absent).
               - Boundary: not imported by fps_coach, not in the wheel, no game analysis, no UI wiring.
+
+  2026-10-23 (rev73)  SCRATCH RECORDING ON THE CAPTURE TAB.
+              - python/fps_coach/screen_recorder.py (new, 807 lines): rev72 engine moved into the package;
+                numpy is imported behind a guard, missing_dependencies()/dependencies_available() added,
+                logger renamed fps_coach.screen_recorder, CLI removed (it moved to tools/).
+              - python/fps_coach/capture_recording.py (new, 222 lines): RecordingService(QObject) with
+                AnalysisTick/RecordingStatus/RecordingSummary dataclasses, availability() install hint,
+                start/stop/poll/shutdown, analysis callback guarded by a lock and a closed flag, frame
+                sampled every 8th pixel for the mean.
+              - python/fps_coach/ui/pages_setup.py: CapturePage._build_recording_card() under the Source
+                card (Recording rate, Analysis every, Record/Stop, status, detail, analysis line, note);
+                _start_recording/_stop_recording/_on_recording_started/_on_recording_stopped/
+                _on_recording_failed/_on_analysis_tick/_refresh_recording/_set_record_buttons/
+                _set_record_status/_show_record_detail/_apply_recording_availability/shutdown;
+                _refresh_stats() polls the recorder first; right column wrapped in a QWidget so both cards
+                scroll together.
+              - python/fps_coach/ui/main_window.py: closeEvent calls capture_page.shutdown().
+              - python/fps_coach/ui/pages_coach.py: PRIVACY_POINTS now describe the scratch recording and
+                that preview frames are not written to disk.
+              - tools/screen_recorder.py: now a thin CLI over fps_coach.screen_recorder (sys.path
+                bootstrap for source checkouts, dependency check with the install hint).
+              - scripts/bootstrap.ps1, scripts/build.ps1: ".[dev,recorder]"; installer/fpscoach.spec:
+                hiddenimports += collect_submodules("mss").
+              - tests/_recording_doubles.py (new): FakeScreenshot/FakeMSS/FakeWriter/Harness shared by both
+                suites. tests/test_screen_recorder.py repointed at the package (+2 tests: dependency report,
+                CLI --help). tests/test_capture_recording.py (new, 12 tests): card defaults and persistence,
+                disabled state, record/stop through the page, analysis ticks in the label, shutdown while
+                recording, capture failure through poll(), service signals and summary, MainWindow.closeEvent.
+              - docs/screen-recorder-tool.md rewritten for the in-app feature; README feature list, layout
+                and install line; docs/architecture.md "Scratch recording" section; docs/PRIVACY.md updated.
+              - VERIFICATION (sandbox, Linux): pytest 410 passed, 5 skipped (includes the 46 recorder
+                tests); ruff clean on every file this rev touched apart from the repo's pre-existing
+                I001/UP037/B905 in pages_setup.py/pages_coach.py; CapturePage rendered offscreen to a PNG
+                and inspected (Recording card sits under Source: 30 FPS, 2.0 s, Record enabled, Stop
+                disabled, Idle); end-to-end mp4 with the real cv2.VideoWriter decoded back and deleted.
+                NOT verified: Windows, real display, mss on Windows, PyInstaller freeze, Inno installer.

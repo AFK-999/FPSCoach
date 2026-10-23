@@ -1,14 +1,13 @@
-"""Tests for ``tools/screen_recorder.py`` (rev72).
+"""Tests for the screen-recorder engine (``fps_coach.screen_recorder``).
 
-The tool is a standalone developer utility, not part of the ``fps_coach``
-package, so it is loaded from its path.  Every test stays headless and
-codec-free: a synthetic screen and a fake video writer are injected through
-``sct_factory`` / ``writer_factory``.
+Every test stays headless and codec-free: a synthetic screen and a fake video
+writer are injected through ``sct_factory`` / ``writer_factory``.  The Capture
+tab wiring is covered separately in ``test_capture_recording.py``.
 """
 
 from __future__ import annotations
 
-import importlib.util
+import subprocess
 import sys
 import threading
 import time
@@ -16,134 +15,22 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from fps_coach.screen_recorder import (
+    LatestFrameBuffer,
+    ScreenRecorder,
+    dependencies_available,
+    missing_dependencies,
+    mock_analysis_callback,
+)
 
-TOOL_PATH = Path(__file__).resolve().parents[1] / "tools" / "screen_recorder.py"
 FAST_FPS = 50.0
-
-
-def _load_tool():
-    spec = importlib.util.spec_from_file_location("fpscoach_screen_recorder", TOOL_PATH)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-tool = _load_tool()
-LatestFrameBuffer = tool.LatestFrameBuffer
-ScreenRecorder = tool.ScreenRecorder
-mock_analysis_callback = tool.mock_analysis_callback
+TOOL_PATH = Path(__file__).resolve().parents[1] / "tools" / "screen_recorder.py"
 
 
 # ---------------------------------------------------------------------------
-# Test doubles
+# Test doubles (shared with test_capture_recording.py)
 # ---------------------------------------------------------------------------
-class FakeScreenshot:
-    """Duck-typed equivalent of ``mss.screenshot.ScreenShot`` (BGRA)."""
-
-    def __init__(self, width: int, height: int, value: int) -> None:
-        pixels = np.empty((height, width, 4), dtype=np.uint8)
-        pixels[:, :, 0] = value % 256  # B
-        pixels[:, :, 1] = 0  # G
-        pixels[:, :, 2] = 0  # R
-        pixels[:, :, 3] = 255  # A
-        self._pixels = pixels
-        self.width = width
-        self.height = height
-
-    def __array__(self, dtype=None, copy=None):
-        return self._pixels if dtype is None else self._pixels.astype(dtype)
-
-
-class FakeMSS:
-    """Minimal ``mss.mss`` replacement; timing knobs live on the instance."""
-
-    def __init__(self, grab_delay: float = 0.0, fail_after: int | None = None) -> None:
-        self.counter = 0
-        self.grabs = 0
-        self.closed = False
-        self.close_calls = 0
-        self.grab_delay = grab_delay
-        self.fail_after = fail_after
-        self.monitors = [
-            {"left": 0, "top": 0, "width": 640, "height": 480},
-            {"left": 0, "top": 0, "width": 641, "height": 481},  # odd on purpose
-        ]
-
-    def grab(self, monitor: dict) -> FakeScreenshot:
-        if self.grab_delay:
-            time.sleep(self.grab_delay)
-        self.counter += 1
-        self.grabs += 1
-        if self.fail_after is not None and self.grabs > self.fail_after:
-            raise OSError("simulated display disconnect")
-        return FakeScreenshot(monitor["width"], monitor["height"], self.counter)
-
-    def close(self) -> None:
-        self.closed = True
-        self.close_calls += 1
-
-
-class FakeWriter:
-    """Records what the capture thread writes; mimics ``cv2.VideoWriter``."""
-
-    def __init__(self, path, fourcc, fps, size, opened: bool = True) -> None:
-        self.path = Path(path)
-        self.fourcc = fourcc
-        self.fps = fps
-        self.size = size
-        self.opened = opened
-        self.frames: list[np.ndarray] = []
-        self.released = False
-        self.release_calls = 0
-        self.write_thread: threading.Thread | None = None
-        self.release_thread: threading.Thread | None = None
-        self._lock = threading.Lock()
-
-    def write(self, frame: np.ndarray) -> None:
-        with self._lock:
-            self.frames.append(np.array(frame, copy=True))
-        self.write_thread = threading.current_thread()
-        self.path.write_bytes(b"fake video")  # the file really exists
-
-    def isOpened(self) -> bool:
-        return self.opened
-
-    def release(self) -> None:
-        self.released = True
-        self.release_calls += 1
-        self.release_thread = threading.current_thread()
-
-
-class Harness:
-    """Injected fixtures for one recorder."""
-
-    def __init__(self, opened: bool = True, **mss_kwargs) -> None:
-        self.writers: list[FakeWriter] = []
-        self.screens: list[FakeMSS] = []
-        self.opened = opened
-        self.mss_kwargs = mss_kwargs
-
-    def sct_factory(self) -> FakeMSS:
-        screen = FakeMSS(**self.mss_kwargs)
-        self.screens.append(screen)
-        return screen
-
-    def writer_factory(self, path, fourcc, fps, size) -> FakeWriter:
-        writer = FakeWriter(path, fourcc, fps, size, opened=self.opened)
-        self.writers.append(writer)
-        return writer
-
-    @property
-    def writer(self) -> FakeWriter:
-        assert self.writers, "no writer was created"
-        return self.writers[-1]
-
-    @property
-    def screen(self) -> FakeMSS:
-        assert self.screens, "no mss instance was created"
-        return self.screens[-1]
+from _recording_doubles import Harness  # noqa: E402
 
 
 @pytest.fixture
@@ -414,7 +301,7 @@ def test_callback_exception_does_not_stop_the_timer_or_recording(harness, caplog
         raise ValueError("mock analysis exploded")
 
     recorder = make_recorder(harness, analysis_interval=0.05, analysis_callback=flaky)
-    with caplog.at_level("ERROR", logger="fpscoach.screen_recorder"):
+    with caplog.at_level("ERROR", logger="fps_coach.screen_recorder"):
         with recorder:
             time.sleep(0.4)
 
@@ -525,7 +412,7 @@ def test_stop_is_idempotent_and_joins_threads(harness):
 def test_capture_error_is_reported_and_the_file_removed(harness, caplog):
     harness.mss_kwargs["fail_after"] = 2
     recorder = make_recorder(harness, fps=100.0)
-    with caplog.at_level("ERROR", logger="fpscoach.screen_recorder"):
+    with caplog.at_level("ERROR", logger="fps_coach.screen_recorder"):
         with recorder:
             assert wait_until(lambda: recorder.capture_error is not None, 5.0)
     assert isinstance(recorder.capture_error, OSError)
@@ -567,6 +454,26 @@ def test_double_start_and_restart_after_cleanup_raise(harness):
 
 
 # ---------------------------------------------------------------------------
+# Packaging: the CLI front end and the optional-dependency report
+# ---------------------------------------------------------------------------
+def test_dependency_report_matches_the_imports():
+    missing = missing_dependencies()
+    assert isinstance(missing, list)
+    assert dependencies_available() is (not missing)
+
+
+def test_cli_front_end_runs_without_a_display():
+    result = subprocess.run(
+        [sys.executable, str(TOOL_PATH), "--help"],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "--analysis-interval" in result.stdout
+
+
+# ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize(
@@ -589,7 +496,7 @@ def test_default_callback_is_the_mock_analysis(harness):
 
 def test_mock_analysis_callback_reads_the_frame(caplog):
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
-    with caplog.at_level("INFO", logger="fpscoach.screen_recorder"):
+    with caplog.at_level("INFO", logger="fps_coach.screen_recorder"):
         mock_analysis_callback(frame, 7)
     assert "sequence=7" in caplog.text
 

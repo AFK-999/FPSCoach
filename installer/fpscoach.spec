@@ -32,7 +32,9 @@ a = Analysis(
     pathex=[str(ROOT / "python")],
     binaries=[],
     datas=datas,
-    hiddenimports=collect_submodules("fps_coach"),
+    # fps_coach.screen_recorder imports mss/cv2/numpy behind guards; mss picks its
+    # platform backend at run time, so its submodules are collected explicitly.
+    hiddenimports=collect_submodules("fps_coach") + collect_submodules("mss"),
     hookspath=[],
     runtime_hooks=[],
     excludes=[],
