@@ -52,13 +52,22 @@ Future pixel models should add a D3D11 compute shader (or DirectML execution pro
    produce identical comments.
 2. `encode_frame()` produces a JPEG capped at 768 px wide: OpenCV when the recorder extra is
    installed, otherwise Qt's writer, so a plain install still works.
-3. `LiveVisionSession` runs the loop: take the **newest** frame, encode, ask, wait
-   `min_interval`, repeat. It waits for a frame if capture is not running, backs off
-   exponentially on provider errors and stops after `max_consecutive_errors`, and never queues
-   frames — a slow model simply means fewer comments.
-4. The prompt (`COACH_PROMPT` / `LOOK_PROMPT`) restricts the model to the picture and the setup:
-   layout, readability, HUD clutter, lighting, colour, blur. It is told never to identify
-   targets, enemies, or players and never to give aim, recoil, or positioning guidance.
+3. `LiveVisionSession` runs the loop as *windows*, not snapshots: sample the newest frame every
+   `sample_interval` seconds until `frames_per_request` frames are collected, send them together,
+   wait `min_interval`, repeat. `motion_report()` compares their signatures and reports the level
+   and which third of the frame moved; that sentence goes into the prompt, and the same figure
+   drives the motion meter. A still screen stops costing requests (`idle_motion` / `idle_wait`),
+   repeated frames inside a window are dropped, `max_payload_bytes` trims the oldest frames of an
+   oversized window, and provider errors back off exponentially until `max_consecutive_errors`.
+   Nothing is queued: collection stops while a request is in flight, so a slow model means fewer,
+   fresher windows instead of a backlog.
+4. The prompt (`COACH_PROMPT` / `LOOK_PROMPT`) describes the clip ("4 ordered frames, sampled
+   every 0.5 s, together about 1.5 s of a moving screen") plus the measured motion, and restricts
+   the model to the picture and the setup: what changed and where, layout, readability, HUD
+   clutter, lighting, colour, blur. It is told never to identify targets, enemies, or players and
+   never to give aim, recoil, or positioning guidance. A local Ollama model cannot ingest a video
+   stream, so ordered sampling is what "watching" means here: the loop samples ~2 FPS of coverage
+   while the model keeps up.
 
 `ai_chat.AIChatClient.chat(..., images=[jpeg])` carries the picture in the shape each provider
 expects: base64 under `images` on the Ollama message, `image_url` parts for OpenAI-compatible

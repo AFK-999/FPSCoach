@@ -18,7 +18,7 @@ A lightweight, local-first foundation for an FPS movement/sensitivity coach. It 
 - **Conservative custom curve recommendation** with monotonic points, sensitivity multiplier, confidence, and plain-language reasons.
 - **Custom Curve compatibility** for importing/exporting modern `.cc4` JSON profiles and legacy `.ccurve` text profiles, selected explicitly in the UI.
 - **In-Game Mode (Settings)** — off at every launch. Turn it on for a session, pick your game, and enter your DPI and in-game sensitivity; Vantage converts that to cm/360°, shows what its recommendation means in that game's units, and can ask the coach for a specific value. It never reads or changes the game.
-- **Live vision (AI Coach)** — off at every launch. Turn it on and the coach receives a downscaled still frame of the capture preview every few seconds (or on **Look now**) and comments on the setup and the picture: layout, HUD clutter, readability, lighting. It is instructed never to analyse targets, enemies, or aim. Needs a vision model (for example `gemma3:4b`); the card says so before you start.
+- **Live vision (AI Coach)** — off at every launch. Turn it on and the coach watches the live capture preview: it samples the preview into short clips (4 frames half a second apart by default), measures what moved between them, and comments on the movement and the setup. **Look now** takes a clip on demand. It is instructed never to analyse targets, enemies, or aim. Needs a vision model (for example `gemma3:4b`); the card says so before you start.
 - **Optional AI coach** using local Ollama models (defaults to `qwen3:1.7b`, with `phi4-mini` as an option) or a user-configured OpenAI-compatible online API.
 - **Portable Python reference analyzer** so UI/model work can be previewed without the Windows extension.
 
@@ -123,10 +123,19 @@ The Capture tab works in three tiers, and each one says which is in use:
 
 ### Live vision
 
-The AI Coach tab's **Live vision** card sends the newest frame of the Capture preview to
-your configured model. It is off at launch, sends only still frames (never video), waits for
-each reply before taking the next, skips frames that look unchanged, and shows you the exact
-JPEG the model was given. A text-only model such as `qwen3:1.7b` cannot see images — the card
+The AI Coach tab's **Live vision** card streams the Capture preview to your configured model
+as ordered frames. It is off at launch, and it works in clips rather than snapshots:
+
+- **Clip length** (default 4 frames) and **Sample every** (default 0.5 s) control the clip: four
+  frames half a second apart is about 1.5 s of a moving screen in each answer.
+- **Ask every** (default 4 s) is the gap after each reply; **Only when the picture changes**
+  skips requests while the preview is still, so a paused game costs nothing.
+- The card shows the **filmstrip that was sent** and a **motion meter** ("low · 2% (bottom)"),
+  so you can see what the model got and how much of the frame was moving.
+
+A local model cannot accept a video stream, so "real time" here means continuous sampling — the
+model compares frames and answers about change. Nothing is queued: collecting stops while a
+request is in flight and begins again from whatever is on screen when the reply lands. A text-only model such as `qwen3:1.7b` cannot see images — the card
 names a vision model to pull instead:
 
 ```

@@ -1,7 +1,7 @@
 ================================================================================
 FPS COACH — CONTINUATION / HANDOFF DOCUMENT
 Copy-paste this whole file into a new agent chat to resume with zero context loss.
-Last updated: 2026-10-23 (rev 79)  (update after EVERY response)
+Last updated: 2026-10-23 (rev 80)  (update after EVERY response)
 
 *** IMPORTANT (rev4): The REAL repo was provided and differs a lot from the
 *** earlier scaffold. Work on the REAL repo at /home/user/workspace/FPSCoach
@@ -45,6 +45,15 @@ Last updated: 2026-10-23 (rev 79)  (update after EVERY response)
                 frame sent, vision-model warning), _LiveVisionThread, "eye" glyph, privacy copy.
               - tests: test_visual_coach.py (29) + test_vision_payloads.py (21).
               - VERIFICATION: pytest 526 passed, 5 skipped; offscreen end-to-end with a fake vision model.
+
+  2026-10-23 (rev80)  FEATURE: REAL-TIME WATCHING - THE COACH SEES A MOVING CLIP.
+              - visual_coach.motion_report(): change level + which third of the frame moved.
+              - LiveVisionSession collects ordered windows (clip length / sample interval), adaptive idle
+                skipping, payload cap, richer counters; nothing queued.
+              - prompts describe the clip and its motion; page shows a 4-frame filmstrip + motion meter and
+                gained Clip length / Sample every controls.
+              - privacy copy: clips held in memory only.
+              - VERIFICATION: pytest 536 passed, 5 skipped; offscreen end-to-end with a fake vision model.
 
 ================================================================================
 
@@ -181,6 +190,41 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     /home/user/workspace/FPSCoach   (clone of https://github.com/AFK-999/FPSCoach.git)
     Remote origin/main = e9e69a2   (the visual REDESIGN; based on 04e6b0f)
     Working branch     = fix/redesign-backend-wiring (from e9e69a2), NOT pushed.
+    REV80 STATUS: rev79 plus REAL-TIME WATCHING - the coach now sees the preview as a moving clip, not a still.
+    Requested: "make it that the ai coach sees in real time and watches real-time video capture not an image".
+    Design note: a local Ollama vision model cannot ingest a video stream, so "real time" was implemented as
+    CONTINUOUS SAMPLING + ORDERED MULTI-FRAME WINDOWS: the loop samples the newest preview frame every
+    sample_interval (default 0.5 s), collects frames_per_request of them (default 4 = ~1.5 s of screen), and
+    sends them together, in order, with measured motion. The model compares frames, so its answer is about
+    change ("the HUD bar slides right, everything above is static"), not a frozen picture.
+    What changed:
+      - visual_coach.motion_report(): per-cell luma comparison of two signatures -> level, changed-cell
+        ratio, and WHICH THIRD of the frame moved (top/middle/bottom/full). Threshold ignores dither.
+      - LiveVisionSession now collects a window (_collect_window) instead of one frame: drops repeated
+        frames inside a window, stops after a full window's worth of duplicates on a still screen, then
+        applies adaptive idle skipping (reports "The preview is not changing..."), trims the oldest frames if
+        the payload exceeds max_payload_bytes, and prints its own counters (looks / frames / replies / clip
+        span / idle skips / latency). Nothing is queued: collection stops while a request is in flight.
+      - COACH_PROMPT/LOOK_PROMPT now describe the clip ("N ordered frames, sampled every X s, together about
+        Y s of a moving screen") plus "Motion across the window: low (…% mean cell change, …% of the frame
+        changed, mostly in the bottom third)".
+      - ui: the card grew "Clip length" and "Sample every" controls (Ask every default dropped to 4 s), a
+        FOUR-FRAME FILMSTRIP showing exactly what was sent (oldest first, newest highlighted), and a motion
+        meter ("low · 2% (bottom)"). Reply stamps read "4 frames / 1.3 s · low motion". _LiveVisionThread
+        emits window_sent([jpegs], meta) instead of frame_sent.
+      - Privacy copy (PRIVACY_POINTS + docs/PRIVACY.md): clips of downscaled frames, held in memory only,
+        discarded after the request; nothing recorded by this feature.
+    Tests: tests/test_visual_coach.py rewritten for streaming (39): motion level/band/threshold, clip of N
+    ordered frames with real differences between images, window announced before the request with ages
+    descending, prompt describes clip+motion, single-frame wording, payload cap dropping oldest frames,
+    still screen idling, moving screen continuing, Look now taking a window, stop mid-window sending nothing,
+    plus the encoder/page tests. Full suite 536 passed, 5 skipped.
+    VERIFICATION (sandbox): end-to-end through MainWindow with a fake vision model over a synthetic moving
+    HUD: 2 looks, 4 frames each (~8.6 KB per frame), filmstrip filled, motion "low · 2% (bottom)", status
+    "2 looks · 8 frames · 2 replies · 1.3 s clips". Screenshot: deliverables/screenshots/ai-live-vision.png.
+    NOT verified: a real vision model (gemma3:4b untested here; qwen3:1.7b cannot see) and a real Windows
+    display. Still NOT pushed.
+
     REV79 STATUS: rev78 plus LIVE VISION - the AI coach reads the capture preview and comments on it.
     Requested: "update our existing desktop utility script that uses mss and threading to capture the live
     screen preview within the application and allow the ai in the application to automate responses

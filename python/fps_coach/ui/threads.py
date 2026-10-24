@@ -5,7 +5,13 @@ from __future__ import annotations
 
 from PySide6.QtCore import QThread, Signal
 
-from fps_coach.ai_chat import AIChatClient, ChatProviderError, ChatSettings, check_ollama, pull_model
+from fps_coach.ai_chat import (
+    AIChatClient,
+    ChatProviderError,
+    ChatSettings,
+    check_ollama,
+    pull_model,
+)
 from fps_coach.tts_service import SpeechOptions, speakable_text
 
 
@@ -212,16 +218,17 @@ class _VoiceCommandService(QThread):
 
 
 class _LiveVisionThread(QThread):
-    """Run one LiveVisionSession off the UI thread (rev79).
+    """Run one LiveVisionSession off the UI thread (rev79/rev80).
 
-    The session calls its callbacks from this thread; each one is forwarded as a
-    Qt signal so the page touches its widgets on the UI thread only.
+    The session samples the live preview into ordered multi-frame windows; each
+    callback is forwarded as a Qt signal so the page touches widgets on the UI
+    thread only.
     """
 
-    reply_ready = Signal(str, object)   # (reply text, meta)
+    reply_ready = Signal(str, object)    # (reply text, meta)
     request_failed = Signal(str)
     status_changed = Signal(str)
-    frame_sent = Signal(bytes, object)  # (jpeg, meta) — what the model was shown
+    window_sent = Signal(list, object)   # ([jpeg, ...], meta) — the clip the model was shown
 
     def __init__(self, session, parent=None):
         super().__init__(parent)
@@ -229,7 +236,7 @@ class _LiveVisionThread(QThread):
         session._on_reply = lambda text, meta: self.reply_ready.emit(text, meta)
         session._on_error = lambda message: self.request_failed.emit(message)
         session._on_status = lambda message: self.status_changed.emit(message)
-        session._on_frame = lambda jpeg, meta: self.frame_sent.emit(jpeg, meta)
+        session._on_window = lambda frames, meta: self.window_sent.emit(frames, meta)
 
     def run(self) -> None:
         try:

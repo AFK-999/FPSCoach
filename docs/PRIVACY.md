@@ -1,6 +1,6 @@
 # FPS Coach (Vantage) Privacy Policy
 
-Last updated: 2026-10-23 (rev79)
+Last updated: 2026-10-23 (rev80)
 
 This policy describes what FPS Coach stores, what it sends, and what it never does.
 The same statements appear in the app on the Privacy page.
@@ -35,15 +35,16 @@ The same statements appear in the app on the Privacy page.
 
 - **Off at every launch.** The switch is not saved; the next start begins with it off,
   exactly like In-Game Mode.
-- When it is on, Vantage sends **downscaled still frames of your capture preview** to the
-  AI endpoint configured in Settings, one frame at a time, waiting for each reply before
-  taking the next. Frames are reduced to at most 768 px wide JPEGs before sending.
+- When it is on, Vantage samples your capture preview and sends **short clips of downscaled
+  frames** (4 frames half a second apart by default) to the AI endpoint configured in Settings,
+  one clip at a time, waiting for each reply before sampling the next. Frames are reduced to at
+  most 768 px wide JPEGs before sending. This feature records nothing to disk.
 - **Where they go depends on your provider.** With a local Ollama server the frames never
   leave the machine. With an online provider (for example an OpenAI-compatible endpoint)
   the frames are uploaded to that service, exactly like the text you type into the chat.
   The Live vision card states which case applies under the switch.
-- Only the newest frame is ever held, and nothing is written to disk unless you also use
-  the Recording card.
+- Only the frames of the clip being sent are held, in memory, and they are discarded after the
+  request. Nothing is written to disk unless you also use the Recording card.
 - **What the model is asked to do with them:** comment on the setup and the picture —
   screen or mode, layout, HUD clutter, lighting, colour, blur, whether the image looks
   correct. It is explicitly instructed not to identify targets, enemies, or players and

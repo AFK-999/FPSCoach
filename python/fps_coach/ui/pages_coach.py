@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSizePolicy,
+    QSpinBox,
     QTextEdit,
     QToolButton,
     QVBoxLayout,
@@ -632,21 +633,42 @@ class AIChatPage(QWidget):
     def _build_live_vision_card(self):
         card, lay = _card(
             "Live vision",
-            "Let the coach see the capture preview. Off at every launch.",
+            "The coach watches the live capture preview as a moving clip. Off at every launch.",
         )
-        self._live_pixmap = None
-        self.live_thumb = QLabel("No frame yet")
-        self.live_thumb.setObjectName("stage")
-        self.live_thumb.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.live_thumb.setFixedHeight(132)
-        self.live_thumb.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.live_thumb.setScaledContents(False)
-        self.live_thumb.installEventFilter(self)  # re-fit the thumbnail when the card resizes
-        lay.addWidget(self.live_thumb)
+        # Filmstrip: the frames of the window the model was last given, oldest first.
+        self.live_filmstrip = QWidget()
+        strip_lay = QHBoxLayout(self.live_filmstrip)
+        strip_lay.setContentsMargins(0, 0, 0, 0)
+        strip_lay.setSpacing(4)
+        self.live_slots: list[QLabel] = []
+        for _ in range(4):
+            slot = QLabel("")
+            slot.setObjectName("stage")
+            slot.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            slot.setFixedHeight(74)
+            slot.setMinimumWidth(40)
+            slot.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            slot.setScaledContents(False)
+            slot.installEventFilter(self)  # re-fit when the card is resized
+            strip_lay.addWidget(slot, 1)
+            self.live_slots.append(slot)
+        self._live_pixmaps: list = []
+        lay.addWidget(self.live_filmstrip)
+
+        self.live_motion = QProgressBar()
+        self.live_motion.setRange(0, 100)
+        self.live_motion.setValue(0)
+        self.live_motion.setTextVisible(True)
+        self.live_motion.setFormat("motion \u2014 no clip yet")
+        self.live_motion.setToolTip(
+            "How much the preview changed between the sampled frames. High motion means the "
+            "coach's answer is about movement, not a static picture."
+        )
+        lay.addWidget(self.live_motion)
 
         row = QHBoxLayout()
         row.setSpacing(8)
-        self.live_toggle = QPushButton(" Watch preview")
+        self.live_toggle = QPushButton(" Watch live")
         self.live_toggle.setObjectName("secondary")
         self.live_toggle.setCheckable(True)
         self.live_toggle.setChecked(False)  # never on at launch
@@ -654,7 +676,7 @@ class AIChatPage(QWidget):
         self.live_now = QPushButton(" Look now")
         self.live_now.setObjectName("secondary")
         set_glyph(self.live_now, "refresh")
-        self.live_now.setToolTip("Send the newest frame once, without starting the loop")
+        self.live_now.setToolTip("Take a clip from the preview now, without starting the loop")
         row.addWidget(self.live_toggle)
         row.addWidget(self.live_now)
         row.addStretch(1)
@@ -663,33 +685,63 @@ class AIChatPage(QWidget):
         form = QGridLayout()
         form.setHorizontalSpacing(10)
         form.setVerticalSpacing(8)
-        form.addWidget(_label("Ask every", "formLabel"), 0, 0)
+        settings = _settings()
+
+        form.addWidget(_label("Clip length", "formLabel"), 0, 0)
+        self.live_frames = QSpinBox()
+        self.live_frames.setRange(1, 8)
+        self.live_frames.setSuffix(" frames")
+        self.live_frames.setValue(int(settings.value("ai/live_frames", 4, type=int)))
+        self.live_frames.setToolTip(
+            "How many frames one answer is based on. One frame is a snapshot; four frames half "
+            "a second apart is a two-second clip the model can compare."
+        )
+        self.live_frames.valueChanged.connect(
+            lambda value: settings.setValue("ai/live_frames", int(value))
+        )
+        form.addWidget(self.live_frames, 0, 1)
+
+        form.addWidget(_label("Sample every", "formLabel"), 1, 0)
+        self.live_sample = QDoubleSpinBox()
+        self.live_sample.setRange(0.1, 3.0)
+        self.live_sample.setSingleStep(0.1)
+        self.live_sample.setDecimals(1)
+        self.live_sample.setSuffix(" s")
+        self.live_sample.setValue(float(settings.value("ai/live_sample", 0.5, type=float)))
+        self.live_sample.setToolTip(
+            "Gap between the frames inside a clip. Smaller is closer to video and costs more per "
+            "answer; most local vision models stall below about 0.3 s."
+        )
+        self.live_sample.valueChanged.connect(
+            lambda value: settings.setValue("ai/live_sample", float(value))
+        )
+        form.addWidget(self.live_sample, 1, 1)
+
+        form.addWidget(_label("Ask every", "formLabel"), 2, 0)
         self.live_interval = QDoubleSpinBox()
         self.live_interval.setRange(2.0, 120.0)
         self.live_interval.setSingleStep(1.0)
         self.live_interval.setDecimals(0)
         self.live_interval.setSuffix(" s")
-        self.live_interval.setValue(float(_settings().value("ai/live_interval", 6.0, type=float)))
+        self.live_interval.setValue(float(settings.value("ai/live_interval", 4.0, type=float)))
         self.live_interval.setToolTip(
-            "How long to wait after each reply. A longer gap means fewer, less repetitive "
-            "comments; a local vision model is the real limit."
+            "How long to wait after each reply before taking the next clip. A longer gap means "
+            "fewer, less repetitive comments; the model's own speed is the real limit."
         )
         self.live_interval.valueChanged.connect(
-            lambda value: _settings().setValue("ai/live_interval", float(value))
+            lambda value: settings.setValue("ai/live_interval", float(value))
         )
-        form.addWidget(self.live_interval, 0, 1)
+        form.addWidget(self.live_interval, 2, 1)
         lay.addLayout(form)
 
         self.live_change_only = QCheckBox("Only when the picture changes")
         self.live_change_only.setToolTip(
-            "Skip frames that look the same as the last one sent, so a paused game does not "
-            "produce identical comments."
+            "Skip requests while the preview is not moving, so a paused game costs nothing. "
+            "Look now always sends."
         )
-        self.live_change_only.setChecked(
-            bool(_settings().value("ai/live_change_only", True, type=bool))
-        )
+        self.live_change_only.setChecked(bool(settings.value("ai/live_change_only", True, type=bool)))
         self.live_change_only.toggled.connect(
-            lambda checked: _settings().setValue("ai/live_change_only", bool(checked))
+            lambda checked: settings.setValue("ai/live_change_only", bool(checked))
         )
         lay.addWidget(self.live_change_only)
 
@@ -754,8 +806,10 @@ class AIChatPage(QWidget):
 
     def _live_vision_settings(self) -> VisionSettings:
         return VisionSettings(
+            frames_per_request=int(self.live_frames.value()),
+            sample_interval=float(self.live_sample.value()),
             min_interval=float(self.live_interval.value()),
-            skip_unchanged=self.live_change_only.isChecked(),
+            adaptive=self.live_change_only.isChecked(),
         )
 
     def _start_live_vision(self) -> None:
@@ -784,12 +838,14 @@ class AIChatPage(QWidget):
         self._live_thread.reply_ready.connect(self._live_vision_reply)
         self._live_thread.request_failed.connect(self._live_vision_failed)
         self._live_thread.status_changed.connect(self._live_vision_status)
-        self._live_thread.frame_sent.connect(self._live_vision_frame)
+        self._live_thread.window_sent.connect(self._live_vision_window)
         self._live_thread.finished.connect(self._live_vision_finished)
         blocked = self.live_toggle.blockSignals(True)
         self.live_toggle.setChecked(True)
         self.live_toggle.blockSignals(blocked)
         self.live_interval.setEnabled(False)
+        self.live_frames.setEnabled(False)
+        self.live_sample.setEnabled(False)
         self._live_thread.start()
 
     def _stop_live_vision(self) -> None:
@@ -803,6 +859,9 @@ class AIChatPage(QWidget):
         self.live_toggle.setChecked(False)
         self.live_toggle.blockSignals(signals_blocked)
         self.live_interval.setEnabled(True)
+        self.live_frames.setEnabled(True)
+        self.live_sample.setEnabled(True)
+        self._live_motion_reset()
         self._set_live_status("Off")
 
     def _ask_live_now(self) -> None:
@@ -820,9 +879,22 @@ class AIChatPage(QWidget):
 
     def _live_vision_reply(self, text: str, meta) -> None:
         meta = meta or {}
-        stamp = f"frame {meta.get('frame', '?')}"
+        frames = int(meta.get("frames") or 1)
+        stamp = f"{frames} frame{'s' if frames != 1 else ''}"
+        if meta.get("span"):
+            stamp += f" / {float(meta['span']):.1f} s"
+        if meta.get("motion_word"):
+            stamp += f" · {meta['motion_word']} motion"
         if meta.get("latency"):
             stamp += f" · {float(meta['latency']):.1f} s"
+        if meta.get("changed") is not None and hasattr(self, "live_motion"):
+            # The bar shows how much of the frame moved, which is the readable number.
+            share = max(0.0, min(1.0, float(meta["changed"])))
+            self.live_motion.setValue(int(round(share * 100)))
+            where = meta.get("band") if meta.get("band") not in (None, "none") else "no area"
+            self.live_motion.setFormat(
+                f"motion {meta.get('motion_word', '')} · {share * 100:.0f}% ({where})"
+            )
         self._append("Coach (live)", f"{text} <i>— {stamp}</i>")
         counters = self._live_session.counters if self._live_session is not None else None
         self._set_live_status(counters.line() if counters else "Watching", "good")
@@ -837,36 +909,54 @@ class AIChatPage(QWidget):
         state = "warn" if message.startswith("No frame yet") else ""
         self._set_live_status(message, state)
 
-    def _live_vision_frame(self, jpeg: bytes, meta) -> None:
-        """Show exactly what the model was sent — no doubt about what it 'saw'."""
-        pixmap = QPixmap()
-        if not jpeg or not pixmap.loadFromData(jpeg, "JPEG"):
-            return
-        self._live_pixmap = pixmap
-        self._fit_live_thumb()
-        size = meta or {}
-        self.live_thumb.setToolTip(
-            f"Sent to the model: {size.get('width', '?')}×{size.get('height', '?')} "
-            f"· {size.get('bytes', 0) / 1024:.0f} KB"
-        )
-
-    def _fit_live_thumb(self) -> None:
-        if self._live_pixmap is None:
-            return
-        width = max(120, self.live_thumb.width() - 8)
-        height = max(60, self.live_thumb.height() - 8)
-        self.live_thumb.setPixmap(
-            self._live_pixmap.scaled(
-                width,
-                height,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
+    def _live_vision_window(self, frames, meta) -> None:
+        """Show the clip the model was given — oldest frame first, newest last."""
+        meta = meta or {}
+        details = list(meta.get("frames") or [])
+        jpegs = list(frames or [])
+        visible = jpegs[-len(self.live_slots):]
+        details = details[-len(self.live_slots):]
+        self._live_pixmaps = []
+        for index, slot in enumerate(self.live_slots):
+            slot.clear()
+            slot.setText("")
+            if index >= len(visible):
+                self._live_pixmaps.append(None)
+                continue
+            pixmap = QPixmap()
+            if not pixmap.loadFromData(visible[index], "JPEG"):
+                self._live_pixmaps.append(None)
+                continue
+            info = details[index] if index < len(details) else {}
+            self._live_pixmaps.append(pixmap)
+            slot.setToolTip(
+                f"{info.get('width', '?')}\u00d7{info.get('height', '?')} \u00b7 "
+                f"{info.get('bytes', 0) / 1024:.0f} KB \u00b7 "
+                f"{info.get('age', 0):.1f} s before the newest frame"
             )
-        )
+        self._fit_live_strip()
+
+    def _fit_live_strip(self) -> None:
+        for slot, pixmap in zip(self.live_slots, self._live_pixmaps, strict=False):
+            if pixmap is None:
+                continue
+            slot.setPixmap(
+                pixmap.scaled(
+                    max(32, slot.width() - 4),
+                    max(32, slot.height() - 4),
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            )
+
+    def _live_motion_reset(self) -> None:
+        if hasattr(self, "live_motion"):
+            self.live_motion.setValue(0)
+            self.live_motion.setFormat("motion \u2014 no clip yet")
 
     def eventFilter(self, obj, event):  # noqa: N802 - Qt naming
-        if obj is getattr(self, "live_thumb", None) and event.type() == QEvent.Type.Resize:
-            self._fit_live_thumb()
+        if event.type() == QEvent.Type.Resize and obj in getattr(self, "live_slots", []):
+            self._fit_live_strip()
         return super().eventFilter(obj, event)
 
     def _live_vision_finished(self) -> None:
@@ -878,6 +968,8 @@ class AIChatPage(QWidget):
         self.live_toggle.setChecked(False)
         self.live_toggle.blockSignals(signals_blocked)
         self.live_interval.setEnabled(True)
+        self.live_frames.setEnabled(True)
+        self.live_sample.setEnabled(True)
 
     def shutdown(self) -> None:
         self._stop_live_vision()
@@ -1179,11 +1271,13 @@ PRIVACY_POINTS: tuple[str, ...] = (
         "for that session. It never reads or changes the game: you type your game, DPI, and "
         "in-game sensitivity, and the app converts those numbers. While it is on, those numbers "
         "are included in the context sent to your configured AI endpoint.",
-        "Live vision (AI Coach) is off at every launch. While it is on, downscaled still frames of "
-        "the capture preview are sent to the AI endpoint you configured, one at a time, and the "
-        "replies appear in the chat. With a local Ollama model the frames stay on this machine; with "
-        "an online provider they are uploaded to it. Turn it off and no frame leaves the app. The "
-        "coach is asked to comment on the picture and setup only - never on targets, enemies, or aim.",
+        "Live vision (AI Coach) is off at every launch. While it is on, the capture preview is "
+        "sampled into short clips of downscaled frames (4 frames half a second apart by default) and "
+        "each clip is sent to the AI endpoint you configured, one clip at a time, with the reply in "
+        "the chat. The frames are held in memory only and are never recorded by this feature. With a "
+        "local Ollama model they stay on this machine; with an online provider they are uploaded to "
+        "it. Turn it off and nothing leaves the app. The coach is asked to comment on the movement "
+        "and the setup only - never on targets, enemies, or aim.",
         "AI requests are sent only to the endpoint you configure in Settings.",
         "Voice recognition can run fully offline via a local model.",
         "The crosshair overlay is off by default. When it is on, or while you edit its "
