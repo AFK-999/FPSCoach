@@ -27,6 +27,10 @@ Three pieces, none of which import Qt, so they can be tested without a display:
     stale windows: collection stops while a request is in flight and starts again
     from whatever is on screen when the reply lands.
 
+Frames carry their offsets ("0.0 s, 0.5 s, 1.0 s") in the prompt, because Ollama
+sends them as images with no temporal position ids; the recommended models
+(qwen3-vl) are the ones trained to use exactly that format.
+
 What the coach is allowed to do with the picture is defined in
 ``ai_chat.VISION_SYSTEM_PROMPT``: describe the visible setup, UI, lighting and
 picture quality, and advise on those. No target, enemy, aim or recoil analysis —
@@ -363,6 +367,7 @@ def motion_report(previous: bytes, current: bytes, *, threshold: int = 6) -> Mot
 COACH_PROMPT = (
     "{frame_label} from the user's live capture preview are attached, in order, "
     "{cadence}.\n"
+    "Frame times, oldest first: {times}. Use them to say when something changed.\n"
     "Frame statistics: {description}\n"
     "Motion across the window: {motion}.\n"
     "{history}"
@@ -378,6 +383,7 @@ COACH_PROMPT = (
 LOOK_PROMPT = (
     "The user asked you to look at their capture preview. {frame_label} from it are "
     "attached in order, {cadence}.\n"
+    "Frame times, oldest first: {times}. Use them to say when something changed.\n"
     "Frame statistics: {description}\n"
     "Motion across the window: {motion}.\n"
     "{history}"
@@ -607,7 +613,8 @@ class LiveVisionSession:
             payload = self._payload(frames)
             prompt = (LOOK_PROMPT if forced else COACH_PROMPT).format(
                 frame_label=self._frame_label(len(payload)),
-                cadence=self._cadence(len(payload)),
+                cadence=self._cadence(payload),
+                times=self._times(payload),
                 description=self._describe(payload),
                 motion=self._motion_text(frames),
                 history=self._history_text(),
@@ -845,16 +852,37 @@ class LiveVisionSession:
         )
 
     @staticmethod
+    def _times(frames: list[WindowFrame]) -> str:
+        """Per-frame timestamps, oldest first: what qwen-vl is trained to read.
+
+        Ollama has no video input, so frames arrive as separate images with no
+        temporal position ids (ollama#18151). Naming each frame's offset is the
+        cheapest way to give the model the timing the images themselves lack, and
+        it costs nothing for models that ignore it.
+        """
+        if not frames:
+            return "none"
+        first = frames[0].timestamp
+        stamps = ", ".join(f"{frame.timestamp - first:.1f} s" for frame in frames)
+        return f"{stamps} (0.0 s is the oldest frame, {len(frames)} in total)"
+
+    @staticmethod
     def _frame_label(count: int) -> str:
         return f"{count} frame" if count == 1 else f"{count} ordered frames"
 
-    def _cadence(self, count: int) -> str:
-        interval = self._settings.sample_interval
-        if count <= 1:
+    def _cadence(self, frames: list[WindowFrame]) -> str:
+        """Describe the real sampling cadence, not the requested one.
+
+        Collection takes as long as the capture and the encoder need, so the
+        measured gaps are what the timestamps say. Quoting the nominal interval
+        here would contradict the "Frame times" line in the same prompt.
+        """
+        if len(frames) <= 1:
             return "a single still, so there is no movement to compare"
-        span = (count - 1) * interval
+        span = max(0.0, frames[-1].timestamp - frames[0].timestamp)
+        gap = span / (len(frames) - 1)
         return (
-            f"sampled every {interval:.1f} s, so together they show about {span:.1f} s of "
+            f"sampled about every {gap:.1f} s, so together they show about {span:.1f} s of "
             "a moving screen"
         )
 
@@ -914,5 +942,12 @@ class LiveVisionSession:
 
 
 def suggested_vision_models() -> tuple[str, ...]:
-    """Small vision models that work in Ollama and fit a gaming PC."""
-    return ("gemma3:4b", "qwen2.5vl:3b", "llava:7b", "moondream")
+    """Vision models that work in Ollama, fit a gaming PC, and handle a clip.
+
+    Ordered by suitability for this feature. The Qwen-VL family is first because
+    it is trained on interleaved "timestamp + video frames" input with per-model
+    temporal position ids, and llama.cpp (which Ollama runs) merges consecutive
+    qwen-vl images into a video block — so our ordered frames reach it as video
+    rather than as N unrelated pictures. The rest still work as plain frames.
+    """
+    return ("qwen3-vl:8b", "qwen3-vl:4b", "qwen2.5vl:7b", "gemma3:4b", "llava:7b", "moondream")

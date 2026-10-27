@@ -139,8 +139,14 @@ request is in flight and begins again from whatever is on screen when the reply 
 names a vision model to pull instead:
 
 ```
-ollama pull gemma3:4b
+ollama pull qwen3-vl:8b
 ```
+
+`qwen3-vl` is the recommended default: it is trained on interleaved "timestamp + video frames"
+input, and llama.cpp (which Ollama runs) merges consecutive qwen-vl images into a video block, so
+the clip reaches it as video rather than as unrelated pictures. `gemma3:4b` also works. Every
+frame's offset is spelled out in the prompt (`Frame times, oldest first: 0.0 s, 0.5 s, 1.0 s`),
+because Ollama gives the model images without temporal position ids.
 
 With a local Ollama server the frames never leave the machine; with an online provider they
 are uploaded to it. See `docs/PRIVACY.md`.

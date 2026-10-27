@@ -777,11 +777,16 @@ class AIChatPage(QWidget):
         notes: list[str] = []
         if not callable(getattr(self._capture_source, "latest_frame", None)):
             notes.append("Live vision needs the capture backend; it is not available here.")
+        recommended = suggested_vision_models()[0]
         if not model_supports_images(settings.model, settings.provider):
-            example = suggested_vision_models()[0]
             notes.append(
                 f"{settings.model or 'This model'} cannot see images. Pick a vision model in "
-                f"Settings, for example {example} (ollama pull {example})."
+                f"Settings - {recommended} is the best fit (ollama pull {recommended})."
+            )
+        elif not _is_timestamp_model(settings.model):
+            notes.append(
+                f"Yes, it can see. {recommended} is the better fit for a clip: it is trained on "
+                "timestamped video frames, so it follows what changed and when."
             )
         if settings.provider == "openai":
             notes.append(
@@ -1258,6 +1263,12 @@ class AIChatPage(QWidget):
         """Forget the on-screen transcript and the messages sent to the model (Privacy page)."""
         self._messages = []
         self.transcript.clear()
+
+
+def _is_timestamp_model(model: str) -> bool:
+    """True for the families trained on interleaved timestamp + video-frame input."""
+    name = (model or "").strip().lower()
+    return any(hint in name for hint in ("qwen3-vl", "qwen3vl", "qwen2.5-vl", "qwen2.5vl"))
 
 
 PRIVACY_POINTS: tuple[str, ...] = (

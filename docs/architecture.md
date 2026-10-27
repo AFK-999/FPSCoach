@@ -61,7 +61,12 @@ Future pixel models should add a D3D11 compute shader (or DirectML execution pro
    oversized window, and provider errors back off exponentially until `max_consecutive_errors`.
    Nothing is queued: collection stops while a request is in flight, so a slow model means fewer,
    fresher windows instead of a backlog.
-4. The prompt (`COACH_PROMPT` / `LOOK_PROMPT`) describes the clip ("4 ordered frames, sampled
+4. Frames carry their offsets in the prompt (`Frame times, oldest first: 0.0 s, 0.5 s, …`) because
+   Ollama delivers them as images with no temporal position ids (ollama#18151). The recommended
+   models are the qwen-vl family, which is trained on exactly that interleaved timestamp/frame
+   format; llama.cpp's frame-merge support also combines consecutive qwen-vl images into a video
+   block.
+5. The prompt (`COACH_PROMPT` / `LOOK_PROMPT`) describes the clip ("4 ordered frames, sampled
    every 0.5 s, together about 1.5 s of a moving screen") plus the measured motion, and restricts
    the model to the picture and the setup: what changed and where, layout, readability, HUD
    clutter, lighting, colour, blur. It is told never to identify targets, enemies, or players and

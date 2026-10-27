@@ -328,7 +328,7 @@ def test_prompt_describes_the_clip_and_its_motion():
     run_session(session).join(8)
     prompt = chat.calls[0]["messages"][0]["content"]
     assert "3 ordered frames" in prompt
-    assert "sampled every" in prompt
+    assert "sampled about every" in prompt
     assert "Motion across the window" in prompt
     for word in ("still", "low", "medium", "high"):
         if word in prompt:
@@ -624,6 +624,49 @@ def test_settings_are_normalised():
     assert normalised.max_consecutive_errors == 1
 
 
+def test_prompt_carries_per_frame_timestamps():
+    """Ollama sends frames as images with no temporal ids, so the offsets are text."""
+    chat = FakeChat(["Fine."])
+    session = LiveVisionSession(
+        frame_provider=MovingScreen(),
+        chat=chat,
+        settings=VisionSettings(**FAST, frames_per_request=3),
+        on_reply=lambda text, meta: session.stop(),
+    )
+    run_session(session).join(8)
+    prompt = chat.calls[0]["messages"][0]["content"]
+    assert "Frame times, oldest first:" in prompt
+    assert "0.0 s" in prompt
+    assert "3 in total" in prompt
+    assert "say when something changed" in prompt
+
+
+def test_times_start_at_zero_for_every_window():
+    from fps_coach.visual_coach import WindowFrame
+
+    frames = [
+        WindowFrame(jpeg=b"x", signature=b"s", timestamp=100.0, delta=0.0, meta={}),
+        WindowFrame(jpeg=b"x", signature=b"s", timestamp=100.5, delta=0.0, meta={}),
+        WindowFrame(jpeg=b"x", signature=b"s", timestamp=101.5, delta=0.0, meta={}),
+    ]
+    text = LiveVisionSession._times(frames)
+    assert text.startswith("0.0 s, 0.5 s, 1.5 s")
+    assert "3 in total" in text
+    assert LiveVisionSession._times([]) == "none"
+
+
+def test_the_recommended_model_is_the_one_trained_on_timestamped_frames():
+    from fps_coach.ai_chat import model_supports_images
+    from fps_coach.visual_coach import suggested_vision_models
+
+    models = suggested_vision_models()
+    assert models[0] == "qwen3-vl:8b", "qwen-vl is trained on timestamp + frame input"
+    assert models[0].startswith("qwen")
+    # Every suggestion must actually be a vision model, or the card would mislead.
+    for model in models:
+        assert model_supports_images(model), model
+
+
 def test_prompts_carry_the_fair_play_line():
     for prompt in (COACH_PROMPT, LOOK_PROMPT):
         text = prompt.lower()
@@ -702,7 +745,7 @@ def test_page_shows_the_model_warning_and_starts_off(qapp, saved):
         assert page.live_toggle.isChecked() is False, "live vision must be off at launch"
         assert page.live_note.isHidden() is False
         assert "cannot see images" in page.live_note.text()
-        assert "gemma3" in page.live_note.text()
+        assert "qwen3-vl:8b" in page.live_note.text(), "the card must name the best fit"
     finally:
         page.shutdown()
 
@@ -715,6 +758,22 @@ def test_page_says_frames_stay_local_for_a_vision_model_on_ollama(qapp, saved):
     try:
         page.set_capture_source(FakeBackend())
         assert "stay on this machine" in page.live_note.text()
+        # A vision model that is not trained on timestamped frames gets a nudge.
+        assert "qwen3-vl:8b is the better fit" in page.live_note.text()
+    finally:
+        page.shutdown()
+
+
+def test_page_does_not_nudge_a_qwen_vl_user(qapp, saved):
+    from fps_coach.ui.pages_coach import AIChatPage
+
+    saved.setValue("ai/model", "qwen3-vl:8b")
+    page = AIChatPage()
+    try:
+        page.set_capture_source(FakeBackend())
+        note = page.live_note.text()
+        assert "stay on this machine" in note
+        assert "better fit" not in note, "nothing to improve on the recommended model"
     finally:
         page.shutdown()
 

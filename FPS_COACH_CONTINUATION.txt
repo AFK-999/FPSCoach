@@ -1,7 +1,7 @@
 ================================================================================
 FPS COACH — CONTINUATION / HANDOFF DOCUMENT
 Copy-paste this whole file into a new agent chat to resume with zero context loss.
-Last updated: 2026-10-23 (rev 80)  (update after EVERY response)
+Last updated: 2026-10-23 (rev 81)  (update after EVERY response)
 
 *** IMPORTANT (rev4): The REAL repo was provided and differs a lot from the
 *** earlier scaffold. Work on the REAL repo at /home/user/workspace/FPSCoach
@@ -54,6 +54,14 @@ Last updated: 2026-10-23 (rev 80)  (update after EVERY response)
                 gained Clip length / Sample every controls.
               - privacy copy: clips held in memory only.
               - VERIFICATION: pytest 536 passed, 5 skipped; offscreen end-to-end with a fake vision model.
+
+  2026-10-23 (rev81)  IMPROVEMENT: TIMESTAMPED FRAMES + QWEN3-VL AS THE RECOMMENDED MODEL.
+              - prompts carry "Frame times, oldest first: 0.0 s, 0.5 s, …" (Ollama has no temporal
+                position ids for images).
+              - suggested_vision_models(): qwen3-vl:8b first (trained on timestamp+frame input;
+                llama.cpp frame-merge turns consecutive frames into a video block).
+              - card note names qwen3-vl:8b and nudges users of non-qwen vision models.
+              - VERIFICATION: pytest 540 passed, 5 skipped.
 
 ================================================================================
 
@@ -190,6 +198,23 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     /home/user/workspace/FPSCoach   (clone of https://github.com/AFK-999/FPSCoach.git)
     Remote origin/main = e9e69a2   (the visual REDESIGN; based on 04e6b0f)
     Working branch     = fix/redesign-backend-wiring (from e9e69a2), NOT pushed.
+    REV81 STATUS: rev80 plus (a) per-frame timestamps in the prompt and (b) qwen3-vl as the
+    recommended model.
+    Why: Ollama has no video input - frames arrive as images with no temporal position ids
+    (ollama#18151), which is exactly what qwen-vl is trained to use ("timestamps-video frames",
+    per-model temporal position ids), and llama.cpp added frame-merge for qwen-vl (ollama#17321) so
+    consecutive same-size images can reach the model as a video block.
+      - visual_coach: _times() writes "Frame times, oldest first: 0.0 s, 0.5 s, … (N in total)" into
+        both prompts, with "Use them to say when something changed."; suggested_vision_models() is
+        now qwen3-vl:8b first, then qwen3-vl:4b, qwen2.5vl:7b, gemma3:4b, llava:7b, moondream.
+      - ui: the Live vision note names qwen3-vl:8b when the configured model cannot see, and nudges
+        ("qwen3-vl:8b is the better fit for a clip: it is trained on timestamped video frames") when
+        a vision model that is not a qwen-vl variant is set; _is_timestamp_model() decides.
+      - tests: per-frame timestamps present and zero-relative, empty-window "none", every suggested
+        model passes model_supports_images, the nudge appears for gemma3 and not for qwen3-vl.
+    VERIFICATION: 540 passed, 5 skipped; ruff clean on the touched files.
+    Same limits as rev80: no real vision model run here, no real Windows display. Still NOT pushed.
+
     REV80 STATUS: rev79 plus REAL-TIME WATCHING - the coach now sees the preview as a moving clip, not a still.
     Requested: "make it that the ai coach sees in real time and watches real-time video capture not an image".
     Design note: a local Ollama vision model cannot ingest a video stream, so "real time" was implemented as
