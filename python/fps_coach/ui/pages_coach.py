@@ -32,25 +32,25 @@ from PySide6.QtWidgets import (
 
 from fps_coach import scenarios as scenario_defs
 from fps_coach.ai_chat import (
-    ChatSettings,
     AIChatClient,
+    ChatSettings,
     curve_context,
     model_supports_images,
 )
-from fps_coach.visual_coach import LiveVisionSession, VisionSettings, suggested_vision_models
-from fps_coach.ingame import GAMES, InGameMode
-from fps_coach.tts_service import SPEED_MAX, SPEED_MIN, VOLUME_MAX, VOLUME_MIN, SpeechOptions
 from fps_coach.ai_curve_actions import apply_adjustment, parse_adjustment
 from fps_coach.analytics import AnalyticsStore
-from fps_coach.local_data import clear_calibration_history, count_calibration_records
 from fps_coach.chat_suggestions import suggest
+from fps_coach.curve_adjust import apply_preset, normalized_overlay
 from fps_coach.dashboard_config import (
     BOUNCE_SPEED_DEFAULT,
     BOUNCE_SPEED_MAX,
     BOUNCE_SPEED_MIN,
     clamp_bounce_speed,
 )
-from fps_coach.curve_adjust import apply_preset, normalized_overlay
+from fps_coach.ingame import GAMES, InGameMode
+from fps_coach.local_data import clear_calibration_history, count_calibration_records
+from fps_coach.tts_service import SPEED_MAX, SPEED_MIN, VOLUME_MAX, VOLUME_MIN, SpeechOptions
+from fps_coach.visual_coach import LiveVisionSession, VisionSettings, suggested_vision_models
 
 from .styles import active_palette, fx_enabled
 from .threads import (
@@ -251,6 +251,8 @@ class AIChatPage(QWidget):
         voice_lay.addLayout(self._build_text_size_bar())
         voice_lay.addWidget(_label("Voice", "formLabel"))
         voice_lay.addLayout(self._build_voice_bar())
+        voice_lay.addWidget(_label("Live vision", "formLabel"))
+        voice_lay.addLayout(self._build_live_vision_setting())
         self.voice_settings.setVisible(False)  # collapsed until the gear is opened
         lay.addWidget(self.voice_settings)
         self.transcript = QTextEdit()
@@ -630,6 +632,40 @@ class AIChatPage(QWidget):
         self._capture_source = backend
         self._refresh_live_vision_note()
 
+    def _build_live_vision_setting(self) -> QVBoxLayout:
+        """The switch that decides whether the Live vision panel exists at all.
+
+        Off by default, so the tab is just the chat until you ask for the panel.
+        This is a layout preference and is remembered; the panel's own "Watch
+        live" switch is not, and stays off at every launch.
+        """
+        box = QVBoxLayout()
+        box.setSpacing(6)
+        self.live_enable = QCheckBox("Enable live vision")
+        self.live_enable.setToolTip(
+            "Shows the Live vision panel beside the chat, where the coach can be given "
+            "clips of the capture preview. Off: the panel is hidden and nothing is captured."
+        )
+        self.live_enable.setChecked(bool(_settings().value("ai/live_enabled", False, type=bool)))
+        self.live_enable.toggled.connect(self._on_live_enable_toggled)
+        box.addWidget(self.live_enable)
+        hint = _label(
+            "Adds a panel in the middle of this page that shows what the coach is shown. "
+            "Watching still starts off every launch.",
+            "cardSubtitle",
+            wrap=True,
+        )
+        box.addWidget(hint)
+        return box
+
+    def _on_live_enable_toggled(self, enabled: bool) -> None:
+        _settings().setValue("ai/live_enabled", bool(enabled))
+        card = getattr(self, "live_card", None)
+        if card is not None:
+            card.setVisible(bool(enabled))
+        if not enabled:
+            self._stop_live_vision()  # hiding the panel must stop its capture too
+
     def _build_live_vision_card(self):
         card, lay = _card(
             "Live vision",
@@ -755,6 +791,8 @@ class AIChatPage(QWidget):
         lay.addStretch(1)  # keep the controls together at the top of the tall card
         self.live_toggle.toggled.connect(self._toggle_live_vision)
         self.live_now.clicked.connect(self._ask_live_now)
+        self.live_card = card
+        card.setVisible(self.live_enable.isChecked())  # hidden unless the Setting is on
         return card
 
     def _live_frame_provider(self):
@@ -804,6 +842,9 @@ class AIChatPage(QWidget):
         self.live_status.style().polish(self.live_status)
 
     def _toggle_live_vision(self, checked: bool) -> None:
+        if checked and not self.live_enable.isChecked():
+            self._on_live_enable_toggled(True)  # never watch from a hidden panel
+            self.live_enable.setChecked(True)
         if checked:
             self._start_live_vision()
         else:

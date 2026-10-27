@@ -1,7 +1,7 @@
 ================================================================================
 FPS COACH — CONTINUATION / HANDOFF DOCUMENT
 Copy-paste this whole file into a new agent chat to resume with zero context loss.
-Last updated: 2026-10-23 (rev 81)  (update after EVERY response)
+Last updated: 2026-10-23 (rev 82)  (update after EVERY response)
 
 *** IMPORTANT (rev4): The REAL repo was provided and differs a lot from the
 *** earlier scaffold. Work on the REAL repo at /home/user/workspace/FPSCoach
@@ -62,6 +62,12 @@ Last updated: 2026-10-23 (rev 81)  (update after EVERY response)
                 llama.cpp frame-merge turns consecutive frames into a video block).
               - card note names qwen3-vl:8b and nudges users of non-qwen vision models.
               - VERIFICATION: pytest 540 passed, 5 skipped.
+
+  2026-10-23 (rev82)  UI: LIVE VISION IS OPT-IN (Settings toggle hides the panel).
+              - "Enable live vision" checkbox in the AI Coach Settings block; the middle card is hidden
+                unless it is on, and hiding it stops any running watch.
+              - The panel's own Watch live switch is still off at every launch.
+              - tests +3; full suite 543 passed, 5 skipped.
 
 ================================================================================
 
@@ -198,6 +204,21 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     /home/user/workspace/FPSCoach   (clone of https://github.com/AFK-999/FPSCoach.git)
     Remote origin/main = e9e69a2   (the visual REDESIGN; based on 04e6b0f)
     Working branch     = fix/redesign-backend-wiring (from e9e69a2), NOT pushed.
+    REV82 STATUS: rev81 plus the Live vision panel is opt-in.
+    Requested: "in the ai chat tab in the settings add a toggle to enable 'live vision' instead of keeping
+    it always in the middle even when its not used".
+      - ui/pages_coach: a "Live vision" section inside the chat card's Settings block with a checkbox
+        "Enable live vision" (ai/live_enabled, default False) and a one-line explanation. The middle card
+        is now setVisible(live_enable.isChecked()) and kept as self.live_card; turning the Setting off also
+        calls _stop_live_vision(), so hiding the panel never leaves a worker running. _toggle_live_vision
+        switches the Setting on rather than watching from a hidden panel.
+      - Two independent switches on purpose: the Setting is a remembered layout preference, the panel's
+        "Watch live" is not and stays off at every launch.
+      - tests (+3): hidden until enabled and remembered; a saved preference reopens the panel but does not
+        start watching; hiding the panel stops a running watch. Panel-bound tests now enable it first.
+    VERIFICATION: 543 passed, 5 skipped; ruff clean on the touched files; screenshots/
+    ai-live-vision-settings.png shows the toggle with the panel open. Still NOT pushed.
+
     REV81 STATUS: rev80 plus (a) per-frame timestamps in the prompt and (b) qwen3-vl as the
     recommended model.
     Why: Ollama has no video input - frames arrive as images with no temporal position ids

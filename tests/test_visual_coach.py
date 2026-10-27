@@ -736,10 +736,71 @@ class FakeBackend:
         return self.provider()
 
 
-def test_page_shows_the_model_warning_and_starts_off(qapp, saved):
+def test_the_live_vision_panel_is_hidden_until_it_is_enabled(qapp, saved):
+    """An unused panel must not take a third of the tab."""
     from fps_coach.ui.pages_coach import AIChatPage
 
     page = AIChatPage()
+    try:
+        page.show()
+        qapp.processEvents()
+        assert page.live_enable.isChecked() is False, "the setting starts off"
+        assert page.live_card.isVisible() is False, "so the panel is not on screen"
+        page.live_enable.setChecked(True)
+        qapp.processEvents()
+        assert page.live_card.isVisible() is True
+        assert saved.value("ai/live_enabled", type=bool) is True, "the choice is remembered"
+        page.live_enable.setChecked(False)
+        qapp.processEvents()
+        assert page.live_card.isVisible() is False
+        assert saved.value("ai/live_enabled", type=bool) is False
+    finally:
+        page.shutdown()
+
+
+def test_a_saved_preference_reopens_the_panel_but_never_starts_watching(qapp, saved):
+    from fps_coach.ui.pages_coach import AIChatPage
+
+    saved.setValue("ai/live_enabled", True)
+    page = AIChatPage()
+    try:
+        page.show()
+        qapp.processEvents()
+        assert page.live_card.isVisible() is True
+        assert page.live_toggle.isChecked() is False, "showing the panel is not watching"
+    finally:
+        page.shutdown()
+
+
+def test_hiding_the_panel_stops_a_running_watch(qapp, saved, monkeypatch):
+    from fps_coach.ui import pages_coach
+
+    saved.setValue("ai/model", "gemma3:4b")
+    saved.setValue("ai/live_enabled", True)
+    saved.setValue("ai/live_frames", 2)
+    saved.setValue("ai/live_sample", 0.1)
+    page = pages_coach.AIChatPage()
+    fake_chat = FakeChat(["Watching."])
+    monkeypatch.setattr(pages_coach, "AIChatClient", lambda settings: fake_chat)
+    page.set_capture_source(FakeBackend())
+    try:
+        page.live_toggle.setChecked(True)
+        assert wait_for_qt(lambda: page._live_thread is not None)
+        page.live_enable.setChecked(False)  # the panel disappears
+        assert page.live_toggle.isChecked() is False
+        assert page.live_card.isVisible() is False
+        stopped = wait_for_qt(lambda: page._live_thread is None, timeout=8)
+        assert stopped, "hiding the panel must not leave a worker running"
+    finally:
+        page.shutdown()
+
+
+def test_page_shows_the_model_warning_and_starts_off(qapp, saved):
+    # Live vision lives behind its Setting now (rev82).
+    from fps_coach.ui.pages_coach import AIChatPage
+
+    page = AIChatPage()
+    page.live_enable.setChecked(True)
     try:
         page.set_capture_source(FakeBackend())
         assert page.live_toggle.isChecked() is False, "live vision must be off at launch"
@@ -751,10 +812,12 @@ def test_page_shows_the_model_warning_and_starts_off(qapp, saved):
 
 
 def test_page_says_frames_stay_local_for_a_vision_model_on_ollama(qapp, saved):
+    # Live vision lives behind its Setting now (rev82).
     from fps_coach.ui.pages_coach import AIChatPage
 
     saved.setValue("ai/model", "gemma3:4b")
     page = AIChatPage()
+    page.live_enable.setChecked(True)
     try:
         page.set_capture_source(FakeBackend())
         assert "stay on this machine" in page.live_note.text()
@@ -765,10 +828,12 @@ def test_page_says_frames_stay_local_for_a_vision_model_on_ollama(qapp, saved):
 
 
 def test_page_does_not_nudge_a_qwen_vl_user(qapp, saved):
+    # Live vision lives behind its Setting now (rev82).
     from fps_coach.ui.pages_coach import AIChatPage
 
     saved.setValue("ai/model", "qwen3-vl:8b")
     page = AIChatPage()
+    page.live_enable.setChecked(True)
     try:
         page.set_capture_source(FakeBackend())
         note = page.live_note.text()
@@ -779,9 +844,11 @@ def test_page_does_not_nudge_a_qwen_vl_user(qapp, saved):
 
 
 def test_page_without_a_capture_source_explains_itself(qapp, saved):
+    # Live vision lives behind its Setting now (rev82).
     from fps_coach.ui.pages_coach import AIChatPage
 
     page = AIChatPage()
+    page.live_enable.setChecked(True)
     try:
         page.set_capture_source(None)
         assert "needs the capture backend" in page.live_note.text()
@@ -792,9 +859,11 @@ def test_page_without_a_capture_source_explains_itself(qapp, saved):
 
 
 def test_clip_controls_default_to_a_multi_frame_window(qapp, saved):
+    # Live vision lives behind its Setting now (rev82).
     from fps_coach.ui.pages_coach import AIChatPage
 
     page = AIChatPage()
+    page.live_enable.setChecked(True)
     try:
         assert page.live_frames.value() >= 2, "the default look must be a clip, not a snapshot"
         assert page.live_sample.value() > 0
@@ -816,6 +885,7 @@ def test_watching_posts_a_reply_and_fills_the_filmstrip(qapp, saved, monkeypatch
     fake_chat = FakeChat(["The HUD strip redraws along the bottom edge."])
     monkeypatch.setattr(pages_coach, "AIChatClient", lambda settings: fake_chat)
     page.set_capture_source(FakeBackend())
+    page.live_enable.setChecked(True)
     try:
         page.live_toggle.setChecked(True)
         assert wait_for_qt(

@@ -1,6 +1,6 @@
 # FPS Coach (Vantage) Privacy Policy
 
-Last updated: 2026-10-23 (rev80)
+Last updated: 2026-10-23 (rev82)
 
 This policy describes what FPS Coach stores, what it sends, and what it never does.
 The same statements appear in the app on the Privacy page.
@@ -33,7 +33,9 @@ The same statements appear in the app on the Privacy page.
 
 ## Live vision (AI Coach)
 
-- **Off at every launch.** The switch is not saved; the next start begins with it off,
+- **Hidden and off until you ask for it.** The panel is not shown at all unless
+  **Settings → Enable live vision** is on; that preference is remembered. Enabling it only shows
+  the panel — the **Watch live** switch inside still starts off at every launch and is not saved,
   exactly like In-Game Mode.
 - When it is on, Vantage samples your capture preview and sends **short clips of downscaled
   frames** (4 frames half a second apart by default) to the AI endpoint configured in Settings,

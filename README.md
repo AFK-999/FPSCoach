@@ -123,8 +123,11 @@ The Capture tab works in three tiers, and each one says which is in use:
 
 ### Live vision
 
-The AI Coach tab's **Live vision** card streams the Capture preview to your configured model
-as ordered frames. It is off at launch, and it works in clips rather than snapshots:
+The AI Coach tab's **Live vision** panel streams the Capture preview to your configured model
+as ordered frames. It is **hidden until you enable it** — Settings (the gear in the chat card) →
+**Enable live vision** — so the tab is just the chat if you never use it. Enabling it only shows
+the panel; its **Watch live** switch still starts off at every launch. It works in clips rather
+than snapshots:
 
 - **Clip length** (default 4 frames) and **Sample every** (default 0.5 s) control the clip: four
   frames half a second apart is about 1.5 s of a moving screen in each answer.
