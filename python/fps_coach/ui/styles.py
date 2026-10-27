@@ -134,6 +134,9 @@ QFrame#tile {
     background: $surface; border: 1px solid $line; border-radius: 10px;
 }
 QFrame#tile:hover { border-color: $line2; }
+QFrame#advancedSection {
+    background: transparent; border: none; border-top: 1px solid $line; border-radius: 0;
+}
 QFrame#stage {
     background: $stage_bg; border: 1px solid $line; border-radius: 10px;
 }

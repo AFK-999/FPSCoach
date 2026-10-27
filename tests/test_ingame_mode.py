@@ -188,6 +188,40 @@ def test_mode_is_off_at_launch_even_if_settings_say_enabled(qapp, saved, pages):
     assert page.ingame_context() == ""
 
 
+# ---------------------------------------------------------------------------
+# Placement: Settings > Advanced, not a card of its own
+# ---------------------------------------------------------------------------
+def test_in_game_mode_lives_inside_the_advanced_disclosure(qapp, saved, pages):
+    from fps_coach.ui.pages_coach import SettingsPage
+
+    page = pages(SettingsPage)
+    page.show()
+    qapp.processEvents()
+    assert page.ingame_card.parent() is page.advanced_body, "it belongs to Advanced now"
+    assert page.advanced_toggle.isChecked() is False, "Advanced starts collapsed"
+    assert page.ingame_card.isVisible() is False, "so In-Game Mode is hidden at launch"
+
+    page.advanced_toggle.setChecked(True)
+    qapp.processEvents()
+    assert page.ingame_card.isVisible() is True
+
+    page.advanced_toggle.setChecked(False)
+    qapp.processEvents()
+    assert page.ingame_card.isVisible() is False
+
+
+def test_the_gear_still_works_from_inside_advanced(qapp, saved, pages):
+    """Moving the card must not break the mode itself."""
+    from fps_coach.ui.pages_coach import SettingsPage
+
+    page = pages(SettingsPage)
+    page.advanced_toggle.setChecked(True)
+    page.ingame_enabled.setChecked(True)
+    context = page.ingame_context()
+    assert "In-Game Mode is ON" in context
+    assert page.ingame_model().enabled is True
+
+
 def test_the_enabled_flag_is_never_persisted(qapp, saved, pages):
     from fps_coach.ui.pages_coach import SettingsPage
 

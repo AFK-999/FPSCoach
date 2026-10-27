@@ -1,7 +1,7 @@
 ================================================================================
 FPS COACH — CONTINUATION / HANDOFF DOCUMENT
 Copy-paste this whole file into a new agent chat to resume with zero context loss.
-Last updated: 2026-10-23 (rev 82)  (update after EVERY response)
+Last updated: 2026-10-23 (rev 83)  (update after EVERY response)
 
 *** IMPORTANT (rev4): The REAL repo was provided and differs a lot from the
 *** earlier scaffold. Work on the REAL repo at /home/user/workspace/FPSCoach
@@ -68,6 +68,12 @@ Last updated: 2026-10-23 (rev 82)  (update after EVERY response)
                 unless it is on, and hiding it stops any running watch.
               - The panel's own Watch live switch is still off at every launch.
               - tests +3; full suite 543 passed, 5 skipped.
+
+  2026-10-23 (rev83)  UI: IN-GAME MODE MOVED INTO SETTINGS > ADVANCED.
+              - _build_ingame_card(embedded=True) renders it as a section (no nested card frame);
+                advanced_body holds it and starts collapsed.
+              - tests +2 (placement + mode still works from inside Advanced).
+              - VERIFICATION: pytest 545 passed, 5 skipped.
 
 ================================================================================
 
@@ -204,6 +210,20 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     /home/user/workspace/FPSCoach   (clone of https://github.com/AFK-999/FPSCoach.git)
     Remote origin/main = e9e69a2   (the visual REDESIGN; based on 04e6b0f)
     Working branch     = fix/redesign-backend-wiring (from e9e69a2), NOT pushed.
+    REV83 STATUS: rev82 plus In-Game Mode moved under Settings > Advanced.
+    Requested: "in the settings tab of the app move 'In-Game Mode' option to be under the 'Advance'
+    expendable option".
+      - ui/pages_coach SettingsPage: _build_ingame_card(embedded=True) renders the same widgets as a
+        SECTION (new QFrame#advancedSection style: transparent, no border, top rule) instead of its own
+        card, and self.ingame_card is added to advanced_body, which stays collapsed by default.
+        The card no longer appears in the right column.
+      - Advanced copy now describes itself honestly (session-only and setup options).
+      - tests (+2 in test_ingame_mode.py): the block's parent is advanced_body, it is hidden at launch,
+        appears when Advanced opens and hides again; and the mode still works from inside Advanced
+        (context block + enabled flag).
+    VERIFICATION: 545 passed, 5 skipped; screenshots/settings-advanced-collapsed.png and
+    -open.png. Still NOT pushed.
+
     REV82 STATUS: rev81 plus the Live vision panel is opt-in.
     Requested: "in the ai chat tab in the settings add a toggle to enable 'live vision' instead of keeping
     it always in the middle even when its not used".

@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
     QFileDialog,
+    QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -1481,8 +1482,9 @@ class SettingsPage(QWidget):
         right = QVBoxLayout()
         right.setSpacing(20)
         right.addWidget(self._build_ui_card())
-        right.addWidget(self._build_ingame_card())
         right.addWidget(self._build_replies_card())
+        # In-Game Mode lives inside Advanced now: it is a session-only extra that most
+        # people never open, so it should not take a card's worth of room by default.
         right.addWidget(self._build_advanced_card())
         right.addStretch(1)
         columns.addLayout(left, 1)
@@ -1723,19 +1725,32 @@ class SettingsPage(QWidget):
         return card
 
     # ---- In-Game Mode -----------------------------------------------------
-    def _build_ingame_card(self):
+    def _build_ingame_card(self, embedded: bool = False):
         """Session-only mode: name the game, get the conversion, ask the coach.
 
         Off at every launch by design: ``InGameMode`` starts disabled and the
         checkbox state is never written to QSettings, so a restart always lands
         back in the off state. Only the game, DPI, and the user's own
         sensitivity are remembered.
+
+        ``embedded=True`` renders it as a section inside Settings > Advanced: same
+        widgets, no card frame, so it does not look like a card inside a card.
         """
-        card, lay = _card(
-            "In-Game Mode",
+        title = "In-Game Mode"
+        subtitle = (
             "Tell Vantage which game you are practising and what sensitivity you use there, so "
-            "the coach can talk in that game's numbers.",
+            "the coach can talk in that game's numbers."
         )
+        if embedded:
+            card = QFrame()
+            card.setObjectName("advancedSection")
+            lay = QVBoxLayout(card)
+            lay.setContentsMargins(0, 14, 0, 0)
+            lay.setSpacing(10)
+            lay.addWidget(_label(title, "cardTitle"))
+            lay.addWidget(_label(subtitle, "cardSubtitle", wrap=True))
+        else:
+            card, lay = _card(title, subtitle)
 
         self.ingame_enabled = QCheckBox("Enable In-Game Mode (this session only)")
         self.ingame_enabled.setToolTip(
@@ -1956,11 +1971,15 @@ class SettingsPage(QWidget):
         self.advanced_body = QWidget()
         body_lay = QVBoxLayout(self.advanced_body)
         body_lay.setContentsMargins(0, 8, 0, 0)
+        body_lay.setSpacing(12)
         body_lay.addWidget(_label(
-            "No advanced options are exposed yet. Hardware acceleration is set on the Capture page. "
-            "An API key field for hosted providers is not part of this build.",
+            "Session-only and setup options. Hardware acceleration is set on the Capture page; "
+            "an API key field for hosted providers is not part of this build.",
             "cardSubtitle", wrap=True,
         ))
+        # In-Game Mode: off at every launch, and only reaches the coach while it is on.
+        self.ingame_card = self._build_ingame_card(embedded=True)
+        body_lay.addWidget(self.ingame_card)
         self.advanced_body.setVisible(False)
         lay.addWidget(self.advanced_body)
 
