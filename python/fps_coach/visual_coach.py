@@ -1,0 +1,953 @@
+"""Live vision: hand the newest capture frame to the AI coach (rev79).
+
+The Capture tab already keeps one fresh frame per display (`mss` or Desktop
+Duplication). This module turns that frame into something a model can look at and
+runs the loop that keeps doing it while the preview is on:
+
+    newest frame ──► sample every 0.5 s ──► 4 ordered JPEGs ──► AI provider ──► reply
+
+Three pieces, none of which import Qt, so they can be tested without a display:
+
+``frame_signature`` / ``frame_delta``
+    A 32×18 luma grid sampled straight out of the BGRA buffer (no resize, no
+    dependency). Two signatures give a 0..1 "how much changed" figure, and
+    ``motion_report`` adds which third of the frame moved — the raw material for
+    the "what changed and where" the coach is asked about, and the reason a paused
+    game costs nothing.
+
+``encode_frame``
+    BGRA → JPEG, capped at ``max_width``. OpenCV when the recorder extra is
+    installed, otherwise Qt's JPEG writer (PySide6 is a hard dependency), so the
+    feature works on a plain install too.
+
+``LiveVisionSession``
+    The loop. Samples the *newest* frame every ``sample_interval`` seconds, keeps
+    ``frames_per_request`` of them, and sends them together — in order — with a
+    description of the motion between them. A slow model never builds a queue of
+    stale windows: collection stops while a request is in flight and starts again
+    from whatever is on screen when the reply lands.
+
+Frames carry their offsets ("0.0 s, 0.5 s, 1.0 s") in the prompt, because Ollama
+sends them as images with no temporal position ids; the recommended models
+(qwen3-vl) are the ones trained to use exactly that format.
+
+What the coach is allowed to do with the picture is defined in
+``ai_chat.VISION_SYSTEM_PROMPT``: describe the visible setup, UI, lighting and
+picture quality, and advise on those. No target, enemy, aim or recoil analysis —
+that boundary is not negotiable, and it is enforced in the prompt rather than
+left to the model's discretion.
+"""
+
+from __future__ import annotations
+
+import threading
+import time
+from collections import deque
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
+
+try:  # optional, but normally present with the recorder extra
+    import numpy as _np
+except ImportError:  # pragma: no cover - exercised by the blocked-import tests
+    _np = None
+
+try:
+    import cv2 as _cv2
+except ImportError:  # pragma: no cover - exercised by the blocked-import tests
+    _cv2 = None
+
+#: Signature grid. 32×18 samples is enough to notice a screen change and cheap
+#: enough to run several times a second in pure Python.
+GRID_W, GRID_H = 32, 18
+#: Default cap for the JPEG sent to the model. Bigger costs tokens and changes
+#: nothing the coach is allowed to comment on.
+DEFAULT_MAX_WIDTH = 768
+DEFAULT_QUALITY = 70
+
+
+class VisualError(RuntimeError):
+    """Base class for vision-pipeline failures."""
+
+
+class FrameError(VisualError):
+    """The frame dict handed in is unusable."""
+
+
+class VisualEncodeError(VisualError):
+    """No available backend could encode the frame."""
+
+
+@dataclass(slots=True)
+class EncodedFrame:
+    """A frame ready to send, plus what it took to get there."""
+
+    jpeg: bytes
+    width: int
+    height: int
+    source_width: int
+    source_height: int
+    quality: int
+
+    @property
+    def scale(self) -> float:
+        return self.width / self.source_width if self.source_width else 1.0
+
+    def as_meta(self) -> dict[str, Any]:
+        return {
+            "width": self.width,
+            "height": self.height,
+            "source_width": self.source_width,
+            "source_height": self.source_height,
+            "bytes": len(self.jpeg),
+            "quality": self.quality,
+        }
+
+
+def _unpack(frame: Any) -> tuple[int, int, int, bytes]:
+    """Validate a capture frame dict and return ``(width, height, stride, bgra)``."""
+    if not isinstance(frame, dict):
+        raise FrameError("frame must be the dict the capture backend returns")
+    try:
+        width = int(frame["width"])
+        height = int(frame["height"])
+        data = frame["bgra"]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise FrameError("frame is missing width/height/bgra") from exc
+    stride = int(frame.get("stride") or width * 4)
+    if not isinstance(data, (bytes, bytearray, memoryview)):
+        raise FrameError("frame bgra must be bytes")
+    data = bytes(data)
+    if width <= 0 or height <= 0:
+        raise FrameError(f"frame has invalid size {width}x{height}")
+    if stride < width * 4:
+        raise FrameError(f"stride {stride} is too small for width {width}")
+    if len(data) < stride * height:
+        raise FrameError(
+            f"frame buffer is {len(data)} bytes; {stride * height} are needed for {width}x{height}"
+        )
+    return width, height, stride, data
+
+
+def frame_signature(frame: Any) -> bytes:
+    """A 32×18 luma thumbnail sampled directly from the BGRA buffer.
+
+    No resize and no dependency: one pixel per cell, centred in its cell. Only
+    used to answer "did the picture change?", never shown to the user.
+    """
+    width, height, stride, data = _unpack(frame)
+    step_x = max(1, width // GRID_W)
+    step_y = max(1, height // GRID_H)
+    out = bytearray(GRID_W * GRID_H)
+    index = 0
+    for row in range(GRID_H):
+        y = min(height - 1, row * step_y + step_y // 2)
+        base = y * stride
+        for column in range(GRID_W):
+            x = min(width - 1, column * step_x + step_x // 2)
+            offset = base + x * 4
+            blue = data[offset]
+            green = data[offset + 1]
+            red = data[offset + 2]
+            out[index] = (red * 77 + green * 150 + blue * 29) >> 8
+            index += 1
+    return bytes(out)
+
+
+def frame_delta(previous: bytes, current: bytes) -> float:
+    """Mean absolute luma difference between two signatures, 0.0 .. 1.0."""
+    if not previous or not current or len(previous) != len(current):
+        return 1.0
+    total = 0
+    for a, b in zip(previous, current, strict=False):
+        total += abs(a - b)
+    return total / (len(previous) * 255.0)
+
+
+def describe_frame(frame: Any) -> str:
+    """A short, honest description of the picture's statistics.
+
+    Sent alongside the image. It is deliberately about the *picture* (size,
+    brightness, contrast, colour) and never about its contents.
+    """
+    signature = frame_signature(frame)
+    width, height, _stride, _data = _unpack(frame)
+    mean = sum(signature) / len(signature)
+    low = min(signature)
+    high = max(signature)
+    if mean < 55:
+        tone = "dark"
+    elif mean < 120:
+        tone = "mid-tone"
+    else:
+        tone = "bright"
+    if high - low < 30:
+        flatness = "very flat (little contrast)"
+    elif high - low < 90:
+        flatness = "moderate contrast"
+    else:
+        flatness = "high contrast"
+    return (
+        f"{width}x{height}; brightness {mean:.0f}/255 ({tone}); {flatness} "
+        f"(range {low}-{high}); luma spread {high - low}/255."
+    )
+
+
+def encode_frame(
+    frame: Any,
+    *,
+    max_width: int = DEFAULT_MAX_WIDTH,
+    quality: int = DEFAULT_QUALITY,
+) -> EncodedFrame:
+    """BGRA capture frame → downscaled JPEG.
+
+    OpenCV first (fast and exact), then Qt's writer. Raises
+    :class:`VisualEncodeError` when neither is available, which in practice means
+    the app was built without PySide6 — impossible for this application, but the
+    error says what to install rather than failing obscurely.
+    """
+    width, height, stride, data = _unpack(frame)
+    quality = max(10, min(95, int(quality)))
+    max_width = max(64, int(max_width))
+    scale = min(1.0, max_width / float(width))
+    target_w = max(1, int(round(width * scale)))
+    target_h = max(1, int(round(height * scale)))
+
+    if _cv2 is not None and _np is not None:
+        buffer = _np.frombuffer(data, dtype=_np.uint8, count=stride * height)
+        picture = buffer.reshape(height, stride)[:, : width * 4].reshape(height, width, 4)
+        gray_or_bgr = picture[:, :, :3]  # BGRA -> BGR, no copy
+        if (target_w, target_h) != (width, height):
+            gray_or_bgr = _cv2.resize(
+                gray_or_bgr, (target_w, target_h), interpolation=_cv2.INTER_AREA
+            )
+        ok, encoded = _cv2.imencode(
+            ".jpg", gray_or_bgr, [int(_cv2.IMWRITE_JPEG_QUALITY), quality]
+        )
+        if not ok or encoded is None:
+            raise VisualEncodeError("OpenCV could not encode this frame as JPEG")
+        return EncodedFrame(
+            jpeg=bytes(encoded.tobytes()),
+            width=target_w,
+            height=target_h,
+            source_width=width,
+            source_height=height,
+            quality=quality,
+        )
+
+    try:
+        from PySide6.QtCore import QBuffer, QByteArray, QIODevice
+        from PySide6.QtGui import QImage
+    except ImportError as exc:  # pragma: no cover - PySide6 is a hard dependency
+        raise VisualEncodeError(
+            "No JPEG encoder is available. Install the recorder extra "
+            '(pip install -e ".[recorder]") or run inside the app (PySide6).'
+        ) from exc
+
+    # QImage does not copy the buffer, so `data` must stay alive until save() returns.
+    image = QImage(data, width, height, stride, QImage.Format.Format_ARGB32)
+    if image.isNull():
+        raise FrameError("Qt could not wrap this frame; the stride or size is wrong")
+    if (target_w, target_h) != (width, height):
+        image = image.scaled(
+            target_w,
+            target_h,
+            _qt_aspect(),
+            _qt_smooth(),
+        )
+    payload = QByteArray()
+    buffer = QBuffer(payload)
+    buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+    try:
+        saved = image.save(buffer, "JPEG", quality)
+    finally:
+        buffer.close()
+    if not saved:
+        raise VisualEncodeError("Qt could not encode this frame as JPEG")
+    return EncodedFrame(
+        jpeg=bytes(payload),
+        width=target_w,
+        height=target_h,
+        source_width=width,
+        source_height=height,
+        quality=quality,
+    )
+
+
+def _qt_aspect():
+    from PySide6.QtCore import Qt
+
+    return Qt.AspectRatioMode.IgnoreAspectRatio
+
+
+def _qt_smooth():
+    from PySide6.QtCore import Qt
+
+    return Qt.TransformationMode.SmoothTransformation
+
+
+# ---------------------------------------------------------------------------
+# Motion: what a single still cannot tell you
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class MotionReport:
+    """How the picture changed between two sampled frames.
+
+    All of it is picture statistics — where the pixels changed and how much. No
+    interpretation of what changed is attempted here, and none is passed to the
+    model.
+    """
+
+    level: float = 0.0
+    """Mean cell change, 0.0 (identical) .. 1.0 (black to white)."""
+
+    changed_cells: int = 0
+    changed_ratio: float = 0.0
+    band: str = "none"
+    """Which third of the screen changed most: top, middle, bottom, full or none."""
+
+    @property
+    def word(self) -> str:
+        if self.level < 0.004:
+            return "still"
+        if self.level < 0.03:
+            return "low"
+        if self.level < 0.10:
+            return "medium"
+        return "high"
+
+
+def motion_report(previous: bytes, current: bytes, *, threshold: int = 6) -> MotionReport:
+    """Compare two signatures cell by cell.
+
+    ``threshold`` is the per-cell luma change that counts as movement; it ignores
+    dithering, film grain, and animated dust so "still" means still.
+    """
+    if not previous or not current or len(previous) != len(current):
+        return MotionReport(level=1.0, changed_cells=GRID_W * GRID_H, changed_ratio=1.0, band="full")
+    bands = {"top": 0, "middle": 0, "bottom": 0}
+    total = 0
+    changed = 0
+    for index, (a, b) in enumerate(zip(previous, current, strict=False)):
+        difference = abs(a - b)
+        total += difference
+        if difference >= threshold:
+            changed += 1
+            row = index // GRID_W
+            if row < GRID_H // 3:
+                bands["top"] += 1
+            elif row < (2 * GRID_H) // 3:
+                bands["middle"] += 1
+            else:
+                bands["bottom"] += 1
+    cells = len(previous)
+    band = "none"
+    if changed:
+        name, count = max(bands.items(), key=lambda item: item[1])
+        if count >= changed * 0.6:
+            band = name
+        else:
+            band = "full"
+    return MotionReport(
+        level=total / (cells * 255.0),
+        changed_cells=changed,
+        changed_ratio=changed / cells,
+        band=band,
+    )
+
+
+# ---------------------------------------------------------------------------
+# The loop
+# ---------------------------------------------------------------------------
+
+#: Asked for every live window. The frames are a short, ordered clip sampled from
+#: the capture preview, so the answer can describe change instead of a snapshot.
+COACH_PROMPT = (
+    "{frame_label} from the user's live capture preview are attached, in order, "
+    "{cadence}.\n"
+    "Frame times, oldest first: {times}. Use them to say when something changed.\n"
+    "Frame statistics: {description}\n"
+    "Motion across the window: {motion}.\n"
+    "{history}"
+    "Reply with at most two sentences of coaching observation about what the sequence shows: "
+    "what changed and where, and how the setup or picture looks (layout, HUD clutter, "
+    "readability, lighting, flicker or tearing, what screen or mode appears to be open). "
+    "Do not identify targets, enemies, players, or crosshair placement, and do not give aim, "
+    "recoil, or movement guidance. If nothing in the window is worth commenting on, say "
+    "\"nothing notable\" and stop."
+)
+
+#: Same picture, different question: the user pressed "Look now".
+LOOK_PROMPT = (
+    "The user asked you to look at their capture preview. {frame_label} from it are "
+    "attached in order, {cadence}.\n"
+    "Frame times, oldest first: {times}. Use them to say when something changed.\n"
+    "Frame statistics: {description}\n"
+    "Motion across the window: {motion}.\n"
+    "{history}"
+    "Answer in at most three sentences. Describe what the sequence shows about the setup or "
+    "picture (screen, mode, layout, readability, HUD clutter, lighting, what is moving) and "
+    "what you would change, if anything. Do not identify targets, enemies, or players, and do "
+    "not give aim, recoil, or movement guidance."
+)
+
+
+@dataclass(slots=True)
+class VisionSettings:
+    """Everything the loop needs, so it can be constructed from QSettings."""
+
+    frames_per_request: int = 4
+    """Frames per look. More than one turns a snapshot into a short clip."""
+
+    sample_interval: float = 0.5
+    """Seconds between the frames inside one window. 0.5 s ≈ 2 FPS of coverage."""
+
+    min_interval: float = 4.0
+    """Seconds to wait after a reply before collecting the next window."""
+
+    adaptive: bool = True
+    """Skip requests while the screen is not changing, so a paused game costs nothing."""
+
+    idle_motion: float = 0.004
+    """Below this mean cell change the screen counts as idle."""
+
+    idle_wait: float = 2.0
+    """How long to wait before looking again at an idle screen."""
+
+    max_width: int = DEFAULT_MAX_WIDTH
+    quality: int = DEFAULT_QUALITY
+    skip_unchanged: bool = True
+    """Drop repeated frames inside a window, so a static screen sends one frame, not four."""
+
+    change_threshold: float = 0.004
+    history: int = 2
+    poll_interval: float = 0.05
+    """How often to check for a newer frame while collecting a window."""
+
+    max_payload_bytes: int = 1_600_000
+    """Hard cap on the images in one request; the oldest frames are dropped first."""
+
+    backoff_factor: float = 2.0
+    max_backoff: float = 60.0
+    max_consecutive_errors: int = 5
+
+    def normalised(self) -> VisionSettings:
+        return VisionSettings(
+            frames_per_request=max(1, min(8, int(self.frames_per_request))),
+            sample_interval=max(0.05, min(5.0, float(self.sample_interval))),
+            min_interval=max(0.0, float(self.min_interval)),
+            adaptive=bool(self.adaptive),
+            idle_motion=max(0.0, min(1.0, float(self.idle_motion))),
+            idle_wait=max(0.05, float(self.idle_wait)),
+            max_width=max(64, int(self.max_width)),
+            quality=max(10, min(95, int(self.quality))),
+            skip_unchanged=bool(self.skip_unchanged),
+            change_threshold=max(0.0, min(1.0, float(self.change_threshold))),
+            history=max(0, min(6, int(self.history))),
+            poll_interval=max(0.01, float(self.poll_interval)),
+            max_payload_bytes=max(64_000, int(self.max_payload_bytes)),
+            backoff_factor=max(1.0, float(self.backoff_factor)),
+            max_backoff=max(1.0, float(self.max_backoff)),
+            max_consecutive_errors=max(1, int(self.max_consecutive_errors)),
+        )
+
+
+@dataclass(slots=True)
+class VisionCounters:
+    windows: int = 0
+    frames: int = 0
+    replies: int = 0
+    skipped: int = 0
+    idle: int = 0
+    errors: int = 0
+    empty: int = 0
+    last_latency: float = 0.0
+    last_span: float = 0.0
+    last_motion: float = 0.0
+
+    def line(self) -> str:
+        if not self.windows:
+            return "Waiting for the first window."
+        windows = f"{self.windows} look{'s' if self.windows != 1 else ''}"
+        parts = [
+            windows,
+            f"{self.frames} frame{'s' if self.frames != 1 else ''}",
+            f"{self.replies} repl{'ies' if self.replies != 1 else 'y'}",
+        ]
+        if self.last_span:
+            parts.append(f"{self.last_span:.1f} s clips")
+        if self.idle:
+            parts.append(f"{self.idle} idle skipped")
+        if self.last_latency:
+            parts.append(f"last {self.last_latency:.1f} s")
+        return " · ".join(parts)
+
+
+@dataclass(slots=True)
+class WindowFrame:
+    """One sampled frame inside a window."""
+
+    jpeg: bytes
+    signature: bytes
+    timestamp: float
+    delta: float
+    meta: dict[str, Any]
+
+
+class LiveVisionSession:
+    """Streams the capture preview to a chat client as ordered multi-frame windows.
+
+    This is what "the coach watches the video" means in practice: a local model
+    cannot accept a video stream, so the session samples the *newest* frame of the
+    live preview at a fixed interval, keeps the last few samples, and sends them
+    together — in order — with a description of the motion between them. The model
+    then answers about change, not just about one frozen picture.
+
+    Constructed with plain callables so it can be unit-tested without Qt, a
+    display, or a model:
+
+    ``frame_provider``
+        ``() -> frame dict | None``; the capture backend's ``latest_frame``.
+    ``chat``
+        Anything shaped like :class:`fps_coach.ai_chat.AIChatClient` — it needs
+        ``chat(messages, curve_context=..., images=[...])``.
+    ``context_provider``
+        ``() -> str``; the same calibration / in-game context the text chat uses.
+
+    ``on_reply``, ``on_error``, ``on_status`` and ``on_window`` are called from the
+    worker thread. The Qt layer wraps them in signals.
+    """
+
+    def __init__(
+        self,
+        *,
+        frame_provider: Callable[[], Any],
+        chat: Any,
+        settings: VisionSettings | None = None,
+        context_provider: Callable[[], str] | None = None,
+        on_reply: Callable[[str, dict[str, Any]], None] | None = None,
+        on_error: Callable[[str], None] | None = None,
+        on_status: Callable[[str], None] | None = None,
+        on_window: Callable[[list, dict[str, Any]], None] | None = None,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._frame_provider = frame_provider
+        self._chat = chat
+        self._settings = (settings or VisionSettings()).normalised()
+        self._context_provider = context_provider or (lambda: "")
+        self._on_reply = on_reply
+        self._on_error = on_error
+        self._on_status = on_status
+        self._on_window = on_window
+        self._clock = clock
+
+        self._stop = threading.Event()
+        self._wake = threading.Event()
+        self._force = threading.Event()
+        self._lock = threading.Lock()
+        self._history: deque[str] = deque(maxlen=self._settings.history)
+        self._last_sequence: int | None = None
+        self._last_sent_signature: bytes | None = None
+        self._counters = VisionCounters()
+        self._motion = MotionReport()
+
+    # -- control ----------------------------------------------------------
+    @property
+    def counters(self) -> VisionCounters:
+        """A snapshot; the loop keeps mutating its own copy."""
+        with self._lock:
+            current = self._counters
+            return VisionCounters(
+                windows=current.windows,
+                frames=current.frames,
+                replies=current.replies,
+                skipped=current.skipped,
+                idle=current.idle,
+                errors=current.errors,
+                empty=current.empty,
+                last_latency=current.last_latency,
+                last_span=current.last_span,
+                last_motion=current.last_motion,
+            )
+
+    @property
+    def motion(self) -> MotionReport:
+        with self._lock:
+            return MotionReport(
+                level=self._motion.level,
+                changed_cells=self._motion.changed_cells,
+                changed_ratio=self._motion.changed_ratio,
+                band=self._motion.band,
+            )
+
+    @property
+    def stopped(self) -> bool:
+        return self._stop.is_set()
+
+    def stop(self) -> None:
+        """Ask the loop to finish; safe from any thread and repeatable."""
+        self._stop.set()
+        self._wake.set()
+
+    def ask_now(self) -> None:
+        """Take a window immediately, even if the screen looks idle."""
+        self._force.set()
+        self._wake.set()
+
+    # -- the loop ---------------------------------------------------------
+    def run(self) -> None:
+        """Blocking loop; call it from a worker thread."""
+        consecutive_errors = 0
+        while not self._stop.is_set():
+            frames, forced = self._collect_window()
+            if self._stop.is_set():
+                break
+            if frames is None:
+                continue  # idle or no capture yet; _collect_window already reported
+            if not frames:
+                continue
+
+            self._publish_window(frames)
+            payload = self._payload(frames)
+            prompt = (LOOK_PROMPT if forced else COACH_PROMPT).format(
+                frame_label=self._frame_label(len(payload)),
+                cadence=self._cadence(payload),
+                times=self._times(payload),
+                description=self._describe(payload),
+                motion=self._motion_text(frames),
+                history=self._history_text(),
+            )
+
+            started = self._clock()
+            with self._lock:
+                self._counters.windows += 1
+                self._counters.frames += len(payload)
+                self._counters.last_span = self._span(payload)
+                self._counters.last_motion = self._window_motion(frames).level
+            try:
+                answer = self._chat.chat(
+                    [{"role": "user", "content": prompt}],
+                    curve_context=self._context_provider(),
+                    images=[item.jpeg for item in payload],
+                )
+            except Exception as exc:  # noqa: BLE001 - any provider failure is reported
+                with self._lock:
+                    self._counters.errors += 1
+                consecutive_errors += 1
+                self._last_sequence = None  # retry the same picture
+                self._fail(str(exc) or exc.__class__.__name__)
+                if consecutive_errors >= self._settings.max_consecutive_errors:
+                    self._report(
+                        f"Stopped after {consecutive_errors} failed requests. Check the AI "
+                        "settings, then start watching again."
+                    )
+                    break
+                self._wait(self._backoff(consecutive_errors))
+                continue
+
+            consecutive_errors = 0
+            latency = max(0.0, self._clock() - started)
+            text = str(answer or "").strip()
+            with self._lock:
+                self._counters.replies += 1
+                self._counters.last_latency = latency
+                if not text:
+                    self._counters.empty += 1
+            if not text:
+                self._report("The model returned an empty reply; is it a vision model?")
+            else:
+                self._last_sent_signature = payload[-1].signature
+                self._history.append(text)
+                report = self._window_motion(frames)
+                meta = {
+                    "latency": latency,
+                    "frames": len(payload),
+                    "span": self._span(payload),
+                    "motion": report.level,
+                    "motion_word": report.word,
+                    "changed": report.changed_ratio,
+                    "band": report.band,
+                    "asked": "now" if forced else "live",
+                    "window": self.counters.windows,
+                }
+                if self._on_reply is not None:
+                    self._safe(self._on_reply, text, meta)
+            self._wait(self._settings.min_interval)
+
+        self._report("Live vision stopped.")
+
+    # -- collecting one window ---------------------------------------------
+    def _collect_window(self) -> tuple[list[WindowFrame] | None, bool]:
+        """Sample up to ``frames_per_request`` new frames.
+
+        Returns ``(frames, forced)``. ``frames`` is ``None`` when the call should
+        simply be retried later (no capture, or an idle screen), ``[]`` never.
+        """
+        forced = self._force.is_set()
+        if forced:
+            self._force.clear()
+
+        frames: list[WindowFrame] = []
+        signature: bytes | None = None
+        duplicates_in_a_row = 0
+        # A still screen produces the same sample over and over; stop after one full
+        # window's worth of repeats instead of sampling until the user moves.
+        max_duplicates = max(1, self._settings.frames_per_request)
+        while len(frames) < self._settings.frames_per_request and not self._stop.is_set():
+            frame, state = self._poll_frame()
+            if state == "waiting":
+                if frames:
+                    break  # capture stopped mid-window; send what we have
+                self._report("No frame yet — start the preview on the Capture tab.")
+                self._wait(self._settings.poll_interval)
+                if self._force.is_set():
+                    self._force.clear()
+                    forced = True
+                    continue
+                return None, forced
+            if state == "error":
+                self._wait(self._settings.poll_interval)
+                if frames:
+                    break
+                return None, forced
+            if state == "same" and frames:
+                break  # no newer frame: the sample would be a duplicate
+
+            try:
+                current = frame_signature(frame)
+            except FrameError as exc:
+                self._fail(f"Could not read the preview frame: {exc}")
+                self._wait(self._settings.poll_interval)
+                continue
+
+            delta = 0.0 if signature is None else frame_delta(signature, current)
+            duplicate = (
+                self._settings.skip_unchanged
+                and signature is not None
+                and delta < self._settings.change_threshold
+            )
+            if duplicate:
+                duplicates_in_a_row += 1
+                with self._lock:
+                    self._counters.skipped += 1
+                if duplicates_in_a_row >= max_duplicates:
+                    break  # the screen is still; send what we have
+            else:
+                duplicates_in_a_row = 0
+                try:
+                    encoded = encode_frame(
+                        frame, max_width=self._settings.max_width, quality=self._settings.quality
+                    )
+                except VisualError as exc:
+                    self._fail(str(exc))
+                    self._wait(self._settings.min_interval)
+                    return None, forced
+                frames.append(
+                    WindowFrame(
+                        jpeg=encoded.jpeg,
+                        signature=current,
+                        timestamp=self._clock(),
+                        delta=delta,
+                        meta=encoded.as_meta(),
+                    )
+                )
+                signature = current
+
+            if len(frames) >= self._settings.frames_per_request:
+                break
+            self._wait(self._settings.sample_interval)
+
+        if not frames:
+            return None, forced
+
+        report = self._window_motion(frames)
+        with self._lock:
+            self._motion = report
+
+        idle = (
+            self._settings.adaptive
+            and not forced
+            and report.level < self._settings.idle_motion
+            and self._last_sent_signature is not None
+            and frames[-1].signature == self._last_sent_signature
+        )
+        if idle:
+            with self._lock:
+                self._counters.idle += 1
+            self._report("The preview is not changing, so nothing is being sent.")
+            self._wait(self._settings.idle_wait)
+            return None, forced
+        return frames, forced
+
+    def _poll_frame(self) -> tuple[Any, str]:
+        """One look at the capture backend.
+
+        Returns ``(frame, state)`` with state one of ``ok``, ``same`` (the frame
+        we already handled), ``waiting`` (no capture running) or ``error``.
+        """
+        try:
+            frame = self._frame_provider()
+        except Exception as exc:  # noqa: BLE001 - a broken backend must not kill the loop
+            self._fail(f"Could not read the capture: {exc}")
+            return None, "error"
+        if not isinstance(frame, dict) or not frame.get("bgra"):
+            return None, "waiting"
+        sequence = frame.get("sequence")
+        if sequence is not None and sequence == self._last_sequence:
+            return frame, "same"
+        if sequence is not None:
+            self._last_sequence = sequence
+        return frame, "ok"
+
+    # -- window helpers ----------------------------------------------------
+    def _payload(self, frames: list[WindowFrame]) -> list[WindowFrame]:
+        """Drop the oldest frames if the images would be too large to send."""
+        total = sum(len(item.jpeg) for item in frames)
+        kept = list(frames)
+        while len(kept) > 1 and total > self._settings.max_payload_bytes:
+            total -= len(kept.pop(0).jpeg)
+        return kept
+
+    @staticmethod
+    def _span(frames: list[WindowFrame]) -> float:
+        if len(frames) < 2:
+            return 0.0
+        return max(0.0, frames[-1].timestamp - frames[0].timestamp)
+
+    def _window_motion(self, frames: list[WindowFrame]) -> MotionReport:
+        if len(frames) < 2:
+            return MotionReport(level=0.0, changed_cells=0, changed_ratio=0.0, band="none")
+        levels = []
+        changed = 0
+        band = "none"
+        for earlier, later in zip(frames, frames[1:], strict=False):
+            report = motion_report(earlier.signature, later.signature)
+            levels.append(report.level)
+            changed += report.changed_cells
+            if band == "none" and report.changed_cells:
+                band = report.band
+        return MotionReport(
+            level=sum(levels) / len(levels),
+            changed_cells=changed,
+            changed_ratio=min(1.0, changed / (len(levels) * GRID_W * GRID_H)),
+            band=band,
+        )
+
+    def _motion_text(self, frames: list[WindowFrame]) -> str:
+        report = self._window_motion(frames)
+        if len(frames) < 2:
+            return "one frame only (no movement measured)"
+        where = {
+            "top": "mostly in the top third",
+            "middle": "mostly in the middle third",
+            "bottom": "mostly in the bottom third",
+            "full": "spread across the frame",
+            "none": "no area stood out",
+        }[report.band]
+        return (
+            f"{report.word} ({report.level * 100:.1f}% mean cell change, "
+            f"{report.changed_ratio * 100:.0f}% of the frame changed, {where})"
+        )
+
+    @staticmethod
+    def _times(frames: list[WindowFrame]) -> str:
+        """Per-frame timestamps, oldest first: what qwen-vl is trained to read.
+
+        Ollama has no video input, so frames arrive as separate images with no
+        temporal position ids (ollama#18151). Naming each frame's offset is the
+        cheapest way to give the model the timing the images themselves lack, and
+        it costs nothing for models that ignore it.
+        """
+        if not frames:
+            return "none"
+        first = frames[0].timestamp
+        stamps = ", ".join(f"{frame.timestamp - first:.1f} s" for frame in frames)
+        return f"{stamps} (0.0 s is the oldest frame, {len(frames)} in total)"
+
+    @staticmethod
+    def _frame_label(count: int) -> str:
+        return f"{count} frame" if count == 1 else f"{count} ordered frames"
+
+    def _cadence(self, frames: list[WindowFrame]) -> str:
+        """Describe the real sampling cadence, not the requested one.
+
+        Collection takes as long as the capture and the encoder need, so the
+        measured gaps are what the timestamps say. Quoting the nominal interval
+        here would contradict the "Frame times" line in the same prompt.
+        """
+        if len(frames) <= 1:
+            return "a single still, so there is no movement to compare"
+        span = max(0.0, frames[-1].timestamp - frames[0].timestamp)
+        gap = span / (len(frames) - 1)
+        return (
+            f"sampled about every {gap:.1f} s, so together they show about {span:.1f} s of "
+            "a moving screen"
+        )
+
+    def _describe(self, frames: list[WindowFrame]) -> str:
+        """Size and picture statistics of the newest frame in the window."""
+        newest = frames[-1].meta
+        return (
+            f"{newest['source_width']}x{newest['source_height']} source, sent as "
+            f"{newest['width']}x{newest['height']} JPEG ({newest['bytes'] / 1024:.0f} KB each)"
+        )
+
+    def _publish_window(self, frames: list[WindowFrame]) -> None:
+        if self._on_window is None:
+            return
+        meta = [
+            {
+                **item.meta,
+                "delta": item.delta,
+                "age": max(0.0, frames[-1].timestamp - item.timestamp),
+            }
+            for item in frames
+        ]
+        self._safe(self._on_window, [item.jpeg for item in frames], {"frames": meta})
+
+    # -- plumbing ----------------------------------------------------------
+    def _backoff(self, failures: int) -> float:
+        delay = self._settings.min_interval * (self._settings.backoff_factor ** max(0, failures - 1))
+        return min(self._settings.max_backoff, max(self._settings.min_interval, delay))
+
+    def _history_text(self) -> str:
+        if not self._history:
+            return ""
+        lines = "\n".join(f"- {item}" for item in self._history)
+        return f"Your previous comments, newest last (do not repeat them):\n{lines}\n"
+
+    def _wait(self, seconds: float) -> None:
+        if seconds <= 0:
+            return
+        # Wakes early on stop() or ask_now(), both of which set _wake.
+        self._wake.wait(seconds)
+        self._wake.clear()
+
+    def _report(self, message: str) -> None:
+        if self._on_status is not None:
+            self._safe(self._on_status, message)
+
+    def _fail(self, message: str) -> None:
+        if self._on_error is not None:
+            self._safe(self._on_error, message)
+
+    @staticmethod
+    def _safe(callback: Callable[..., None], *args: Any) -> None:
+        try:
+            callback(*args)
+        except Exception:  # noqa: BLE001 - a UI callback must never kill the loop
+            pass
+
+
+def suggested_vision_models() -> tuple[str, ...]:
+    """Vision models that work in Ollama, fit a gaming PC, and handle a clip.
+
+    Ordered by suitability for this feature. The Qwen-VL family is first because
+    it is trained on interleaved "timestamp + video frames" input with per-model
+    temporal position ids, and llama.cpp (which Ollama runs) merges consecutive
+    qwen-vl images into a video block — so our ordered frames reach it as video
+    rather than as N unrelated pictures. The rest still work as plain frames.
+    """
+    return ("qwen3-vl:8b", "qwen3-vl:4b", "qwen2.5vl:7b", "gemma3:4b", "llava:7b", "moondream")

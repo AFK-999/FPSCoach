@@ -294,6 +294,15 @@ def _draw_edit(p: QPainter, c: QColor) -> None:
     _line(p, (13.0, 7.0), (17.0, 11.0))
 
 
+def _draw_eye(p: QPainter, c: QColor) -> None:
+    """Watch: an eye outline with a pupil. Used by Live vision."""
+    _outline(p, c, 1.7)
+    p.drawPath(
+        _poly([(4.0, 12.0), (8.0, 8.0), (16.0, 8.0), (20.0, 12.0), (16.0, 16.0), (8.0, 16.0), (4.0, 12.0)])
+    )
+    p.drawEllipse(QPointF(12.0, 12.0), 2.4, 2.4)
+
+
 def _draw_brand(p: QPainter, c: QColor) -> None:
     """The Vantage mark: a sighting ring with a V-shaped aim point."""
     _outline(p, c, 2.0)
@@ -312,6 +321,7 @@ _DRAWERS: dict[str, Callable[[QPainter, QColor], None]] = {
     "chat": _draw_chat,
     "privacy": _draw_privacy,
     "settings": _draw_settings,
+    "eye": _draw_eye,
     "chevron_left": _draw_chevron_left,
     "chevron_right": _draw_chevron_right,
     "chevron_up": _draw_chevron_up,

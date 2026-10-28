@@ -18,7 +18,6 @@ from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QColorDialog,
-    QComboBox,
     QFileDialog,
     QGridLayout,
     QHBoxLayout,
@@ -51,6 +50,7 @@ from .widgets import (
     _page_root,
     _settings,
     set_glyph,
+    ComboField,
 )
 
 
@@ -436,7 +436,7 @@ class TrainingPage(QWidget):
 
         pick_row = QHBoxLayout()
         pick_row.setSpacing(12)
-        self.scenario = QComboBox()
+        self.scenario = ComboField()
         for sc in scenario_defs.list_scenarios():
             self.scenario.addItem(sc.name, sc.key)
         self.scenario.currentIndexChanged.connect(self._describe)
@@ -707,7 +707,7 @@ class CrosshairPage(QWidget):
         form.setVerticalSpacing(10)
 
         form.addWidget(_label("Preset", "formLabel"), 0, 0)
-        self.preset = QComboBox()
+        self.preset = ComboField()
         self.preset.addItem("Choose a preset\u2026", "")
         for name in preset_names():
             self.preset.addItem(name.replace("_", " ").title(), name)
@@ -715,7 +715,7 @@ class CrosshairPage(QWidget):
         form.addWidget(self.preset, 0, 1)
 
         form.addWidget(_label("Shape", "formLabel"), 1, 0)
-        self.shape = QComboBox()
+        self.shape = ComboField()
         self.shape.addItems(list(self.SHAPES))
         self.shape.currentIndexChanged.connect(self._on_change)
         form.addWidget(self.shape, 1, 1)

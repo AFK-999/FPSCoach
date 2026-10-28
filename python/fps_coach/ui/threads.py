@@ -5,7 +5,14 @@ from __future__ import annotations
 
 from PySide6.QtCore import QThread, Signal
 
-from fps_coach.ai_chat import AIChatClient, ChatProviderError, ChatSettings, check_ollama, pull_model
+from fps_coach.ai_chat import (
+    AIChatClient,
+    ChatProviderError,
+    ChatSettings,
+    check_ollama,
+    list_models,
+    pull_model,
+)
 from fps_coach.tts_service import SpeechOptions, speakable_text
 
 
@@ -22,6 +29,27 @@ class _OllamaStatusCheck(QThread):
     def run(self) -> None:
         result = check_ollama(self._base_url, self._model)
         self.status_ready.emit(bool(result["reachable"]), bool(result["has_model"]))
+
+
+class _ModelListThread(QThread):
+    """Ask the provider which models it has, off the UI thread (ai_chat.list_models)."""
+
+    models_ready = Signal(list)
+    failed = Signal(str)
+
+    def __init__(self, base_url: str, provider: str = "ollama", api_key: str = "", parent=None):
+        super().__init__(parent)
+        self._base_url = base_url
+        self._provider = provider
+        self._api_key = api_key
+
+    def run(self) -> None:
+        try:
+            models = list_models(self._base_url, self._provider, self._api_key)
+        except Exception as exc:  # noqa: BLE001 - report anything to the card
+            self.failed.emit(str(exc) or type(exc).__name__)
+            return
+        self.models_ready.emit(list(models))
 
 
 class _ModelPullThread(QThread):
@@ -209,6 +237,40 @@ class _VoiceCommandService(QThread):
             )
         except Exception as exc:  # noqa: BLE001 - surface any setup/runtime issue
             self.failed.emit(str(exc))
+
+
+class _LiveVisionThread(QThread):
+    """Run one LiveVisionSession off the UI thread (rev79/rev80).
+
+    The session samples the live preview into ordered multi-frame windows; each
+    callback is forwarded as a Qt signal so the page touches widgets on the UI
+    thread only.
+    """
+
+    reply_ready = Signal(str, object)    # (reply text, meta)
+    request_failed = Signal(str)
+    status_changed = Signal(str)
+    window_sent = Signal(list, object)   # ([jpeg, ...], meta) — the clip the model was shown
+
+    def __init__(self, session, parent=None):
+        super().__init__(parent)
+        self._session = session
+        session._on_reply = lambda text, meta: self.reply_ready.emit(text, meta)
+        session._on_error = lambda message: self.request_failed.emit(message)
+        session._on_status = lambda message: self.status_changed.emit(message)
+        session._on_window = lambda frames, meta: self.window_sent.emit(frames, meta)
+
+    def run(self) -> None:
+        try:
+            self._session.run()
+        except Exception as exc:  # noqa: BLE001 - never let a worker crash the app
+            self.request_failed.emit(f"Live vision stopped unexpectedly: {exc}")
+
+    def ask_now(self) -> None:
+        self._session.ask_now()
+
+    def stop_session(self) -> None:
+        self._session.stop()
 
 
 class _ChatRequest(QThread):

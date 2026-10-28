@@ -5,6 +5,7 @@ logic is carried over unchanged from the previous window.
 """
 from __future__ import annotations
 
+import bisect
 import math
 import random
 from copy import deepcopy
@@ -12,16 +13,25 @@ from dataclasses import replace  # noqa: F401  (kept for parity with curve helpe
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QElapsedTimer, QRect, QSignalBlocker, Qt, QTimer, Signal
+from PySide6.QtCore import (
+    QElapsedTimer,
+    QRect,
+    QSignalBlocker,
+    QStandardPaths,
+    Qt,
+    QTimer,
+    Signal,
+)
 from PySide6.QtGui import QColor, QImage, QKeySequence, QPainter, QShortcut
 from PySide6.QtWidgets import (
     QCheckBox,
-    QComboBox,
+    QDoubleSpinBox,
     QFileDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -40,15 +50,21 @@ from fps_coach.dashboard_config import (
 from fps_coach.curve_adjust import adjust_from_recommendation, normalized_overlay
 from fps_coach.curve_io import (
     CurveFormatError,
+    CurvePoint,
     chart_points,
     load_curve,
     recommendation_profile,
     save_curve,
 )
+from fps_coach.capture_recording import AnalysisTick, RecordingService, RecordingSummary
 from fps_coach.window_enum import get_window_rect, list_windows
 from .styles import STAGE
 
-from .calibration import CalibrationCanvas
+from .calibration import (
+    CALIBRATION_SAMPLE_RATES_HZ,
+    DEFAULT_CALIBRATION_SAMPLE_RATE_HZ,
+    CalibrationCanvas,
+)
 from .widgets import (
     CurveChart,
     CurveLegend,
@@ -62,7 +78,11 @@ from .widgets import (
     _page_header,
     _page_root,
     _settings,
+    ComboField,
+    _lerp_factor,
 )
+
+_UNSET = object()  # "argument not given", so a snapshot can record None on purpose
 
 if TYPE_CHECKING:
     from fps_coach.backend import CoreBackend
@@ -534,6 +554,11 @@ class CapturePage(QWidget):
     the selected preset, shows live stats from backend.capture_stats(), and
     previews the newest frame from backend.latest_frame(). Without the native
     core, start is disabled and the reason is shown.
+
+    The Recording card is independent of the native capture: it records the
+    primary display to a scratch video through fps_coach.screen_recorder while
+    an analysis timer samples the newest frame. The scratch file is deleted when
+    recording stops or the window closes.
     """
 
     # (label, stored value, region side, target fps). Matches the original presets:
@@ -584,12 +609,12 @@ class CapturePage(QWidget):
         form.setVerticalSpacing(10)
 
         form.addWidget(_label("Display output", "formLabel"), 0, 0)
-        self.output_combo = QComboBox()
+        self.output_combo = ComboField()
         form.addWidget(self.output_combo, 0, 1)
 
         form.addWidget(_label("Window", "formLabel"), 1, 0)
         source_row = QHBoxLayout()
-        self.source_combo = QComboBox()
+        self.source_combo = ComboField()
         source_row.addWidget(self.source_combo, 1)
         self.window_refresh_btn = QToolButton()
         self.window_refresh_btn.setObjectName("iconButton")
@@ -599,7 +624,7 @@ class CapturePage(QWidget):
         form.addLayout(source_row, 1, 1)
 
         form.addWidget(_label("Preset", "formLabel"), 2, 0)
-        self.preset = QComboBox()
+        self.preset = ComboField()
         for label, value, _region, _fps in self.PRESETS:
             self.preset.addItem(label, value)
         index = self.preset.findData(str(s.value("capture/preset", "balanced")))
@@ -612,7 +637,7 @@ class CapturePage(QWidget):
         self.custom_widget = QWidget()
         custom_row = QHBoxLayout(self.custom_widget)
         custom_row.setContentsMargins(0, 0, 0, 0)
-        self.custom_region = QComboBox()
+        self.custom_region = ComboField()
         self.custom_region.addItem("Center 640 × 360", (640, 360))
         self.custom_region.addItem("Center 960 × 540", (960, 540))
         custom_row.addWidget(self.custom_region, 1)
@@ -620,7 +645,7 @@ class CapturePage(QWidget):
 
         # Frame rate is always visible. A preset sets it when chosen; the user can change it.
         form.addWidget(_label("Frame rate", "formLabel"), 4, 0)
-        self.fps_combo = QComboBox()
+        self.fps_combo = ComboField()
         for fps in self.FPS_CHOICES:
             self.fps_combo.addItem(f"{fps} FPS", fps)
         # Without a saved choice, start from the saved preset's own frame rate.
@@ -636,6 +661,15 @@ class CapturePage(QWidget):
         self.hwaccel.setToolTip("Use the GPU (D3D11) for capture and scaling")
         self.hwaccel.setChecked(s.value("capture/hwaccel", True, type=bool))
         self.hwaccel.toggled.connect(lambda v: s.setValue("capture/hwaccel", bool(v)))
+        if not getattr(backend, "native_available", False):
+            # mss reads the composited desktop on the CPU; a ticked GPU option that
+            # does nothing is worse than no option at all.
+            self.hwaccel.setChecked(False)
+            self.hwaccel.setEnabled(False)
+            self.hwaccel.setToolTip(
+                "GPU capture needs the native C++ core. Live capture is running "
+                "through mss on the CPU instead."
+            )
         form.addWidget(self.hwaccel, 5, 1)
         lay.addLayout(form)
 
@@ -675,15 +709,36 @@ class CapturePage(QWidget):
         lay.addWidget(self.notice_label)
         lay.addStretch(1)
 
-        card.setMinimumWidth(340)
-        card.setMaximumWidth(420)
-        body.addWidget(card, 2)
+        right = QWidget()
+        right_lay = QVBoxLayout(right)
+        right_lay.setContentsMargins(0, 0, 0, 0)
+        right_lay.setSpacing(16)
+        right_lay.addWidget(card)
+        self.live_source_note = _label("", "cardSubtitle", wrap=True)
+        self.live_source_note.setVisible(False)
+        right_lay.addWidget(self.live_source_note)
+        right_lay.addWidget(self._build_recording_card())
+        right_lay.addStretch(1)
+        right.setMinimumWidth(340)
+        right.setMaximumWidth(420)
+        body.addWidget(right, 2)
         outer.addLayout(body, 1)
 
         self.start_btn.clicked.connect(self._start)
         self.stop_btn.clicked.connect(self._stop)
         self.refresh_btn.clicked.connect(self._load_outputs)
         self.window_refresh_btn.clicked.connect(self._load_windows)
+
+        # Recording card (scratch video + analysis timer, deleted on stop).
+        self.recording = RecordingService(self)
+        self.recording.started.connect(self._on_recording_started)
+        self.recording.stopped.connect(self._on_recording_stopped)
+        self.recording.analysis.connect(self._on_analysis_tick)
+        self.recording.failed.connect(self._on_recording_failed)
+        self.record_start_btn.clicked.connect(self._start_recording)
+        self.record_stop_btn.clicked.connect(self._stop_recording)
+        self._apply_recording_availability()
+        self._apply_capture_backend_note()
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._refresh_stats)
@@ -699,6 +754,265 @@ class CapturePage(QWidget):
         self._frame_timer.timeout.connect(self._pump_frame)
         self._load_outputs()
         self._load_windows()
+
+    # --- live capture backend note ----------------------------------------
+    def _apply_capture_backend_note(self) -> None:
+        """Tell the user which engine feeds the preview, and what it cannot do.
+
+        Without the native core this card used to look broken (no outputs, Start
+        greyed out) because nothing said why. The Python path exists so the live
+        preview still works; the note names its two limits.
+        """
+        if getattr(self._backend, "native_available", False):
+            self.live_source_note.setVisible(False)
+            return
+        if getattr(self._backend, "uses_python_capture", False):
+            self.live_source_note.setText(
+                "Live preview is running through mss (Python) because the native core is "
+                "not built. Up to 60 FPS, and a window is captured as the screen area "
+                "behind it."
+            )
+        else:
+            self.live_source_note.setText(
+                "Live capture is unavailable: the native core is not built and mss is not "
+                'installed. Install it with: pip install -e ".[recorder]"'
+            )
+        self.live_source_note.setVisible(True)
+
+    # --- recording (scratch video + analysis timer) ------------------------
+    RECORD_FPS_CHOICES = (15, 30, 60)
+
+    def _build_recording_card(self):
+        """Card under Source: scratch recording of the primary display."""
+        card, lay = _card(
+            "Recording",
+            "Records the primary display while you record, and samples the newest frame on a "
+            "timer. Keep the video or let it be discarded when you stop.",
+        )
+        form = QGridLayout()
+        form.setHorizontalSpacing(12)
+        form.setVerticalSpacing(10)
+
+        form.addWidget(_label("Recording rate", "formLabel"), 0, 0)
+        self.record_fps = ComboField()
+        for fps in self.RECORD_FPS_CHOICES:
+            self.record_fps.addItem(f"{fps} FPS", fps)
+        saved_fps = int(_settings().value("capture/record_fps", 30, type=int))
+        index = self.record_fps.findData(saved_fps)
+        self.record_fps.setCurrentIndex(index if index >= 0 else 1)
+        self.record_fps.currentIndexChanged.connect(self._on_record_fps_changed)
+        form.addWidget(self.record_fps, 0, 1)
+
+        form.addWidget(_label("Analysis every", "formLabel"), 1, 0)
+        self.record_interval = QDoubleSpinBox()
+        self.record_interval.setRange(0.5, 60.0)
+        self.record_interval.setSingleStep(0.5)
+        self.record_interval.setDecimals(1)
+        self.record_interval.setSuffix(" s")
+        self.record_interval.setValue(float(_settings().value("capture/record_interval", 2.0, type=float)))
+        self.record_interval.setToolTip("How often the newest frame is handed to the analysis callback")
+        self.record_interval.valueChanged.connect(
+            lambda value: _settings().setValue("capture/record_interval", float(value))
+        )
+        form.addWidget(self.record_interval, 1, 1)
+        lay.addLayout(form)
+
+        self.record_keep = QCheckBox("Keep the recording")
+        self.record_keep.setToolTip(
+            "Save the video instead of discarding it. Saved files stay on this machine "
+            "until you delete them."
+        )
+        self.record_keep.setChecked(bool(_settings().value("capture/record_keep", False, type=bool)))
+        self.record_keep.toggled.connect(self._on_record_keep_toggled)
+        lay.addWidget(self.record_keep)
+
+        dir_row = QHBoxLayout()
+        dir_row.setSpacing(8)
+        self.record_dir_edit = QLineEdit(self._record_dir())
+        self.record_dir_edit.setReadOnly(True)
+        self.record_dir_edit.setToolTip("Where kept recordings are written")
+        self.record_dir_btn = QPushButton(" Folder…")
+        self.record_dir_btn.setObjectName("secondary")
+        set_glyph(self.record_dir_btn, "download")
+        self.record_dir_btn.clicked.connect(self._choose_record_dir)
+        dir_row.addWidget(self.record_dir_edit, 1)
+        dir_row.addWidget(self.record_dir_btn)
+        lay.addLayout(dir_row)
+        self._sync_record_keep_controls()
+
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        self.record_start_btn = QPushButton(" Record")
+        self.record_start_btn.setObjectName("secondary")
+        set_glyph(self.record_start_btn, "play")
+        self.record_stop_btn = QPushButton(" Stop")
+        self.record_stop_btn.setObjectName("secondary")
+        set_glyph(self.record_stop_btn, "stop")
+        self.record_stop_btn.setEnabled(False)
+        row.addWidget(self.record_start_btn)
+        row.addWidget(self.record_stop_btn)
+        row.addStretch(1)
+        lay.addLayout(row)
+
+        self.record_status = _label("Idle", "statusLabel")
+        lay.addWidget(self.record_status)
+
+        self.record_detail = _label("", "statusLabel", wrap=True)
+        self.record_detail.setVisible(False)
+        lay.addWidget(self.record_detail)
+
+        self.record_analysis = _label("", "cardSubtitle", wrap=True)
+        self.record_analysis.setVisible(False)
+        lay.addWidget(self.record_analysis)
+
+        self.record_note = _label(
+            "Uses the primary display, independent of the Source selection above.",
+            "cardSubtitle",
+            wrap=True,
+        )
+        self.record_detail.setToolTip("")
+        lay.addWidget(self.record_note)
+        return card
+
+    @staticmethod
+    def default_record_dir() -> str:
+        """Videos/FPSCoach (or Home/FPSCoach when the platform has no Movies folder)."""
+        base = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.MoviesLocation)
+        return str(Path(base or Path.home()) / "FPSCoach")
+
+    def _record_dir(self) -> str:
+        return str(_settings().value("capture/record_dir", self.default_record_dir()))
+
+    def _sync_record_keep_controls(self) -> None:
+        """The folder row only matters when the recording is kept."""
+        keep = self.record_keep.isChecked()
+        usable, _message = RecordingService.availability()
+        # Called once while the card is being built, before the service exists.
+        recording = bool(getattr(self, "recording", None) and self.recording.is_recording)
+        self.record_dir_edit.setEnabled(keep and usable and not recording)
+        self.record_dir_btn.setEnabled(keep and usable and not recording)
+
+    def _on_record_keep_toggled(self, checked: bool) -> None:
+        _settings().setValue("capture/record_keep", bool(checked))
+        self._sync_record_keep_controls()
+
+    def _choose_record_dir(self) -> None:
+        chosen = QFileDialog.getExistingDirectory(self, "Recordings folder", self.record_dir_edit.text())
+        if chosen:
+            self.record_dir_edit.setText(chosen)
+            _settings().setValue("capture/record_dir", chosen)
+
+    def _on_record_fps_changed(self, index: int) -> None:
+        fps = self.record_fps.itemData(index)
+        if fps is not None:
+            _settings().setValue("capture/record_fps", int(fps))
+
+    def _apply_recording_availability(self) -> None:
+        usable, message = RecordingService.availability()
+        self.record_start_btn.setEnabled(usable)
+        self.record_fps.setEnabled(usable)
+        self.record_interval.setEnabled(usable)
+        self.record_keep.setEnabled(usable)
+        self._sync_record_keep_controls()
+        if not usable:
+            self._set_record_status("Unavailable", "bad")
+            self._show_record_detail(message)
+            self.record_note.setText("Install the recorder extra to enable this card.")
+
+    def _start_recording(self) -> None:
+        keep = self.record_keep.isChecked()
+        started = self.recording.start(
+            fps=float(self.record_fps.currentData() or 30),
+            analysis_interval=float(self.record_interval.value()),
+            monitor_index=1,
+            keep=keep,
+            save_dir=self.record_dir_edit.text() if keep else None,
+        )
+        if started:
+            self._set_record_buttons(recording=True)
+            self._set_record_status("Starting…", "good")
+            self._show_record_detail("")
+
+    def _stop_recording(self) -> None:
+        self.recording.stop()  # emits stopped() -> _on_recording_stopped
+
+    def _on_recording_started(self, path: str) -> None:
+        self._set_record_buttons(recording=True)
+        self._set_record_status("Recording to a scratch file…", "good")
+        self.record_detail.setToolTip(path)
+        self._show_record_detail("")
+        self.record_analysis.setText("")
+        self.record_analysis.setVisible(False)
+
+    def _on_recording_stopped(self, summary: RecordingSummary) -> None:
+        self._set_record_buttons(recording=False)
+        calls = f"{summary.analyses} analysis call{'s' if summary.analyses != 1 else ''}"
+        if summary.kept:
+            self._set_record_status(
+                f"Saved · {summary.frames:,} frames · {summary.seconds:.1f} s", "good"
+            )
+            self._show_record_detail(f"Recording saved to {summary.path} ({calls}).")
+        else:
+            self._set_record_status(
+                f"Stopped · {summary.frames:,} frames · {summary.seconds:.1f} s", ""
+            )
+            self._show_record_detail(f"Scratch video discarded after {calls}.")
+        self.record_analysis.setVisible(False)
+
+    def _on_recording_failed(self, message: str) -> None:
+        self._set_record_buttons(recording=False)
+        self._set_record_status("Recording stopped", "bad")
+        self._show_record_detail(message)
+        self.record_analysis.setVisible(False)
+
+    def _on_analysis_tick(self, tick: AnalysisTick) -> None:
+        self.record_analysis.setText(
+            f"Analysis #{tick.count} · frame {tick.sequence:,} · "
+            f"{tick.width}×{tick.height} · mean {tick.mean:.1f}"
+        )
+        self.record_analysis.setVisible(True)
+
+    def _refresh_recording(self) -> None:
+        status = self.recording.poll()
+        if not status.running:
+            return
+        analyses = f"{status.analyses} analysis" if status.analyses == 1 else (
+            f"{status.analyses} analyses"
+        )
+        self._set_record_status(
+            f"Recording · {status.seconds:.1f} s · {status.frames:,} frames · {analyses}",
+            "good",
+        )
+
+    def _set_record_buttons(self, *, recording: bool) -> None:
+        usable, _message = RecordingService.availability()
+        self.record_start_btn.setEnabled(usable and not recording)
+        self.record_stop_btn.setEnabled(recording)
+        self.record_fps.setEnabled(usable and not recording)
+        self.record_interval.setEnabled(usable and not recording)
+        self.record_keep.setEnabled(usable and not recording)
+        self.record_dir_edit.setEnabled(
+            usable and not recording and self.record_keep.isChecked()
+        )
+        self.record_dir_btn.setEnabled(
+            usable and not recording and self.record_keep.isChecked()
+        )
+
+    def _set_record_status(self, text: str, state: str) -> None:
+        self.record_status.setText(text)
+        self.record_status.setProperty("state", state)
+        self.record_status.style().unpolish(self.record_status)
+        self.record_status.style().polish(self.record_status)
+
+    def _show_record_detail(self, message: str) -> None:
+        self.record_detail.setText(message)
+        self.record_detail.setVisible(bool(message))
+
+    def shutdown(self) -> None:
+        """Stop the recording on window close; kept files stay on disk."""
+        self.recording.shutdown()
+        self.record_start_btn.setEnabled(False)
+        self.record_stop_btn.setEnabled(False)
 
     # --- outputs and windows ----------------------------------------------
     def _load_outputs(self):
@@ -864,6 +1178,7 @@ class CapturePage(QWidget):
         }.get(mode, "Capturing…")
 
     def _refresh_stats(self):
+        self._refresh_recording()
         stats = self._backend.capture_stats()
         running = bool(stats.get("running"))
         if self.stop_btn.isEnabled() and not running:
@@ -894,6 +1209,7 @@ class CapturePage(QWidget):
 
 # recommendation_profile() builds gains over this top speed; the chart uses the same scale for them.
 RECOMMENDATION_MAX_SPEED = 100.0
+CALIBRATION_SAMPLE_RATE_KEY = "calibration/sample_hz"
 
 
 def _shared_speed(previous, current) -> float:
@@ -921,17 +1237,32 @@ class CalibrationPage(QWidget):
         self._profile = None         # the curve Export writes (imported, calibrated, or edited)
         self._base_profile = None    # imported curve that calibration adjusts
         self._chart_baseline = None  # chart values before the latest drag
+        self._chart_baseline_xs = None  # their x positions, so an added/removed point can be compared
+        self._pending_chart_structure = None  # ("add"/"delete", point index, x), set before the edit signal
         # Undo/redo history for the curve. Each entry is a full snapshot taken before a change.
         self._undo: list[dict] = []
         self._redo: list[dict] = []
         # Speed the chart's x positions are scaled by (None: the curve's own top speed).
         self._chart_scale: float | None = None
+        self._live_snapshot: dict | None = None
+        self._sample_settings = _settings()
+        try:
+            saved_sample_rate = int(
+                self._sample_settings.value(
+                    CALIBRATION_SAMPLE_RATE_KEY, DEFAULT_CALIBRATION_SAMPLE_RATE_HZ
+                )
+            )
+        except (TypeError, ValueError):
+            saved_sample_rate = DEFAULT_CALIBRATION_SAMPLE_RATE_HZ
+        if saved_sample_rate not in CALIBRATION_SAMPLE_RATES_HZ:
+            saved_sample_rate = DEFAULT_CALIBRATION_SAMPLE_RATE_HZ
+        self._sample_rate_hz = saved_sample_rate
 
         scroll, outer = _content_page(1240)
         _page_root(self, scroll)
         outer.addWidget(_page_header(
             "Calibration",
-            "Measure your movement with the 12-target task, then review the response curve.",
+            "Capture your cursor movement across 12 targets. The curve is built from the speeds you actually use.",
             eyebrow="Input",
         ))
 
@@ -956,10 +1287,31 @@ class CalibrationPage(QWidget):
         self.progress.setFormat("%v / 12 targets")
         bar.addWidget(self.recalibrate_btn)
         bar.addWidget(self.reset_btn)
+        rate_row = QWidget()
+        rate_lay = QHBoxLayout(rate_row)
+        rate_lay.setContentsMargins(0, 0, 0, 0)
+        rate_lay.setSpacing(6)
+        rate_label = _label("Sample rate", "cardSubtitle")
+        rate_label.setToolTip("Target cursor sampling rate during the explicit calibration task.")
+        self.sample_rate_combo = ComboField()
+        for hz in CALIBRATION_SAMPLE_RATES_HZ:
+            self.sample_rate_combo.addItem(f"{hz:,} Hz", hz)
+        self.sample_rate_combo.setCurrentIndex(self.sample_rate_combo.findData(saved_sample_rate))
+        self.sample_rate_combo.setMinimumWidth(100)
+        self.sample_rate_combo.setMaximumWidth(112)
+        self.sample_rate_combo.setToolTip(
+            "Target timer rate. At 1,000 Hz the timer samples every 1 ms. "
+            "Qt/Windows scheduling or UI load may reduce the achieved rate; mouse-move events "
+            "are recorded as well."
+        )
+        rate_lay.addWidget(rate_label)
+        rate_lay.addWidget(self.sample_rate_combo)
+        bar.addWidget(rate_row)
         bar.addWidget(self.progress, 1)
         task_lay.addLayout(bar)
 
         self.canvas = CalibrationCanvas(backend.analyzer)
+        self.canvas.set_sample_rate(saved_sample_rate)
         self.canvas.setMinimumHeight(380)
         task_lay.addWidget(self.canvas, 1)
 
@@ -970,13 +1322,23 @@ class CalibrationPage(QWidget):
         # Right: the curve.
         curve_card, curve_lay = _card(
             "Sensitivity curve",
-            "Solid line: current curve. Dashed amber: older curve. Drag points to fine-tune.",
+            "Live control points follow measured cursor-speed samples; their number adapts to the data. "
+            "Solid line: current curve. Dashed amber: previous curve. Drag a dot to change gain or speed; "
+            "right-click to add or delete one.",
         )
         self.legend = CurveLegend()
         curve_lay.addWidget(self.legend)
         self.chart = CurveChart()
         self.chart.setMinimumHeight(260)
+        # There is no recommended curve until captured movement data exists.
+        self.chart.points = []
+        self.chart.xs = []
         curve_lay.addWidget(self.chart, 1)
+        self.curve_status = _label(
+            "Waiting for captured movement. The live estimate appears after the first target.",
+            "cardSubtitle", wrap=True,
+        )
+        curve_lay.addWidget(self.curve_status)
 
         btn_row = QHBoxLayout()
         btn_row.setSpacing(8)
@@ -1008,8 +1370,13 @@ class CalibrationPage(QWidget):
         self.reset_btn.clicked.connect(self.canvas.cancel_session)
         self.canvas.progress_changed.connect(self._on_progress)
         self.canvas.hint_changed.connect(self.hint.setText)
+        self.canvas.session_started.connect(self._on_session_started)
+        self.canvas.session_cancelled.connect(self._on_session_cancelled)
+        self.canvas.recommendation_updated.connect(self._on_live_recommendation)
         self.canvas.completed.connect(self._on_complete)
-        self.chart.curve_adjusted.connect(self._on_curve_adjusted)
+        self.chart.curve_structure_changed.connect(self._on_chart_structure_changed)
+        self.chart.curve_geometry_changed.connect(self._on_curve_adjusted)
+        self.sample_rate_combo.currentIndexChanged.connect(self._on_sample_rate_changed)
         self.save_btn.clicked.connect(self._save)
         self.import_btn.clicked.connect(self._import_curve)
         self.undo_btn.clicked.connect(self.undo)
@@ -1037,6 +1404,70 @@ class CalibrationPage(QWidget):
         self.progress.setRange(0, max(1, total))
         self.progress.setValue(completed)
 
+    def _set_curve_controls_enabled(self, enabled: bool) -> None:
+        """Keep the provisional graph read-only while the movement model is updating it."""
+        self.chart.set_editable(enabled)
+        self.recalibrate_btn.setEnabled(enabled)
+        for control in (self.undo_btn, self.redo_btn, self.import_btn, self.save_btn):
+            control.setEnabled(enabled)
+        if enabled:
+            self._update_history_buttons()
+
+    def _on_session_started(self) -> None:
+        if self._live_snapshot is None:
+            self._live_snapshot = self._snapshot()
+        self._set_curve_controls_enabled(False)
+        self.curve_status.setText(
+            "Capturing cursor movement. A provisional curve will update after each completed target."
+        )
+
+    def _on_session_cancelled(self) -> None:
+        if self._live_snapshot is not None:
+            snapshot, self._live_snapshot = self._live_snapshot, None
+            self._restore(snapshot, "Calibration cancelled; previous curve restored.")
+        self._set_curve_controls_enabled(True)
+
+    def _on_live_recommendation(self, summary: dict, recommendation: dict) -> None:
+        """Draw the measured curve after each completed target without exporting it yet."""
+        raw_points = list(recommendation.get("points") or [])
+        if len(raw_points) < 2:
+            return
+        try:
+            if self._base_profile is not None:
+                adjusted, _note = adjust_from_recommendation(self._base_profile, recommendation)
+                previous, current = normalized_overlay(self._base_profile, adjusted)
+                self._set_overlay(current, previous, _shared_speed(self._base_profile, adjusted))
+            else:
+                xs, ys = _curve_points(raw_points)
+                previous = list(self.chart.points) if len(self.chart.points) >= 2 else None
+                previous_xs = self.chart.x_positions() if previous else None
+                self._set_chart(
+                    ys,
+                    previous=previous,
+                    xs=xs,
+                    previous_xs=previous_xs,
+                    scale=RECOMMENDATION_MAX_SPEED,
+                )
+        except CurveFormatError as exc:
+            self.curve_status.setText(f"Live curve is not available yet: {exc}")
+            return
+        sample_count = int(recommendation.get("captured_sample_count", 0) or 0)
+        trials = int(summary.get("trial_count", 0) or 0)
+        self.curve_status.setText(
+            f"Live estimate · {trials} completed target{'s' if trials != 1 else ''} · "
+            f"{sample_count:,} captured movement samples · {len(raw_points)} data-derived control points. "
+            "Updates as you work; the finished run determines the exportable curve."
+        )
+
+    def _on_sample_rate_changed(self, index: int) -> None:
+        """Apply and persist the selected precise-timer sampling target."""
+        rate = self.sample_rate_combo.itemData(index)
+        if rate not in CALIBRATION_SAMPLE_RATES_HZ:
+            return
+        self._sample_rate_hz = int(rate)
+        self.canvas.set_sample_rate(self._sample_rate_hz)
+        self._sample_settings.setValue(CALIBRATION_SAMPLE_RATE_KEY, self._sample_rate_hz)
+
     def _set_chart(self, points, previous=None, xs=None, previous_xs=None, scale=None):
         """Show ``points`` at x positions ``xs`` (evenly spaced when None). See CurveChart."""
         self.chart.set_previous(previous, xs=previous_xs)
@@ -1045,6 +1476,7 @@ class CalibrationPage(QWidget):
         self.chart.xs = list(xs) if xs is not None else None
         self._chart_scale = scale
         self._chart_baseline = list(points)
+        self._chart_baseline_xs = self.chart.x_positions()
         self.chart.update()
 
     def _set_overlay(self, current_pts, previous_pts, scale: float) -> None:
@@ -1056,31 +1488,49 @@ class CalibrationPage(QWidget):
     # -- undo / redo ----------------------------------------------------------
     _HISTORY_LIMIT = 50
 
-    def _snapshot(self, points=None) -> dict:
-        """Everything that shows or drives the curve, so it can be put back exactly."""
+    def _snapshot(self, points=None, xs=_UNSET, baseline=_UNSET, baseline_xs=_UNSET) -> dict:
+        """Everything that shows or drives the curve, so it can be put back exactly.
+
+        The optional arguments describe the curve *before* the change. Adding or deleting a point
+        moves both the values and their x positions, so a snapshot taken after the edit would
+        restore the wrong dot count — the caller passes the curve as it was.
+        """
+        snap_xs = self.chart.xs if xs is _UNSET else xs
+        snap_baseline = self._chart_baseline if baseline is _UNSET else baseline
+        snap_baseline_xs = self._chart_baseline_xs if baseline_xs is _UNSET else baseline_xs
         return {
             "points": list(points if points is not None else self.chart.points),
             "previous": list(self.chart.previous_points) if self.chart.previous_points else None,
             "previous_xs": list(self.chart.previous_xs) if self.chart.previous_xs is not None else None,
-            "xs": list(self.chart.xs) if self.chart.xs is not None else None,
+            "xs": list(snap_xs) if snap_xs is not None else None,
             "scale": self._chart_scale,
             "profile": deepcopy(self._profile),
             "base": deepcopy(self._base_profile),
-            "baseline": list(self._chart_baseline) if self._chart_baseline is not None else None,
+            "baseline": list(snap_baseline) if snap_baseline else None,
+            "baseline_xs": list(snap_baseline_xs) if snap_baseline_xs else None,
             "hint": self.hint.text(),
         }
 
-    def _checkpoint(self, points=None) -> None:
-        """Record the state before a change. Call this before mutating the curve."""
-        self._undo.append(self._snapshot(points))
+    def _push_undo_snapshot(self, snapshot: dict) -> None:
+        """Add a complete pre-change state to the bounded Undo stack."""
+        self._undo.append(snapshot)
         del self._undo[:-self._HISTORY_LIMIT]
         self._redo.clear()
         self._update_history_buttons()
+
+    def _checkpoint(self, points=None, xs=_UNSET, baseline=_UNSET, baseline_xs=_UNSET) -> None:
+        """Record the state before a change. Call this before mutating the curve."""
+        self._push_undo_snapshot(
+            self._snapshot(points, xs=xs, baseline=baseline, baseline_xs=baseline_xs)
+        )
 
     def _restore(self, snap: dict, message: str) -> None:
         self._profile = deepcopy(snap["profile"])
         self._base_profile = deepcopy(snap["base"])
         self._chart_baseline = list(snap["baseline"]) if snap["baseline"] is not None else None
+        self._chart_baseline_xs = (
+            list(snap["baseline_xs"]) if snap.get("baseline_xs") is not None else None
+        )
         self.chart.previous_points = list(snap["previous"]) if snap["previous"] else None
         self.chart.previous_xs = list(snap["previous_xs"]) if snap.get("previous_xs") is not None else None
         self.legend.set_has_older(bool(self.chart.previous_points))
@@ -1089,6 +1539,10 @@ class CalibrationPage(QWidget):
         self._chart_scale = snap.get("scale")
         self.chart.update()
         self.hint.setText(message)
+        self.curve_status.setText(
+            f"Curve restored · {len(self.chart.points)} control points."
+            if self.chart.points else "Waiting for captured movement data."
+        )
         self.profile_changed.emit({"restored": True})
         if self._base_profile is not None:
             self.base_profile_changed.emit(deepcopy(self._base_profile))
@@ -1117,6 +1571,7 @@ class CalibrationPage(QWidget):
         )
 
     def _on_complete(self, summary: dict, recommendation: dict):
+        self._set_curve_controls_enabled(True)
         self._last_recommendation = recommendation
         self.apply_recommendation(recommendation)
         self.recommendation_ready.emit(summary, recommendation)
@@ -1127,7 +1582,13 @@ class CalibrationPage(QWidget):
         Used when a calibration finishes and when Generate recommendation is clicked. The
         change is recorded for Undo.
         """
-        self._checkpoint()  # a recommendation is a change: the old curve can be undone
+        if self._live_snapshot is not None:
+            # Treat all interim graph refreshes as one change: Undo returns to the
+            # curve that existed before this calibration session began.
+            snapshot, self._live_snapshot = self._live_snapshot, None
+            self._push_undo_snapshot(snapshot)
+        else:
+            self._checkpoint()  # a recommendation is a change: the old curve can be undone
         try:
             if self._base_profile is not None:
                 # An imported curve is adjusted by the result instead of replaced.
@@ -1139,39 +1600,193 @@ class CalibrationPage(QWidget):
             else:
                 self._profile = recommendation_profile(recommendation)
                 xs, ys = _curve_points(recommendation.get("points") or [])
+                old_points = list(self.chart.points) if len(self.chart.points) >= 2 else None
                 self._set_chart(
                     ys,
-                    previous=list(self.chart.points),
+                    previous=old_points,
                     xs=xs,
-                    previous_xs=self.chart.x_positions(),
+                    previous_xs=self.chart.x_positions() if old_points else None,
                     scale=RECOMMENDATION_MAX_SPEED,
                 )
+            point_count = len(recommendation.get("points") or [])
+            sample_count = int(recommendation.get("captured_sample_count", 0) or 0)
+            if sample_count and self._base_profile is not None:
+                self.curve_status.setText(
+                    f"Final estimate · {sample_count:,} captured movement samples · "
+                    f"{point_count} measured-speed recommendation positions. The imported curve "
+                    f"keeps its {len(self.chart.points)} editable points."
+                )
+            elif sample_count:
+                self.curve_status.setText(
+                    f"Final curve · {sample_count:,} captured movement samples · "
+                    f"{len(self.chart.points)} adaptive control points. The graph is ready to edit or export."
+                )
+            else:
+                self.curve_status.setText(f"Recommendation curve · {len(self.chart.points)} control points.")
         except CurveFormatError as exc:
             self._profile = None
             self.hint.setText(f"Could not build a curve from this run: {exc}")
 
-    def _on_curve_adjusted(self, points):
+    def _on_chart_structure_changed(self, operation: str, index: int, x: float) -> None:
+        """Remember which point the widget is adding/deleting before it emits the new curve."""
+        self._pending_chart_structure = (operation, index, x)
+
+    @staticmethod
+    def _axis_gain_at(points: list[CurvePoint], x: float, scale: float) -> float:
+        """Interpolate an axis's multiplier at chart x, using the chart's speed scale."""
+        if not points:
+            return 1.0
+        scale = scale or max((point.speed for point in points), default=1.0) or 1.0
+        axis_xs = [point.speed / scale for point in points]
+        axis_ys = [point.multiplier for point in points]
+        return _lerp_factor(axis_xs, axis_ys, x)
+
+    @staticmethod
+    def _insert_axis_point(points: list[CurvePoint], x: float, multiplier: float, scale: float) -> list[CurvePoint]:
+        """Insert a point at chart x into an axis, retaining the user's existing point objects."""
+        result = deepcopy(points)
+        speed = max(0.0, x * (scale or max((point.speed for point in result), default=1.0) or 1.0))
+        candidate = CurvePoint(
+            speed=speed,
+            multiplier=max(0.05, min(20.0, multiplier)),
+        )
+        index = bisect.bisect_right([point.speed for point in result], speed)
+        result.insert(index, candidate)
+        return result
+
+    @staticmethod
+    def _remove_axis_point(
+        points: list[CurvePoint], x: float, scale: float, index: int | None = None
+    ) -> list[CurvePoint]:
+        """Remove the corresponding axis control point, but never take an axis below two."""
+        if len(points) <= 2:
+            return points
+        scale = scale or max((point.speed for point in points), default=1.0) or 1.0
+        if index is None or index >= len(points) or abs(points[index].speed / scale - x) > 1e-5:
+            index = min(range(len(points)), key=lambda i: abs(points[i].speed / scale - x))
+        if abs(points[index].speed / scale - x) > 1e-5:
+            return points  # a different-speed vertical curve has no matching point to remove
+        result = list(points)
+        del result[index]
+        return result
+
+    def _edit_profile_structure(
+        self, updated_profile, source_profile, before_xs, before_values,
+        after_xs, after_values, structure,
+    ):
+        """Keep the exported curve's control points in step with graph add/delete operations."""
+        operation, index, x = structure
+        if updated_profile is None or source_profile is None:
+            return updated_profile
+        scale = self._chart_scale or max((point.speed for point in source_profile.horizontal), default=1.0) or 1.0
+        old_value = _lerp_factor(before_xs, before_values, x) if len(before_xs) >= 2 else 0.0
+        new_value = (
+            after_values[index] if operation == "add" and 0 <= index < len(after_values)
+            else _lerp_factor(after_xs, after_values, x)
+        )
+        def added_gain(axis):
+            previous_gain = self._axis_gain_at(axis, x, scale)
+            if old_value > 1e-9:
+                return previous_gain * new_value / old_value
+            chart_gain = max(before_values, default=0.0)
+            axis_gain = max((point.multiplier for point in axis), default=1.0)
+            gain_scale = axis_gain / chart_gain if chart_gain > 1e-9 else 1.0
+            return previous_gain + (new_value - old_value) * gain_scale
+
+        updated = deepcopy(updated_profile)
+        if operation == "add":
+            updated.horizontal = self._insert_axis_point(
+                updated.horizontal, x, added_gain(source_profile.horizontal), scale
+            )
+            updated.vertical = self._insert_axis_point(
+                updated.vertical, x, added_gain(source_profile.vertical), scale
+            )
+        elif operation == "delete":
+            updated.horizontal = self._remove_axis_point(updated.horizontal, x, scale, index)
+            updated.vertical = self._remove_axis_point(updated.vertical, x, scale, index)
+        return updated
+
+    @staticmethod
+    def _move_profile_speeds(profile, before_xs, after_xs, scale):
+        """Move profile control points to the chart's new speed positions, without changing gain."""
+        if profile is None or len(before_xs) != len(after_xs):
+            return profile
+        scale = scale or max((point.speed for point in profile.horizontal), default=1.0) or 1.0
+        updated = deepcopy(profile)
+        for axis_name in ("horizontal", "vertical"):
+            axis = getattr(updated, axis_name)
+            for index, (old_x, new_x) in enumerate(zip(before_xs, after_xs, strict=False)):
+                if index >= len(axis):
+                    continue
+                # Only move a profile point if this chart dot represents it. This leaves a
+                # differently sampled vertical axis alone instead of shifting the wrong point.
+                if abs(axis[index].speed / scale - old_x) <= 1e-5:
+                    axis[index] = replace(axis[index], speed=max(0.0, new_x * scale))
+            axis.sort(key=lambda point: point.speed)
+        return updated
+
+    @staticmethod
+    def _edit_hint(structural: bool, count: int) -> str:
+        """What to say after a chart edit, so the user knows what just happened to their curve."""
+        if structural:
+            return (
+                f"Point count changed: the curve now has {count} points. "
+                "Export curve to save the edited version."
+            )
+        return "Curve edited. Export curve to save the edited version."
+
+    def _on_curve_adjusted(self, points, xs=None):
         points = [float(v) for v in points]
-        baseline = self._chart_baseline or points
-        # The drag has already moved the chart points, so record the pre-drag baseline.
-        # A click that moved nothing is not a change, so it gets no history entry.
-        if baseline != points:
-            self._checkpoint(points=baseline)
-        xs = self.chart.x_positions()
+        xs = list(self.chart.x_positions() if xs is None else xs)
+        before = list(self._chart_baseline or points)  # the curve as it was
+        before_xs = list(self._chart_baseline_xs or [])
+        structure = self._pending_chart_structure
+        self._pending_chart_structure = None
+        structural = structure is not None or len(before) != len(points) or len(before_xs) != len(xs)
+        positions_changed = len(before_xs) == len(xs) and any(
+            abs(old_x - new_x) > 1e-8 for old_x, new_x in zip(before_xs, xs, strict=False)
+        )
+        baseline = before
+        if structural and len(before_xs) == len(before) and before:
+            # A point was added or deleted: compare at the chart's new x positions, so the change
+            # reaches the profile as "this speed region changed", not as a shifted curve.
+            baseline = [_lerp_factor(before_xs, before, x) for x in xs]
+        # A drag that moved nothing is not a change. Structural edits and horizontal motion need
+        # history too, even when the y values are unchanged.
+        if structural or positions_changed or baseline != points:
+            self._checkpoint(
+                points=before,
+                xs=before_xs or None,
+                baseline=before,
+                baseline_xs=before_xs or None,
+            )
         if self._profile is None:
             # No curve yet: treat the chart values as the curve's output-speed shape.
             try:
                 self._profile = recommendation_profile(
-                    {"points": list(zip(xs, points)), "sensitivity_multiplier": 1.0},
+                    {"points": list(zip(xs, points, strict=False)), "sensitivity_multiplier": 1.0},
                     max_speed=RECOMMENDATION_MAX_SPEED,
                 )
                 self._chart_scale = RECOMMENDATION_MAX_SPEED
             except CurveFormatError:
                 pass
         else:
-            self._profile = _apply_chart_edit(self._profile, baseline, points, xs=xs, scale=self._chart_scale)
+            old_profile = self._profile
+            self._profile = _apply_chart_edit(
+                old_profile, baseline, points, xs=xs, scale=self._chart_scale
+            )
+            if structure is not None:
+                self._profile = self._edit_profile_structure(
+                    self._profile, old_profile, before_xs, before, xs, points, structure
+                )
+            elif positions_changed:
+                self._profile = self._move_profile_speeds(
+                    self._profile, before_xs, xs, self._chart_scale
+                )
         self._chart_baseline = list(points)
-        self.hint.setText("Curve edited. Export curve to save the edited version.")
+        self._chart_baseline_xs = list(xs)
+        self.hint.setText(self._edit_hint(structural, len(points)))
+        self.curve_status.setText(f"Manually edited curve · {len(points)} control points.")
         self.profile_changed.emit({"points": points})
 
     def _import_curve(self):
@@ -1191,6 +1806,7 @@ class CalibrationPage(QWidget):
         self.base_profile_changed.emit(deepcopy(profile))
         xs, ys = _curve_points(chart_points(profile))
         self._set_chart(ys, xs=xs, scale=max((p.speed for p in profile.horizontal), default=1.0) or 1.0)
+        self.curve_status.setText(f"Imported curve · {len(profile.horizontal)} control points.")
         self.hint.setText(
             f"Imported {Path(path).name}. Run calibration to adjust it, or drag points to edit it."
         )
@@ -1202,6 +1818,9 @@ class CalibrationPage(QWidget):
         self._profile = deepcopy(current)
         prev_pts, cur_pts = normalized_overlay(previous, current)
         self._set_overlay(cur_pts, prev_pts, _shared_speed(previous, current))
+        self.curve_status.setText(
+            f"Adjusted curve preview · {len(current.horizontal)} control points."
+        )
         self.hint.setText(f"{note} Export curve to save it.")
 
     def _save(self):

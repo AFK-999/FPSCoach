@@ -7,15 +7,18 @@ active theme, while "stage" surfaces stay dark on purpose.
 """
 from __future__ import annotations
 
+import bisect
 from dataclasses import replace
 
 from PySide6.QtCore import QPointF, QRectF, QSettings, QSize, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QFontMetrics, QLinearGradient, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QBrush, QColor, QCursor, QFontMetrics, QLinearGradient, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QAbstractButton,
+    QComboBox,
     QFrame,
     QHBoxLayout,
     QLabel,
+    QMenu,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -66,6 +69,42 @@ def refresh_glyphs(root: QWidget) -> None:
     for widget in root.findChildren(QWidget):
         if widget.property("glyph"):
             _paint_glyph(widget)
+
+
+class ComboField(QComboBox):
+    """A combo box with a chevron drawn at its right edge.
+
+    The stylesheet restyles ``QComboBox::drop-down`` so the field ends flush on the right,
+    and on several styles that also removes Qt's own arrow: an editable box then reads as a
+    plain text field with no hint that a list is behind it. The chevron is painted here, in
+    the active theme's text colour, so every combo box shows the affordance in every theme.
+    """
+
+    ARROW_WIDTH = 22  # matches QComboBox::drop-down width in styles.py
+    ARROW_SIZE = 16
+
+    def arrow_colour(self) -> str:
+        """The theme's text colour, muted while the field is disabled."""
+        palette = active_palette()
+        return palette["text3"] if not self.isEnabled() else palette["text"]
+
+    def arrow_rect(self) -> QRectF:
+        """Where the chevron sits: centred in the drop-down strip on the right."""
+        size = float(self.ARROW_SIZE)
+        left = float(self.width() - self.ARROW_WIDTH) + (self.ARROW_WIDTH - size) / 2.0
+        top = (self.height() - size) / 2.0
+        return QRectF(left, top, size, size)
+
+    def paintEvent(self, event) -> None:  # noqa: N802 - Qt API
+        super().paintEvent(event)
+        self._paint_arrow()
+
+    def _paint_arrow(self) -> None:
+        chevron = pixmap("chevron_down", self.arrow_colour(), self.ARROW_SIZE)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        painter.drawPixmap(self.arrow_rect().topLeft(), chevron)
+        painter.end()
 
 
 def _settings() -> QSettings:
@@ -301,6 +340,9 @@ class CurveLegend(QWidget):
 
 
 HANDLE_DOT_LIMIT = 64  # up to this many handles are drawn as dots; more are still grabbable
+MIN_POINTS = 2  # a curve needs two points; the menu refuses to delete below this
+MAX_POINTS = 200  # past this a hand-edited curve is unreadable, so adding stops
+GRAB_DISTANCE = 14  # px: how close the pointer must be to grab a dot
 _HANDLE_RADIUS_FEW = 4.5
 _HANDLE_RADIUS_MANY = 3.0
 
@@ -320,14 +362,19 @@ class CurveChart(QWidget):
 
     The line runs through every point of the curve, at each point's own x position (``xs``, 0..1:
     speed over the curve's top speed), so nothing is resampled and any length or shape is shown.
-    The handles, the points a user can grab, are the bends the curve needs (see
-    curve_sampling.key_indices), so a straight run has two and a wiggly curve has many. Dragging a
-    handle moves it and scales the points between its neighbouring handles smoothly; the other
-    points stay put. Without ``xs`` the points are spaced evenly. The chart paints on the
-    surrounding card, so it has no fill of its own.
+    Every visible dot on the curve can be dragged. Short curves show a dot on every point; long
+    ones show up to 64 key bends (see curve_sampling.key_indices), evenly sampling them if there
+    are more, so the line stays readable. Drag vertically to change gain; drag an interior dot
+    horizontally to change speed (the endpoints stay at their original speed bounds). The values
+    between neighbouring bends follow the moved dot smoothly. A right-click on the plot offers
+    adding a point where you clicked and deleting the point under the pointer. Without ``xs`` the
+    points are spaced evenly. The chart paints on the surrounding card, so it has no fill of its own.
     """
 
-    curve_adjusted = Signal(list)
+    curve_adjusted = Signal(list)  # compatibility signal: the edited y values
+    curve_geometry_changed = Signal(list, list)  # y values and normalized x positions
+    # Operation, index in the resulting/old curve, normalized x location.
+    curve_structure_changed = Signal(str, int, float)
 
     def __init__(self, parent=None, editable: bool = True):
         super().__init__(parent)
@@ -339,8 +386,24 @@ class CurveChart(QWidget):
         self.previous_xs: list[float] | None = None
         self._drag_index = None
         self._drag_base = None
+        self._drag_x_base = None
+        self._drag_handles = None
+        self._hover_index = None
         self._editable = editable
         self.setMouseTracking(editable)
+
+    def set_editable(self, editable: bool) -> None:
+        """Toggle pointer editing while keeping the current curve visible."""
+        self._editable = bool(editable)
+        self.setMouseTracking(self._editable)
+        if not self._editable:
+            self._drag_index = None
+            self._drag_base = None
+            self._drag_x_base = None
+            self._drag_handles = None
+            self._hover_index = None
+            self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
+        self.update()
 
     @property
     def points(self):
@@ -382,8 +445,24 @@ class CurveChart(QWidget):
         return self._handles
 
     def handles_visible(self) -> bool:
-        """True when the handles are few enough to draw as dots."""
+        """True when every bend fits under the dot limit without sampling."""
         return 0 < len(self.handle_indices()) <= HANDLE_DOT_LIMIT
+
+    def dot_indices(self) -> list[int]:
+        """The points drawn as dots, and therefore the ones that can be grabbed.
+
+        A short curve gets a dot on every point: they are all editable, so hiding some of them
+        would just make the removable points look like they are not there. A long curve keeps
+        its dots at the bends, which is the only set that stays legible at that length.
+        """
+        if len(self._points) <= HANDLE_DOT_LIMIT:
+            return list(range(len(self._points)))
+        handles = self.handle_indices()
+        if len(handles) <= HANDLE_DOT_LIMIT:
+            return handles
+        # Keep even a very wiggly imported curve editable without painting hundreds of dots.
+        last = len(handles) - 1
+        return [handles[round(i * last / (HANDLE_DOT_LIMIT - 1))] for i in range(HANDLE_DOT_LIMIT)]
 
     def _plot_rect(self):
         return self.rect().adjusted(40, 16, -14, -30)
@@ -417,10 +496,11 @@ class CurveChart(QWidget):
                 p, rect, self.previous_points, QColor(pal["amber"]),
                 dashed=True, xs=_positions(self.previous_points, self.previous_xs),
             )
-        handles = self.handle_indices() if self.handles_visible() else []
+        dots = self.dot_indices()
         self._draw_curve(
             p, rect, self._points, QColor(pal["accent"]),
-            dots=bool(handles), fill=True, xs=self.x_positions(), handles=handles,
+            dots=bool(dots), fill=True, xs=self.x_positions(), handles=dots,
+            hovered=self._hover_index,
         )
         p.end()
 
@@ -428,7 +508,8 @@ class CurveChart(QWidget):
     def _pt(rect, x: float, v: float) -> QPointF:
         return QPointF(rect.left() + rect.width() * x, rect.bottom() - rect.height() * v)
 
-    def _draw_curve(self, p, rect, points, color, dots=False, dashed=False, fill=False, xs=None, handles=()):
+    def _draw_curve(self, p, rect, points, color, dots=False, dashed=False, fill=False, xs=None,
+                    handles=(), hovered=None):
         n = len(points)
         if n < 2:
             return
@@ -467,49 +548,133 @@ class CurveChart(QWidget):
             p.setPen(QPen(color, 1.5))
             p.setBrush(QBrush(base))
             for i in handles:
+                if i == hovered:
+                    # The dot under the pointer fills in, so it is obvious what a drag will take.
+                    p.setBrush(QBrush(color))
+                    p.drawEllipse(self._pt(rect, xs[i], points[i]), radius + 1.5, radius + 1.5)
+                    p.setBrush(QBrush(base))
+                    continue
                 p.drawEllipse(self._pt(rect, xs[i], points[i]), radius, radius)
 
-    def _handle_at(self, pos) -> int | None:
-        """The nearest handle within 14 px of ``pos``, or None."""
+    def _point_at(self, pos) -> int | None:
+        """The nearest draggable dot within GRAB_DISTANCE px of ``pos``, or None."""
         rect = self._plot_rect()
         xs = self.x_positions()
-        best, best_distance = None, 14
-        for i in self.handle_indices():
+        best, best_distance = None, GRAB_DISTANCE
+        for i in self.dot_indices():
             distance = (pos - self._pt(rect, xs[i], self._points[i]).toPoint()).manhattanLength()
             if distance < best_distance:
                 best, best_distance = i, distance
         return best
 
+    def _handle_at(self, pos) -> int | None:
+        """Alias of _point_at, kept because older callers used the handle name."""
+        return self._point_at(pos)
+
+    def value_at(self, pos) -> tuple[float, float] | None:
+        """(x, value) under ``pos`` in 0..1, or None when the pointer is outside the plot."""
+        rect = self._plot_rect()
+        # A px of slack: a click on the very edge of the plot lands one pixel outside the rect
+        # after rounding, and "the top of the graph" is exactly where a point at 1.0 is drawn.
+        if not rect.adjusted(-1, -1, 1, 1).contains(pos) or rect.width() <= 0 or rect.height() <= 0:
+            return None
+        x = (pos.x() - rect.left()) / rect.width()
+        value = 1.0 - (pos.y() - rect.top()) / rect.height()
+        return min(1.0, max(0.0, x)), min(1.0, max(0.0, value))
+
     def mousePressEvent(self, event):
         if not self._editable:
             return
-        self._drag_index = self._handle_at(event.position().toPoint())
-        self._drag_base = list(self._points) if self._drag_index is not None else None
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
+        self._drag_index = self._point_at(event.position().toPoint())
+        if self._drag_index is None:
+            self._drag_base = None
+            self._drag_x_base = None
+            self._drag_handles = None
+            return
+        self._drag_base = list(self._points)
+        self._drag_x_base = self.x_positions()
+        self._drag_handles = list(self.handle_indices())
+        shape = (
+            Qt.CursorShape.SizeVerCursor
+            if self._drag_index in {0, len(self._points) - 1}
+            else Qt.CursorShape.SizeAllCursor
+        )
+        self.setCursor(QCursor(shape))
 
     def mouseMoveEvent(self, event):
+        if not self._editable:
+            return
         if self._drag_index is None or self._drag_base is None:
+            self._update_hover(event.position().toPoint())
             return
         rect = self._plot_rect()
         v = 1.0 - (event.position().y() - rect.top()) / max(rect.height(), 1)
         v = min(max(v, 0.0), 1.0)
-        self._move_handle(self._drag_index, v)
+        base_xs = self._drag_x_base or self.x_positions()
+        index = self._drag_index
+        if index == 0 or index == len(base_xs) - 1:
+            # Keep the ends pinned to their original speed bounds; interior points can move on x.
+            x = base_xs[index]
+        else:
+            x = (event.position().x() - rect.left()) / max(rect.width(), 1)
+            x = min(max(x, base_xs[index - 1]), base_xs[index + 1])
+            x = min(max(x, 0.0), 1.0)
+        self._move_handle(index, v)
+        moved_xs = list(base_xs)
+        moved_xs[index] = x
+        self._xs = moved_xs  # explicit positions; leave the cached handles stable during a drag
         self.update()
 
-    def _move_handle(self, index: int, value: float) -> None:
-        """Set handle ``index`` to ``value``. Points between handles follow it smoothly.
+    def _update_hover(self, pos) -> None:
+        """Fill in the dot under the pointer and show a move cursor over it."""
+        index = self._point_at(pos) if self._editable else None
+        if index == self._hover_index:
+            return
+        self._hover_index = index
+        if index is None:
+            shape = Qt.CursorShape.ArrowCursor
+        elif index in {0, len(self._points) - 1}:
+            shape = Qt.CursorShape.SizeVerCursor
+        else:
+            shape = Qt.CursorShape.SizeAllCursor
+        self.setCursor(QCursor(shape))
+        self.update()
 
-        Works from the curve as it was at the press, so repeated moves do not compound. A handle
-        at zero gain cannot be moved by a ratio, so it stays put.
+    def leaveEvent(self, event):  # noqa: N802 - Qt API
+        if self._hover_index is not None:
+            self._hover_index = None
+            self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
+            self.update()
+
+    def _move_handle(self, index: int, value: float, handles=None) -> None:
+        """Set point ``index`` to ``value``. Points between bends follow it smoothly.
+
+        Works from the curve as it was at the press, so repeated moves do not compound. A zero-gain
+        dot uses a smooth additive offset (a ratio would leave zero stuck at zero). ``handles``
+        defaults to the curve's bends plus the point being dragged, so a dot that is not a bend moves.
         """
         base = self._drag_base
+        if base is None:
+            return
         old = base[index]
-        factor = value / old if old > 1e-6 else 1.0
-        handles = self.handle_indices()
-        xs = self.x_positions()
+        if handles is None:
+            handles = self._drag_handles if self._drag_handles is not None else self.handle_indices()
+        if index not in handles:
+            handles = sorted({*handles, index})
+        xs = self._drag_x_base or self.x_positions()
         handle_xs = [xs[i] for i in handles]
+        if old <= 1e-6:
+            handle_offsets = [0.0] * len(handles)
+            handle_offsets[handles.index(index)] = value - old
+            for i, (point, x) in enumerate(zip(base, xs, strict=False)):
+                adjusted = point + _lerp_factor(handle_xs, handle_offsets, x)
+                self._points[i] = min(1.0, max(0.0, adjusted))
+            return
         handle_factors = [1.0] * len(handles)
-        handle_factors[handles.index(index)] = factor
-        for i, (point, x) in enumerate(zip(base, xs)):
+        handle_factors[handles.index(index)] = value / old
+        for i, (point, x) in enumerate(zip(base, xs, strict=False)):
             scaled = point * _lerp_factor(handle_xs, handle_factors, x)
             self._points[i] = min(1.0, max(0.0, scaled))
 
@@ -517,7 +682,108 @@ class CurveChart(QWidget):
         if self._drag_index is not None:
             self._drag_index = None
             self._drag_base = None
-            self.curve_adjusted.emit(list(self._points))
+            self._drag_x_base = None
+            self._drag_handles = None
+            self._handles = None
+            if self._hover_index is None:
+                self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
+            values = list(self._points)
+            self.curve_geometry_changed.emit(values, self.x_positions())
+            self.curve_adjusted.emit(values)
+
+    # -- adding and removing points -------------------------------------------
+
+    def add_point(self, pos) -> int | None:
+        """Insert a point at ``pos``. Returns its index, or None when it cannot go there.
+
+        The click sets both the speed (x) and the gain (value) of the new point, so a point can be
+        put exactly where the curve needs one rather than only near where a dot happens to be.
+        The x positions become explicit: an evenly spaced curve gains a point and keeps every
+        other point where it was.
+        """
+        if not self._editable or len(self._points) >= MAX_POINTS:
+            return None
+        spot = self.value_at(pos)
+        if spot is None:
+            return None
+        x, value = spot
+        xs = self.x_positions()
+        points = list(self._points)
+        index = bisect.bisect_right(xs, x)
+        xs.insert(index, x)
+        points.insert(index, value)
+        self._xs = xs
+        self.points = points  # the setter drops the cached handles
+        self._hover_index = index
+        self.update()
+        self.curve_structure_changed.emit("add", index, x)
+        values = list(self._points)
+        self.curve_geometry_changed.emit(values, self.x_positions())
+        self.curve_adjusted.emit(values)
+        return index
+
+    def remove_point(self, index: int | None = None, pos=None) -> bool:
+        """Delete a point. ``index`` wins; otherwise the dot under ``pos`` is used.
+
+        Refuses to go below MIN_POINTS: a curve needs two ends, and the page can still Undo.
+        """
+        if not self._editable:
+            return False
+        if index is None:
+            index = self._point_at(pos) if pos is not None else None
+        if index is None or not 0 <= index < len(self._points):
+            return False
+        if len(self._points) <= MIN_POINTS:
+            return False
+        xs = self.x_positions()
+        deleted_x = xs[index]
+        points = list(self._points)
+        del xs[index]
+        del points[index]
+        self._xs = xs if len(xs) == len(points) else None
+        self.points = points
+        self._hover_index = None
+        self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
+        self.update()
+        self.curve_structure_changed.emit("delete", index, deleted_x)
+        values = list(self._points)
+        self.curve_geometry_changed.emit(values, self.x_positions())
+        self.curve_adjusted.emit(values)
+        return True
+
+    def build_menu(self, pos) -> QMenu:
+        """The right-click menu for ``pos``, with the actions this position allows."""
+        menu = QMenu(self)
+        palette = active_palette()
+        menu.setStyleSheet(
+            f"QMenu {{ background: {palette['surface2']}; color: {palette['text']}; "
+            f"border: 1px solid {palette['line2']}; padding: 4px; }}"
+            "QMenu::item { padding: 7px 16px; border-radius: 4px; }"
+            f"QMenu::item:selected {{ background: {palette['raised']}; }}"
+            f"QMenu::item:disabled {{ color: {palette['text3']}; }}"
+            f"QMenu::separator {{ height: 1px; background: {palette['line']}; margin: 4px 8px; }}"
+        )
+        index = self._point_at(pos)
+        inside = self.value_at(pos) is not None
+
+        add = menu.addAction("Add point here")
+        add.setEnabled(self._editable and bool(inside) and len(self._points) < MAX_POINTS)
+        add.setToolTip("Place a point at that speed and gain")
+        menu.addSeparator()
+        remove = menu.addAction("Delete point")
+        remove.setEnabled(self._editable and index is not None and len(self._points) > MIN_POINTS)
+        remove.setToolTip("Delete the point under the pointer")
+
+        add.triggered.connect(lambda: self.add_point(pos))
+        remove.triggered.connect(lambda: self.remove_point(index, pos=pos))
+        return menu
+
+    def contextMenuEvent(self, event):  # noqa: N802 - Qt API
+        if not self._editable:
+            return
+        menu = self.build_menu(event.pos())
+        menu.exec(event.globalPos())
+        menu.deleteLater()
 
 
 def _curve_samples(points, count: int = 5) -> list[float]:
@@ -579,15 +845,24 @@ def _apply_chart_edit(profile, baseline: list[float], edited: list[float], xs=No
     """
     xs = _positions(edited, xs)
     factors = [(e / b) if b > 1e-6 else 1.0 for e, b in zip(edited, baseline)]
+    zero_offsets = [(e - b) if b <= 1e-6 else 0.0 for e, b in zip(edited, baseline, strict=False)]
+    chart_gain = max(baseline, default=0.0)
 
     def scaled(points):
         if not points:
             return points
         top = scale or (max((p.speed for p in points), default=1.0) or 1.0)
-        return [
-            replace(p, multiplier=max(0.05, min(20.0, p.multiplier * _lerp_factor(xs, factors, min(1.0, p.speed / top)))))
-            for p in points
-        ]
+        gain_scale = (max((p.multiplier for p in points), default=1.0) / chart_gain
+                      if chart_gain > 1e-6 else 1.0)
+        updated = []
+        for point in points:
+            x = min(1.0, point.speed / top)
+            multiplier = (
+                point.multiplier * _lerp_factor(xs, factors, x)
+                + _lerp_factor(xs, zero_offsets, x) * gain_scale
+            )
+            updated.append(replace(point, multiplier=max(0.05, min(20.0, multiplier))))
+        return updated
 
     return replace(profile, horizontal=scaled(profile.horizontal), vertical=scaled(profile.vertical))
 

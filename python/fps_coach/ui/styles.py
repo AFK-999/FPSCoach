@@ -134,6 +134,9 @@ QFrame#tile {
     background: $surface; border: 1px solid $line; border-radius: 10px;
 }
 QFrame#tile:hover { border-color: $line2; }
+QFrame#advancedSection {
+    background: transparent; border: none; border-top: 1px solid $line; border-radius: 0;
+}
 QFrame#stage {
     background: $stage_bg; border: 1px solid $line; border-radius: 10px;
 }
@@ -227,6 +230,8 @@ QLineEdit, QComboBox {
 QLineEdit:focus, QComboBox:focus { border-color: $accent; }
 QLineEdit:disabled, QComboBox:disabled { color: $text3; }
 QComboBox::drop-down { border: none; width: 22px; }
+/* The chevron is drawn by widgets.ComboField, so the style must not add its own. */
+QComboBox::down-arrow { image: none; width: 0; height: 0; }
 QComboBox QAbstractItemView {
     background: $surface2; border: 1px solid $line2; padding: 4px; outline: 0;
     selection-background-color: $accent_soft; selection-color: $text;

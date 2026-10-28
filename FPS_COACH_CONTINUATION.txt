@@ -1,15 +1,222 @@
 ================================================================================
 FPS COACH — CONTINUATION / HANDOFF DOCUMENT
 Copy-paste this whole file into a new agent chat to resume with zero context loss.
-Last updated: 2026-10-23 (rev 71)  (update after EVERY response)
+Last updated: 2026-10-28 (rev 90)  (update after EVERY response)
 
-*** IMPORTANT (rev4): The REAL repo was provided and differs a lot from the
-*** earlier scaffold. Work on the REAL repo at /home/user/workspace/FPSCoach
-*** (cloned from https://github.com/AFK-999/FPSCoach.git). The scaffold under
-*** /home/user/workspace/{src,config,installer,scripts} is NOT the project.
-*** Real layout: python/fps_coach/ (ai_chat.py uses STDLIB urllib, not requests),
-*** native/ C++ core + CMakeLists.txt, batch files at repo root, scripts/*.ps1.
-*** There is NO config/ai_profile.toml, NO installer/ folder, NO build.bat yet.
+*** IMPORTANT: Work on the real repository at /home/user/FPSCoach
+*** (https://github.com/AFK-999/FPSCoach.git), branch rev72-screen-recorder-tool.
+*** Older scaffold paths and plans below are historical; do not substitute them
+*** for the files in this working tree. Current layout includes python/fps_coach/,
+*** native/ C++ core + CMakeLists.txt, batch files at repo root, and scripts/*.ps1.
+  2026-10-23 (rev77)  FIX: NATIVE C++ CORE IS OPTIONAL (LNK2001 ON WINDOWS).
+              - CMakeLists.txt: FPSCOACH_SKIP_NATIVE guard (no targets built, compiler-free install),
+                project(... LANGUAGES NONE) + enable_language(CXX) in the build branch, plain if()/else()
+                instead of a top-level return() (needs CMake 3.29, floor is 3.23), and Python::Module linked
+                explicitly into fpscoach_native -> fixes "LNK2001 unresolved external symbol __imp__Py...".
+              - tests/test_cmake_native_optional.py (new, 5): text-level guards, incl. the configure-time warning when
+                find_package(Python) resolves no import library (the root cause of the 149 symbols);
+                verified to fail on a LANGUAGES CXX regression.
+              - README (LNK2001 troubleshooting + three remedies, incl. py -3.12), docs/build-and-packaging.md
+                (new "Installing without the native core"), docs/screen-recorder-tool.md (pointer to the var).
+              - VERIFICATION (sandbox, Linux): skip=1 configures with a bogus compiler, wheel has no native
+                binaries, editable install + MainWindow carry the fallback analyzer; skip=0 builds the analysis
+                core and ctest passes; pytest 455 passed, 5 skipped; ruff clean on the new test.
+
+  2026-10-23 (rev78)  FIX: LIVE CAPTURE PREVIEW WITHOUT THE NATIVE CORE.
+              - python/fps_coach/python_capture.py (new): mss-backed PythonDesktopCapture with the native
+                object's interface + plan_region() preset semantics; guarded mss import, 60 FPS cap.
+              - backend.py: native -> Python capture -> None selection, uses_python_capture, capture_error,
+                outputs() cannot raise on a headless session.
+              - ui/pages_setup.py: live_source_note under the Source card, GPU checkbox disabled without
+                the native core.
+              - tests/test_python_capture.py (new, 20): fake-sct tests, no display touched.
+              - README / docs/architecture.md / pyproject: three capture tiers documented.
+              - VERIFICATION: pytest 476 passed, 5 skipped; offscreen MainWindow capture run painted frames
+                at 60 FPS through the Python path.
+
+  2026-10-23 (rev79)  FEATURE: LIVE VISION - THE COACH READS THE CAPTURE PREVIEW.
+              - python/fps_coach/visual_coach.py (new): frame signature/delta, JPEG encoder with a Qt
+                fallback, and LiveVisionSession (newest-frame loop, change skipping, backoff, ask_now).
+              - ai_chat.py: images= on chat() (Ollama base64 / OpenAI image_url), VISION_SYSTEM_PROMPT,
+                model_supports_images().
+              - ui: "Live vision" card in AI Coach (toggle off at launch, Look now, thumbnail of the exact
+                frame sent, vision-model warning), _LiveVisionThread, "eye" glyph, privacy copy.
+              - tests: test_visual_coach.py (29) + test_vision_payloads.py (21).
+              - VERIFICATION: pytest 526 passed, 5 skipped; offscreen end-to-end with a fake vision model.
+
+  2026-10-23 (rev80)  FEATURE: REAL-TIME WATCHING - THE COACH SEES A MOVING CLIP.
+              - visual_coach.motion_report(): change level + which third of the frame moved.
+              - LiveVisionSession collects ordered windows (clip length / sample interval), adaptive idle
+                skipping, payload cap, richer counters; nothing queued.
+              - prompts describe the clip and its motion; page shows a 4-frame filmstrip + motion meter and
+                gained Clip length / Sample every controls.
+              - privacy copy: clips held in memory only.
+              - VERIFICATION: pytest 536 passed, 5 skipped; offscreen end-to-end with a fake vision model.
+
+  2026-10-23 (rev81)  IMPROVEMENT: TIMESTAMPED FRAMES + QWEN3-VL AS THE RECOMMENDED MODEL.
+              - prompts carry "Frame times, oldest first: 0.0 s, 0.5 s, …" (Ollama has no temporal
+                position ids for images).
+              - suggested_vision_models(): qwen3-vl:8b first (trained on timestamp+frame input;
+                llama.cpp frame-merge turns consecutive frames into a video block).
+              - card note names qwen3-vl:8b and nudges users of non-qwen vision models.
+              - VERIFICATION: pytest 540 passed, 5 skipped.
+
+  2026-10-23 (rev82)  UI: LIVE VISION IS OPT-IN (Settings toggle hides the panel).
+              - "Enable live vision" checkbox in the AI Coach Settings block; the middle card is hidden
+                unless it is on, and hiding it stops any running watch.
+              - The panel's own Watch live switch is still off at every launch.
+              - tests +3; full suite 543 passed, 5 skipped.
+
+  2026-10-23 (rev83)  UI: IN-GAME MODE MOVED INTO SETTINGS > ADVANCED.
+              - _build_ingame_card(embedded=True) renders it as a section (no nested card frame);
+                advanced_body holds it and starts collapsed.
+              - tests +2 (placement + mode still works from inside Advanced).
+              - VERIFICATION: pytest 545 passed, 5 skipped.
+
+  2026-10-28 (rev84 - WITHDRAWN)  Loud mode (post-synthesis gain) was added and then removed at
+              the user's request ("completely revert and remove the previously applied patch titled
+              'Loud Mode Boost Spoken Replies'"). No trace of it remains in the code: git history on
+              the branch was reset to rev83, tests/test_tts_loudness.py and the rev84 patch file are
+              gone. Do not re-add it unless asked again.
+
+  2026-10-28 (rev85)  SPEECH VOLUME: EXPLICIT 100% DEFAULT + WINDOWS GUIDANCE NOTE.
+              - ui/pages_coach: VOLUME_DEFAULT / VOLUME_KEY module constants; the volume slider is
+                explicitly set to VOLUME_DEFAULT (a bare QSlider starts at its 0% minimum) and
+                AIChatPage.ensure_volume_default() writes tts/volume=100 once when the key has never
+                been stored. A stored value - including 0 (muted) - is never overwritten; a corrupt
+                value falls back to 100 instead of silencing the coach.
+              - Settings > Voice: new volume_note under "Speak responses aloud" saying the app already
+                asks for 100% and pointing at Windows Settings > System > Sound > Volume, Volume mixer
+                (lift Vantage above the game) and Sound > More sound settings > Communications >
+                "Do nothing" (so Windows stops ducking audio). Tooltip points back at the in-app slider.
+              - docs/architecture.md "Spoken replies: volume default and guidance (rev85)".
+              - tests: tests/test_voice_volume_guidance.py, 14 tests.
+              - VERIFICATION: pytest 562 passed, 2 skipped (5 skipped without pyttsx3 installed).
+
+  2026-10-28 (rev86)  SETTINGS: THE "REPLIES" CARD IS REMOVED (it duplicated the AI Coach tab).
+              - ui/pages_coach SettingsPage: _build_replies_card() deleted and dropped from the right
+                column; SettingsPage.stop_speaking_requested and SettingsPage.text_size_changed deleted
+                (they existed only for that card). A comment marks where it used to be.
+              - AIChatPage: replies_changed and set_text_size() removed (they only fed the duplicate);
+                the read-aloud tooltip now says "Settings > Voice" instead of "Settings > Replies".
+              - main_window: the three connections and _on_reply_text_size() removed; the read-aloud
+                handler now calls settings_page.refresh_voice_state().
+              - SettingsPage.refresh_replies() -> refresh_voice_state(): syncs only the Voice card's
+                "Speak responses aloud" box, which still shares ui/tts_enabled with the chat.
+              - tests/test_settings_replies.py rewritten (18 tests): the four controls and two signals
+                are gone, no "Replies" heading remains, the AI Coach tab still has read aloud / stop /
+                text size, and the shared read-aloud value still stays in step both ways.
+              - VERIFICATION: pytest 567 passed, 2 skipped.
+
+  2026-10-28 (rev87)  SETTINGS: THE MODEL FIELD IS A DROPDOWN YOU CAN RE-PICK FROM.
+              - User: "investigate the settings module, specifically the models section ... implement a
+                solution that allows me to reselect a model from a list if its name was accidentally
+                removed, avoiding the need to manually type it in".
+              - ai_chat.list_models(base_url, provider, api_key="", timeout=6.0): Ollama /api/tags, or an
+                OpenAI-compatible /models (Bearer only when a key is given). Lenient parsing via
+                _names_from_tags / _names_from_models (_unique_names: strip, drop blanks, case-insensitive
+                dedupe, sorted); _models_endpoint handles base URLs with/without /v1 or /chat/completions.
+                suggested_text_models() = qwen3:1.7b, phi4-mini, qwen3:4b, llama3.2:3b, qwen2.5:7b,
+                mistral:7b (names to offer, NOT a claim that they are installed).
+              - ui/threads.py: _ModelListThread(base_url, provider, api_key) -> models_ready(list) / failed(str).
+              - ui/pages_coach SettingsPage: self.model is an editable QComboBox (placeholder "Pick a model,
+                or type one"). Items come from the saved ai/model, then the cached ai/model_list, then the
+                suggestions; each item's data is {"name", "source"} so "(suggested, not installed)" labels
+                still save the plain name. Picking saves at once (textActivated); typing still commits on
+                editingFinished. New refresh QToolButton (glyph "refresh") calls _list_models(); showEvent
+                probes once when nothing is cached; model_hint explains counts and the current pick;
+                status_label reports "Found N model(s) or the failure. SettingsPage.shutdown() waits for the
+                thread and MainWindow.closeEvent calls it.
+              - tests/test_model_picker.py (34 tests): parsing, endpoints, a real loopback HTTP server for
+                both provider shapes (incl. 401 and unreachable), the thread, and the card - including the
+                exact case the user described (ai/model cleared, names still listable and re-pickable).
+              - VERIFICATION: pytest 601 passed, 2 skipped. Screenshots: settings-model-list.png and
+                settings-model-dropdown.png (served by a fake Ollama on 127.0.0.1:11434).
+              - KNOWN, NOT FIXED (pre-existing, unrelated to this change): the Settings provider combo
+                stores "openai-compatible" but ai_chat.chat() only understands "openai", so choosing the
+                online provider breaks chat with "Unknown AI provider selection". list_models() maps the
+                label correctly; the chat path was left alone because it was not part of this request.
+
+  2026-10-28 (rev88)  UI: EVERY COMBO BOX NOW SHOWS A CHEVRON ("dropdown arrow").
+              - User: "add a visual indicator, such as a dropdown arrow icon, to the far right of the text
+                box in the models dropdown menu ... clear to users that a dropdown menu is available".
+              - Cause: styles.py sets QComboBox::drop-down (borderless, width 22px) with no down-arrow rule,
+                which on these styles removes Qt's own arrow. Every combo looked like a text field; the
+                editable Model field looked exactly like one.
+              - widgets.ComboField(QComboBox): paints the "chevron_down" glyph in paintEvent, centred in the
+                reserved 22px strip (ARROW_WIDTH/ARROW_SIZE), coloured from active_palette()["text"]
+                ("text3" when disabled), so it follows theme switches with no registration step.
+              - styles.py: QComboBox::down-arrow { image: none; width: 0; height: 0; } so no second arrow.
+              - All 15 QComboBox() call sites are now ComboField(): pages_coach (6), pages_setup (6),
+                pages_practice (3). Unused QComboBox imports removed where they became unused.
+              - tests/test_combo_arrow.py (14): geometry, the arrow is painted and only inside the strip,
+                theme/disabled colours, the stylesheet rule, the ARROW_WIDTH/strip agreement, and an AST
+                check that no page builds a bare QComboBox().
+              - VERIFICATION: pytest 615 passed, 2 skipped. Screenshots: combo-arrow-model.png,
+                combo-arrow-provider.png, settings-model-list.png, settings-model-dropdown.png.
+
+  2026-10-28 (rev89)  CALIBRATION: EDITABLE GRAPH + 1,000 HZ SAMPLING TARGET.
+              - User: "Modify the graph in the application's calibration tab to allow users to drag and
+                move existing dots. Also, implement a right-click context menu that includes options to
+                manually add and delete dots on the graph."
+              - `widgets.CurveChart`: every point is shown as a draggable dot on curves up to 64 points;
+                longer curves show up to 64 key bends, sampled evenly if there are more. Drag vertically
+                to change gain; interior dots can also move horizontally to change speed, clamped between
+                neighbors. Endpoints remain
+                at their original speed positions. Zero-gain dots use an additive drag path, not a ratio
+                that would leave them stuck at zero. The cursor and hover state make dots discoverable.
+              - Right-click uses a theme-aware context menu with **Add point here** (inside plot, up to
+                200 points) and **Delete point** (on a dot only; minimum two points).
+              - `curve_geometry_changed` carries y + x data. CalibrationPage mirrors point additions and
+                deletions into the matching horizontal/vertical exported profile, updates speed positions,
+                and records complete Undo/Redo snapshots. Read-only preview charts are untouched.
+              - Calibration sample selector: 125, 250, 500, and 1,000 Hz (default 1,000), saved as
+                `calibration/sample_hz`. At 1,000 Hz the precise Qt timer interval is 1 ms; redraws are
+                throttled separately to about 60 Hz. This is a target cadence, not a promised achieved rate;
+                the tooltip says OS/Qt scheduling or load can reduce it. Mouse-move events are also recorded.
+              - Native and Python fallback analyzer trial caps are 65,536 samples; native and fallback tests
+                exercise 12-second 1,000 Hz trials beyond the old 8,192-sample limit.
+              - `tests/test_calibration_chart_edit.py` (37): short/long point visibility, non-bend drag,
+                vertical and horizontal movement, endpoint limits, zero-gain editing, add/delete/menu
+                availability, exportable profile structure, and Undo. `tests/test_calibration_sample_rate.py`
+                (9): supported rates, precise intervals, persistence, session retuning, repaint throttling,
+                fallback retention, and strict sample-cap endpoint handling.
+              - README and docs/architecture.md updated; screenshot:
+                `/home/user/deliverables/screenshots/calibration-graph-point-menu.png`.
+              - VERIFICATION: full pytest output 658 passed, 5 skipped; pytest exits 139 from a PySide6/Qt
+                shutdown segfault after the summary, also reproduced on untouched rev88 (612 passed, 5
+                skipped). Focused rev89 tests exit cleanly (46 passed). Native C++ movement test compiled
+                with g++ and passed; `ruff` passes on both new calibration test files.
+
+  2026-10-28 (rev90)  CALIBRATION: CURVES FROM CAPTURED MOVEMENT + VISUAL AI CURVE PREVIEWS.
+              - Native and Python fallback analyzers now retain accepted-trial cursor-speed samples,
+                derive curve x-positions from measured speed quantiles, and scale control-point count by
+                sample count (`ceil(log2(n + 1)) + 1`, 2–32 points; duplicate x-values omitted). The
+                graph starts empty and refreshes after each accepted target; completion is one Undo step,
+                cancel restores the pre-session curve, and user edits are locked during the live estimate.
+              - AI Coach's adjacent Curve tuning chart shows the complete calibrated/imported curve and
+                visual before/after overlays for calibration suggestions and supported AI directives. It
+                preserves every source point; an explicit Send to calibration button is required. User
+                bubbles align right, coach bubbles left, HTML is escaped, and transcript colors are
+                re-rendered when the theme changes. Parser-only [ADJUST: ...] tags are hidden from the
+                visible reply and read-aloud output.
+              - Privacy copy now describes cursor sampling accurately (no screen frames; raw timestamped
+                samples are transient/local; aggregate speed samples stay local; text AI requests may
+                include summary and up to 32 active horizontal curve points). README, architecture, and
+                docs/PRIVACY.md updated; privacy policy duplicate content removed.
+              - Tests added/updated: `test_calibration_live_curve.py`, `test_ai_coach_curve_preview.py`,
+                fallback/native recommendations, sample-rate tests, coach focus/bubble tests.
+              - VERIFICATION: focused suite 127 passed (pytest tool reported exit -1 after summary);
+                full suite 671 passed, 5 skipped (tool again reported exit -1 after summary; Qt teardown
+                has a known nonzero exit on this environment, previously reproduced on pristine rev88);
+                direct g++ native movement-analyzer test passed. Ruff on touched Python files reports only
+                the 11 pre-existing import/annotation/zip warnings; new tests pass Ruff. Screenshots:
+                `deliverables/screenshots/ai-coach-curve-preview-rev90.png` and
+                `deliverables/screenshots/calibration-live-data-curve-rev90.png`.
+              - Release artifacts: `deliverables/FPSCoach-rev90.zip` and
+                `deliverables/FPSCoach-rev90.patch`. The ZIP includes the updated repository, the
+                ordered patch series, a combined upstream diff, screenshots, and application instructions.
+
 ================================================================================
 
 --------------------------------------------------------------------------------
@@ -46,30 +253,18 @@ shooter players.
 --------------------------------------------------------------------------------
 3. CURRENT TASK (what we are building now)
 --------------------------------------------------------------------------------
-Produce TWO distinct build packages, plus backend hardening and AI preconfig.
+The active request, rev90, is complete. Calibration now builds adaptive sensitivity curves from
+accepted desktop-cursor movement samples, updates the graph after each completed target, and chooses
+the point count/positions from the captured speed distribution. AI Coach displays complete curve
+proposals visually in its adjacent tuning panel; proposals require an explicit send action. Chat
+bubbles are on opposite sides, with theme-aware rendering. Rev89's draggable dots, right-click add/
+delete, Undo/Redo, 125/250/500/1,000 Hz target sampling, and honest cadence wording remain intact.
 
-  TASK A — Two build packages:
-    A1. "Lite" / foundation build:
-        - Ships WITHOUT any AI models or Ollama runtime.
-        - User installs Ollama themselves and downloads models themselves.
-        - App detects Ollama + models at runtime and guides the user if missing.
-    A2. "Full" build:
-        - Embeds the Ollama runtime AND Qwen 3 1.7B model weights in the installer.
-        - AI is fully functional out of the box, no manual setup.
-
-  TASK B — Environment self-repair (backend):
-        - On startup, backend checks the local environment.
-        - If the project folder was MOVED or RENAMED, auto-repair the install
-          (re-point the editable install / fix path references) before running.
-
-  TASK C — AI chat preconfiguration:
-        - A dedicated configuration section to purposefully import
-          instructions + recommendations into the AI chat interface.
-        - Goal: the assistant is pre-configured (system prompt / persona /
-          domain guidance) to effectively fulfill its FPS-coaching role.
+The older Lite/Full installer, environment self-repair, and AI preconfiguration plan in section 4 is
+historical context, not the active request. Continue from rev90 when the user provides the next change.
 
 --------------------------------------------------------------------------------
-4. IMPLEMENTATION PLAN / SPEC (ready for whoever has the real files)
+4. ORIGINAL IMPLEMENTATION PLAN (historical; not the active request)
 --------------------------------------------------------------------------------
 
 4.A  BUILD PACKAGES
@@ -142,9 +337,446 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
 7. WHERE WE LEFT OFF  (read me first)
 --------------------------------------------------------------------------------
   REPO (the only source of truth):
-    /home/user/workspace/FPSCoach   (clone of https://github.com/AFK-999/FPSCoach.git)
-    Remote origin/main = e9e69a2   (the visual REDESIGN; based on 04e6b0f)
-    Working branch     = fix/redesign-backend-wiring (from e9e69a2), NOT pushed.
+    /home/user/FPSCoach   (working clone of https://github.com/AFK-999/FPSCoach.git)
+    Working branch     = rev72-screen-recorder-tool. No remote is configured in this workspace;
+                         revisions are committed locally and delivered as replayable patches.
+    REV90 STATUS: Rev89 plus adaptive curves derived from live captured cursor movement, full-point
+    AI curve previews, and opposite-side chat bubbles.
+    Requested: "generate sensitivity curve based on real-time analysis of the captured user input ...
+    adapt the graph dot count ... AI Coach ... display ... adjustments/recommendations ... as visuals ...
+    keep user and coach messages opposite sides."
+      - Accepted target movement speeds are retained locally. Native and fallback analyzers derive x
+        positions from empirical speed quantiles; requested control-point count is
+        ceil(log2(speed_sample_count + 1)) + 1, clamped 2–32, with duplicate x positions removed.
+      - Calibration graph starts empty and refreshes after each target. It is read-only while provisional;
+        completion becomes one Undo step, cancel restores the old curve, and final points are editable/exportable.
+      - AI Coach displays full calibrated/imported curves and before/after previews for supported AI curve
+        recommendations in the adjacent panel. The proposal is not sent to Calibration until clicked.
+        It does not apply anything to the game. User bubble right; Coach left; HTML is escaped and theme
+        changes re-render stored transcript. Parser-only adjustment tags are omitted from visible/spoken text.
+      - Privacy, README, and architecture docs updated; `docs/PRIVACY.md` was de-duplicated and now
+        distinguishes transient cursor samples from locally retained speed metrics and AI context.
+      - Focused suite: 127 passed, tool exit -1 after summary. Full suite: 671 passed, 5 skipped, tool
+        exit -1 after summary (known Qt teardown issue also reproduced against untouched rev88).
+        Direct g++ native analyzer test passed. Ruff: new tests clean; touched Python has 11 pre-existing
+        import/annotation/zip warnings.
+      - Screenshots: `deliverables/screenshots/ai-coach-curve-preview-rev90.png` and
+        `deliverables/screenshots/calibration-live-data-curve-rev90.png`.
+      - Release files: `deliverables/FPSCoach-rev90.patch` (incremental from rev89) and
+        `deliverables/FPSCoach-rev90.zip` (updated repository and full ordered patch series).
+
+    REV89 STATUS (previous release): Rev88 plus editable Calibration sensitivity-curve points and a
+    persistent 1,000 Hz cursor-sampling target (choices: 125, 250, 500, 1,000 Hz; default 1,000).
+    Requested: "Modify the graph in the application's calibration tab to allow users to drag and move
+    existing dots. Also, implement a right-click context menu that includes options to manually add and
+    delete dots on the graph."
+      - Curves up to 64 points show every point; larger curves show up to 64 key bends. Drag gain vertically;
+        drag interior dots horizontally to change speed (neighbor-clamped; endpoints stay anchored).
+      - Right-click: Add point here (in plot, maximum 200), Delete point (on a dot; minimum 2). Edits update
+        the exportable horizontal/vertical profile and are undoable/redone.
+      - Sample target persists as calibration/sample_hz; 1,000 Hz uses a 1 ms precise timer, redraws
+        throttled around 60 Hz; UI cautions that Windows/Qt scheduling can reduce achieved rate. Native and
+        fallback trial caps are 65,536 samples.
+      - Previous verification: full pytest output 658 passed, 5 skipped then exit 139 from Qt teardown
+        (also reproduced on untouched rev88); 46 focused tests exit cleanly; native test passed.
+        Screenshot: deliverables/screenshots/calibration-graph-point-menu.png.
+
+    REV88 STATUS: rev87 plus a chevron on every combo box (so a dropdown reads as a dropdown).
+    Requested: "add a visual indicator, such as a dropdown arrow icon, to the far right of the text box in
+    the models dropdown menu. This will make it clear to users that a dropdown menu is available."
+      - Root cause: the stylesheet styles ::drop-down but never ::down-arrow, so Qt's arrow disappears on
+        these styles and every combo box looked like a plain text field.
+      - Fix: widgets.ComboField paints the chevron in the reserved strip (theme text colour, muted when
+        disabled); QComboBox::down-arrow { image: none } avoids a duplicate; all 15 combos use it.
+      - tests: tests/test_combo_arrow.py (14).
+    VERIFICATION: 615 passed, 2 skipped. Still NOT pushed.
+
+    REV87 STATUS: rev86 plus a model dropdown in Settings > AI coach (re-pick a model instead of retyping).
+    Requested: "investigate the settings module, specifically the models section. I need you to implement a
+    solution that allows me to reselect a model from a list if its name was accidentally removed, avoiding
+    the need to manually type it in."
+      - The Model row is an editable QComboBox fed by: saved ai/model, cached ai/model_list (the last list the
+        provider gave), then suggested_text_models() labelled "(suggested, not installed)". Item data holds
+        {"name","source"} so the saved value is always the plain name.
+      - ai_chat.list_models() reads Ollama /api/tags or an OpenAI-compatible /models; _ModelListThread runs it
+        off the UI thread; the card has a refresh button, probes once on first show when nothing is cached,
+        keeps known names when the request fails, and reports the result in status_label.
+      - SettingsPage.shutdown() waits for the thread; MainWindow.closeEvent calls it.
+      - tests: tests/test_model_picker.py (34). docs/architecture.md "The model list in Settings (rev87)".
+    VERIFICATION: 601 passed, 2 skipped. Still NOT pushed.
+
+    REV86 STATUS: rev85 plus the Settings > Replies card removed (it duplicated the AI Coach tab).
+    Requested: "remove the 'Replise' option in the settings tab of the app because it already is in
+    the ai coach tab settings".
+      - Removed: SettingsPage._build_replies_card (read aloud, Stop speaking, reply text size) and the
+        signals stop_speaking_requested / text_size_changed that only it used; AIChatPage.replies_changed
+        and set_text_size(); main_window's three connections and _on_reply_text_size().
+      - Kept: the AI Coach tab's settings block (read aloud, Stop speaking, text size) and the Settings
+        > Voice "Speak responses aloud" switch, which shares ui/tts_enabled; refresh_replies() was
+        renamed refresh_voice_state() because it now syncs only that switch.
+      - tests/test_settings_replies.py rewritten; tests/test_voice_volume_guidance.py updated to the
+        renamed method. Docs updated in docs/architecture.md.
+    VERIFICATION: 567 passed, 2 skipped. Screenshot: settings-no-replies-card.png. Still NOT pushed.
+
+    REV85 STATUS: rev83 plus an explicit 100% speech-volume default and a Windows volume note in
+    Settings > Voice. rev84 (Loud mode) was withdrawn and is no longer in the tree.
+    Requested: (1) "completely revert and remove the previously applied patch titled 'Loud Mode Boost
+    Spoken Replies'", (2) "ensure that the volume setting is explicitly initialized to 100% by default
+    upon application startup", (3) "add a note ... within the Settings tab, specifically under the
+    Voice section, that guides users to check their device's volume preferences in Windows if they
+    perceive the AI's voice as being too low".
+      - Revert: git history reset to 4d374e6 (rev83); tts_service.py, pages_coach.py, README,
+        docs/architecture.md and FPS_COACH_CONTINUATION.txt are back to rev83 content, and
+        tests/test_tts_loudness.py plus patches/0013-rev84-*.patch were removed. The rev84 zip is gone.
+      - Volume default: VOLUME_DEFAULT = VOLUME_MAX (100) in ui/pages_coach; the slider is set to it
+        explicitly, and AIChatPage.ensure_volume_default(settings) writes tts/volume once at startup
+        when absent. Saved 0 stays 0; garbage falls back to 100.
+      - Settings > Voice note (self.volume_note, objectName cardSubtitle, word-wrapped) sits under
+        "Speak responses aloud" and names Windows' volume, Volume mixer and Communications ducking.
+      - tests: tests/test_voice_volume_guidance.py (14 tests) covers the default, the preserved user
+        choice, the corrupt value, and the note's presence, wording and honesty.
+    VERIFICATION: 562 passed, 2 skipped. Screenshot: settings-voice-volume-note.png. Still NOT pushed.
+
+    REV83 STATUS: rev82 plus In-Game Mode moved under Settings > Advanced.
+    Requested: "in the settings tab of the app move 'In-Game Mode' option to be under the 'Advance'
+    expendable option".
+      - ui/pages_coach SettingsPage: _build_ingame_card(embedded=True) renders the same widgets as a
+        SECTION (new QFrame#advancedSection style: transparent, no border, top rule) instead of its own
+        card, and self.ingame_card is added to advanced_body, which stays collapsed by default.
+        The card no longer appears in the right column.
+      - Advanced copy now describes itself honestly (session-only and setup options).
+      - tests (+2 in test_ingame_mode.py): the block's parent is advanced_body, it is hidden at launch,
+        appears when Advanced opens and hides again; and the mode still works from inside Advanced
+        (context block + enabled flag).
+    VERIFICATION: 545 passed, 5 skipped; screenshots/settings-advanced-collapsed.png and
+    -open.png. Still NOT pushed.
+
+    REV82 STATUS: rev81 plus the Live vision panel is opt-in.
+    Requested: "in the ai chat tab in the settings add a toggle to enable 'live vision' instead of keeping
+    it always in the middle even when its not used".
+      - ui/pages_coach: a "Live vision" section inside the chat card's Settings block with a checkbox
+        "Enable live vision" (ai/live_enabled, default False) and a one-line explanation. The middle card
+        is now setVisible(live_enable.isChecked()) and kept as self.live_card; turning the Setting off also
+        calls _stop_live_vision(), so hiding the panel never leaves a worker running. _toggle_live_vision
+        switches the Setting on rather than watching from a hidden panel.
+      - Two independent switches on purpose: the Setting is a remembered layout preference, the panel's
+        "Watch live" is not and stays off at every launch.
+      - tests (+3): hidden until enabled and remembered; a saved preference reopens the panel but does not
+        start watching; hiding the panel stops a running watch. Panel-bound tests now enable it first.
+    VERIFICATION: 543 passed, 5 skipped; ruff clean on the touched files; screenshots/
+    ai-live-vision-settings.png shows the toggle with the panel open. Still NOT pushed.
+
+    REV81 STATUS: rev80 plus (a) per-frame timestamps in the prompt and (b) qwen3-vl as the
+    recommended model.
+    Why: Ollama has no video input - frames arrive as images with no temporal position ids
+    (ollama#18151), which is exactly what qwen-vl is trained to use ("timestamps-video frames",
+    per-model temporal position ids), and llama.cpp added frame-merge for qwen-vl (ollama#17321) so
+    consecutive same-size images can reach the model as a video block.
+      - visual_coach: _times() writes "Frame times, oldest first: 0.0 s, 0.5 s, … (N in total)" into
+        both prompts, with "Use them to say when something changed."; suggested_vision_models() is
+        now qwen3-vl:8b first, then qwen3-vl:4b, qwen2.5vl:7b, gemma3:4b, llava:7b, moondream.
+      - ui: the Live vision note names qwen3-vl:8b when the configured model cannot see, and nudges
+        ("qwen3-vl:8b is the better fit for a clip: it is trained on timestamped video frames") when
+        a vision model that is not a qwen-vl variant is set; _is_timestamp_model() decides.
+      - tests: per-frame timestamps present and zero-relative, empty-window "none", every suggested
+        model passes model_supports_images, the nudge appears for gemma3 and not for qwen3-vl.
+    VERIFICATION: 540 passed, 5 skipped; ruff clean on the touched files.
+    Same limits as rev80: no real vision model run here, no real Windows display. Still NOT pushed.
+
+    REV80 STATUS: rev79 plus REAL-TIME WATCHING - the coach now sees the preview as a moving clip, not a still.
+    Requested: "make it that the ai coach sees in real time and watches real-time video capture not an image".
+    Design note: a local Ollama vision model cannot ingest a video stream, so "real time" was implemented as
+    CONTINUOUS SAMPLING + ORDERED MULTI-FRAME WINDOWS: the loop samples the newest preview frame every
+    sample_interval (default 0.5 s), collects frames_per_request of them (default 4 = ~1.5 s of screen), and
+    sends them together, in order, with measured motion. The model compares frames, so its answer is about
+    change ("the HUD bar slides right, everything above is static"), not a frozen picture.
+    What changed:
+      - visual_coach.motion_report(): per-cell luma comparison of two signatures -> level, changed-cell
+        ratio, and WHICH THIRD of the frame moved (top/middle/bottom/full). Threshold ignores dither.
+      - LiveVisionSession now collects a window (_collect_window) instead of one frame: drops repeated
+        frames inside a window, stops after a full window's worth of duplicates on a still screen, then
+        applies adaptive idle skipping (reports "The preview is not changing..."), trims the oldest frames if
+        the payload exceeds max_payload_bytes, and prints its own counters (looks / frames / replies / clip
+        span / idle skips / latency). Nothing is queued: collection stops while a request is in flight.
+      - COACH_PROMPT/LOOK_PROMPT now describe the clip ("N ordered frames, sampled every X s, together about
+        Y s of a moving screen") plus "Motion across the window: low (…% mean cell change, …% of the frame
+        changed, mostly in the bottom third)".
+      - ui: the card grew "Clip length" and "Sample every" controls (Ask every default dropped to 4 s), a
+        FOUR-FRAME FILMSTRIP showing exactly what was sent (oldest first, newest highlighted), and a motion
+        meter ("low · 2% (bottom)"). Reply stamps read "4 frames / 1.3 s · low motion". _LiveVisionThread
+        emits window_sent([jpegs], meta) instead of frame_sent.
+      - Privacy copy (PRIVACY_POINTS + docs/PRIVACY.md): clips of downscaled frames, held in memory only,
+        discarded after the request; nothing recorded by this feature.
+    Tests: tests/test_visual_coach.py rewritten for streaming (39): motion level/band/threshold, clip of N
+    ordered frames with real differences between images, window announced before the request with ages
+    descending, prompt describes clip+motion, single-frame wording, payload cap dropping oldest frames,
+    still screen idling, moving screen continuing, Look now taking a window, stop mid-window sending nothing,
+    plus the encoder/page tests. Full suite 536 passed, 5 skipped.
+    VERIFICATION (sandbox): end-to-end through MainWindow with a fake vision model over a synthetic moving
+    HUD: 2 looks, 4 frames each (~8.6 KB per frame), filmstrip filled, motion "low · 2% (bottom)", status
+    "2 looks · 8 frames · 2 replies · 1.3 s clips". Screenshot: deliverables/screenshots/ai-live-vision.png.
+    NOT verified: a real vision model (gemma3:4b untested here; qwen3:1.7b cannot see) and a real Windows
+    display. Still NOT pushed.
+
+    REV79 STATUS: rev78 plus LIVE VISION - the AI coach reads the capture preview and comments on it.
+    Requested: "update our existing desktop utility script that uses mss and threading to capture the live
+    screen preview within the application and allow the ai in the application to automate responses
+    according to the visual data represented in the preview". Clarified with the user: BOTH automatic
+    commentary while capture runs AND an on-demand "Look now"; payload = real frames from the preview
+    (they answered "the video on being played on the preview screen in realtime"), not a text summary.
+    HARD BOUNDARY KEPT: no target/enemy/aim analysis. The prompt (visual_coach.COACH_PROMPT / LOOK_PROMPT)
+    restricts the coach to the picture and the setup - layout, readability, HUD clutter, lighting, colour,
+    blur - and forbids identifying targets, enemies or players and giving aim/recoil/positioning advice.
+    What was built:
+      - python/fps_coach/visual_coach.py (new, ~470 lines, Qt-free): frame_signature() (32x18 luma grid
+        sampled from BGRA, no resize), frame_delta(), describe_frame() (size/brightness/contrast only),
+        encode_frame() (BGRA -> JPEG <=768 px via OpenCV, else Qt's writer), LiveVisionSession (newest-frame
+        loop: waits for capture, skips unchanged frames at 0.4% mean luma, exponential backoff, stops after
+        max_consecutive_errors, ask_now() bypasses the change check, stop() breaks any wait).
+      - ai_chat.py: chat(..., images=[jpeg]) -> base64 "images" on the Ollama user message, image_url parts
+        for OpenAI-compatible; VISION_SYSTEM_PROMPT added without replacing SYSTEM_PROMPT;
+        model_supports_images() name heuristic (gemma3:1b explicitly text-only) and encode_image().
+      - ui/threads.py: _LiveVisionThread forwards session callbacks as signals (reply_ready,
+        request_failed, status_changed, frame_sent).
+      - ui/pages_coach.py: "Live vision" card in the AI Coach right column - thumbnail of the exact JPEG
+        sent, "Watch preview" toggle (off at every launch), "Look now", ask-every seconds, "Only when the
+        picture changes", status line + counters, and a note naming a vision model when the configured one
+        cannot see / or "frames stay on this machine" for a local vision model. Replies post as
+        "Coach (live)" into the transcript. set_capture_source(backend) is called by MainWindow.
+      - ui/icons.py: "eye" glyph. PRIVACY_POINTS + docs/PRIVACY.md: new Live vision section (off at launch,
+        still frames only, local vs online upload, prompt restrictions).
+    Tests: tests/test_visual_coach.py (29 - signature/delta/stride, describe_frame, JPEG via OpenCV AND via
+    the Qt fallback, no-encoder message, one-frame-one-reply, unchanged skipping, changed-frame sending,
+    static frame re-sent when the check is off, ask_now, history cap, no-frame-yet, provider errors,
+    consecutive failures stopping the loop, empty reply, curve context, settings normalisation, prompt
+    guardrails, stop breaking a long wait, page: warning for a text model, local note, no-backend message,
+    full toggle -> transcript + thumbnail) and tests/test_vision_payloads.py (21 - capability heuristic,
+    exact Ollama/OpenAI payload shapes, no-user-turn fallback, empty bytes ignored).
+    VERIFICATION (sandbox, Linux, no display, no model): full suite 526 passed, 5 skipped; ruff clean on new
+    files; end-to-end through MainWindow -> AI Coach with a fake vision model: 2 frames (8 KB each) sent,
+    2 "Coach (live)" replies in the transcript, status "Watching", note "Local model: frames stay on this
+    machine." Screenshot: deliverables/screenshots/ai-live-vision.png.
+    NOT verified: a real vision model (qwen3:1.7b cannot see; gemma3:4b untested here), a real Windows
+    display, latency on a gaming PC. Still NOT pushed.
+
+    REV78 STATUS: rev77 plus FIX: THE CAPTURE TAB'S LIVE SECTION WORKS WITHOUT THE NATIVE CORE.
+    Reported by the user: "i only see the recording section where is the real-time capture section for this
+    tool?" The live section (left-hand preview stage + Source card) has existed since the redesign, but on
+    their machine it was inert: CoreBackend built capture only from _native, so with no fpscoach_native the
+    page showed "No display output found", Start disabled and "No frame yet" - the Recording card was the
+    only usable thing, which read as if the capture feature was missing.
+    What was built:
+      - python/fps_coach/python_capture.py (new, ~430 lines): PythonDesktopCapture, an mss-backed stand-in
+        with the native object's exact interface (enumerate_outputs, start, stop, running, stats,
+        latest_sequence, latest_frame). Threaded grab loop, drift-free pacing, single-slot latest frame,
+        rolling 1 s FPS, region clamping, at most 5 tolerated grab failures. mss is imported lazily behind
+        a guard (module must import without the recorder extra). Uses mss.MSS() when present (mss 10
+        deprecates mss.mss()).
+      - plan_region(): reproduces the native preset semantics - left/top of -1 centres the region in the
+        monitor (what Balanced/Performance send), any other value is a window origin clamped inside the
+        monitor; reports capture_mode "output" or "region".
+      - backend.CoreBackend: picks native -> PythonDesktopCapture (when mss is present) -> None; new
+        uses_python_capture, core_label "Python capture (mss)", capture_factory= for tests; outputs() never
+        raises (a headless/locked session stores capture_error and returns []), so the window always opens.
+      - ui/pages_setup.CapturePage: the Source card is untouched; added a live_source_note under it
+        ("Live preview is running through mss (Python) because the native core is not built. Up to 60 FPS,
+        and a window is captured as the screen area behind it." / or the pip install line when nothing is
+        available), and the GPU capture (D3D11) checkbox is unstyled-and-disabled when no native core
+        exists, because mss reads the composited desktop on the CPU.
+    Limits kept honest: capped at 60 FPS (reported when 120 was asked for), no occluded-window capture
+    (window mode = screen area behind it), no cursor overlay.
+    tests/test_python_capture.py (new, 20): guarded import, install hint, output enumeration from fake
+    monitors, plan_region centring/full-output/clamping/degenerate, frame publishing with native-shaped
+    fields and stride, stats key parity, FPS cap notice, grab-failure shutdown, double start, idempotent
+    stop closing the handle, missing monitor in the caller's thread, backend selection (native / python /
+    neither), and two CapturePage tests (usable with mss; explains the install when nothing is available).
+    Every test injects a fake sct - no display is touched.
+    Docs: README (feature bullet + a three-tier table for the Capture tab + first-use step now says press
+    Start), docs/architecture.md ("Capture without the native core (rev78)" with a native-vs-Python method
+    table), pyproject recorder-extra comment (no longer "not used by the app").
+    VERIFICATION (sandbox, Linux, no display): pytest 476 passed, 5 skipped; ruff clean on the new files
+    (backend/pages_setup keep their pre-existing I001); end-to-end by hand - MainWindow -> Capture tab with
+    an injected fake sct reports "Monitor 1 - Python (mss) - 1920x1080", Start enabled, GPU box off and
+    disabled, live note shown, preview painted, stats "60.0 FPS - 73 frames - 960x540 - Python (mss)".
+    Screenshot: deliverables/screenshots/capture-live-python-backend.png.
+    NOT verified: a real display, real mss on Windows, and the native path (unchanged).
+    Still NOT pushed.
+
+    REV77 STATUS: rev76 plus FIX: the native C++ core is optional (compiler-free install).
+    Reported from the user's Windows machine (Python 3.13.5 at C:/Python313, VS 2022 Community, MSVC 19.44,
+    CMake 3.31.6, scikit-build-core 1.1.1, pybind11 3.1.0, Windows SDK 10.0.26100):
+      pip install -e".[recorder]"  ->  bindings.obj : error LNK2001: unresolved external symbol
+      __imp__PyThread_tss_create (+ ~140 more __imp__Py...), fatal error LNK1120: 149 unresolved externals,
+      *** CMake build failed.   (Note the missing space: `-e".[recorder]"` is a usage error on top of it.)
+    Diagnosis: not a header/toolchain mismatch - EVERY CPython symbol was missing, so the import library was
+    never on the link line at all (pybind11::module did not carry Python::Module through). Nothing was
+    installed by that run: pip resolves/builds before installing, so the user's existing editable install and
+    their site-packages were untouched; mss/numpy/opencv were downloaded and then discarded.
+    Fix (CMakeLists.txt):
+      1. FPSCOACH_SKIP_NATIVE env guard. Set to anything but "0"/"" -> the file prints a STATUS line and
+         builds no targets, so `pip install -e ".[dev,recorder]"` needs no compiler, no SDK, no Visual Studio.
+         The app then imports with fps_coach.backend falling back to the portable analyzer.
+      2. project(FPSCoach VERSION 0.1.0 LANGUAGES NONE) + enable_language(CXX) inside the non-skip branch.
+         Enabling CXX at project() time makes CMake hunt for a compiler during configure, which would have
+         defeated (1) on a machine with no toolchain.
+      3. The guard is a plain if(FPSCOACH_SKIP_NATIVE)/else()/endif(), NOT a top-level return(): return() at
+         file scope needs CMake >= 3.29 and the declared floor is cmake_minimum_required(VERSION 3.23).
+      4. fpscoach_native now links Python::Module explicitly
+         (target_link_libraries(fpscoach_native PRIVATE fpscoach_analysis Python::Module d3d11 dxgi dxguid
+         WindowsApp)) so the CPython import library is on the link line even if pybind11's indirect link
+         does not surface it - this is the LNK2001 fix itself.
+    New tests: tests/test_cmake_native_optional.py (4) pins all of the above as text-level assertions: no
+    file-scope return() under a <3.29 floor, LANGUAGES NONE + enable_language(CXX), the guard's env-var
+    semantics ("0"/"" keep the native build), every add_library() inside the non-skip branch, and
+    Python::Module in fpscoach_native's link line. Verified to FAIL when the file is edited back to
+    LANGUAGES CXX.
+    Docs: README "Windows prerequisites" now names the LNK2001 signature and gives three escapes
+    (FPSCOACH_SKIP_NATIVE, plain `pip install numpy mss opencv-python-headless` + run from source, or a
+    py -3.12 venv); docs/build-and-packaging.md has a "Installing without the native core" section;
+    docs/screen-recorder-tool.md points at the variable.
+    VERIFICATION (sandbox, Linux): CMake 4.4.4 - skip=1 configures with CC/CXX pointed at /nonexistent (no
+    compiler touched), `cmake --build`/`--install` succeed, `pip wheel` with FPSCOACH_SKIP_NATIVE=1 produces
+    48 files and ZERO .pyd/.so/.dll; skip=0 and unset both configure the analysis core, build it, and ctest
+    passes 1/1; `pip install -e ".[recorder]"` with the guard installs and `import fps_coach` + MainWindow
+    (offscreen) work with the fallback analyzer, Recording card "Idle"/enabled, In-Game Mode off.
+    Full suite 456 passed, 5 skipped. NOT verified: the actual Windows link with Python::Module (no MSVC in
+    the sandbox) - if the user's LNK2001 persists, FPSCOACH_SKIP_NATIVE=1 is the working path.
+    Still NOT pushed.
+
+    REV76 STATUS: rev75 plus FIX: start-up crash when numpy is not installed (reported traceback from the
+    user's Windows machine: python -m fps_coach -> pages_setup -> capture_recording -> screen_recorder line
+    108 "AnalysisCallback = Callable[[np.ndarray, int], None]" -> AttributeError: 'NoneType' object has no
+    attribute 'ndarray'). Cause: numpy is imported behind a guard (np = None when missing), but that
+    module-level type alias is a real runtime expression, so typing evaluated np.ndarray at import time and
+    killed the whole app before the Capture page could disable its Recording card. Fix: the alias is now
+    Callable[["np.ndarray", int], None] (forward reference, not evaluated); _require_dependencies() checks
+    numpy FIRST and raises a clear RuntimeError; the mss/OpenCV messages now also name the recorder extra.
+    Verified with a meta-path import blocker in a subprocess (numpy alone, mss alone, cv2 alone, all three):
+    the engine imports, missing_dependencies() reports the right package label, start() raises "…is required
+    … pip install -e \".[recorder]\"", and the Qt layer (CapturePage + SettingsPage, offscreen) builds with
+    the Recording card reading "Unavailable" and Record disabled. New tests: tests/test_optional_deps.py
+    (5, includes the UI subprocess check) + tests/_blocked_deps.py helper. Also verified by hand: MainWindow
+    constructs with numpy/mss/cv2 blocked and In-Game Mode is still off at launch.
+    USER-SIDE REMEDY (told to the user): either just update to rev76 (app runs; Recording card disabled) or
+    install the extras: pip install -e ".[dev,recorder]" (or pip install numpy mss opencv-python-headless).
+    Tests: full suite 451 passed, 5 skipped. NOT verified: the user's own Windows machine, a real display.
+    Still NOT pushed.
+
+    REV75 STATUS: rev74 plus IN-GAME MODE (Settings > In-Game Mode), off at every launch.
+    Requirement as given: a Settings section; when enabled it lets the user pick the game and gives
+    sensitivity feedback, so the AI can suggest in-game sensitivity values; it must be DISABLED BY
+    DEFAULT AT EVERY LAUNCH.
+    What was built: python/fps_coach/ingame.py (new, 316 lines, no Qt, no I/O): GameProfile catalog
+    (CS2/Source yaw 0.022, VALORANT 0.07, Overwatch 2 0.0066, Apex 0.022, fallback "Other" 0.022),
+    counts_per_360(), cm_per_360(), sensitivity_for_cm_per_360(), effective_yaw() (an optional
+    MEASURED 360 distance overrides the catalog constant), and InGameMode (enabled starts False and is
+    never persisted; game/dpi/sensitivity/measured setters with validation; feedback(), context_block(),
+    question(), suggested_sensitivity(mult), suggestion_cm_per_360(mult)).
+    UI: pages_coach.SettingsPage._build_ingame_card() in the right column between Interface and Replies:
+    "Enable In-Game Mode (this session only)" checkbox (always unchecked at construction), Game combo,
+    Mouse DPI, In-game sensitivity, optional "Measured 360°" (0 = Not measured), live line "GAME: 0.400
+    at 800 DPI = 40.8 cm / 360°. A 1.06× change is 0.424 (38.5 cm / 360°).", counts line, "Ask the coach"
+    button, and a note that Vantage never reads/hooks/changes the game. Controls are disabled while the
+    mode is off. SettingsPage new signals ingame_changed, ingame_question; set_recommendation() and
+    ingame_context()/ingame_model() helpers.
+    AI: MainWindow._sync_ingame_context() pushes the block to AIChatPage.set_ingame_context() ->
+    _with_ingame() appends it to _calibration_context (empty while off). _on_ingame_question() prefills
+    chat_page.input and switches to the chat tab (key "chat"). _on_calibration_result() now also stores
+    _last_recommendation and calls settings_page.set_recommendation(). ai_chat.SYSTEM_PROMPT gained an
+    "In-Game Mode is ON" paragraph: convert cm/360 to the game's units, name a specific in-game value,
+    present it as the user's to apply, small and reversible, never claim to read/measure/change the game,
+    never ask the user to keep the mode on while playing.
+    PERSISTENCE RULE: only ingame/game, ingame/dpi, ingame/sensitivity, ingame/measured_cm360 are saved.
+    ingame/enabled is never written; a test asserts saved.contains("ingame/enabled") is False and that a
+    pre-seeded True still launches unchecked.
+    BOUNDARY: user-typed numbers only. No game/window/process access, no input injection, no capture, no
+    file reads. tests/test_ingame_mode.py walks ingame.py's AST: imports must be stdlib dataclasses/
+    __future__/typing only; no open/exec/eval/compile/__import__ calls; no ShellExecute/keybd_event/
+    mouse_event/SendInput/Popen/run/system attribute calls. Nothing in-game is sent to the AI while the
+    mode is off.
+    Tests: tests/test_ingame_mode.py (new, 28): catalog, maths, round trips, measured override, session
+    toggle, context empty/off, feedback/question text, launch-reset, flag not persisted, disabled
+    controls, persistence of the four values, card text with and without a recommendation, ask-the-coach,
+    chat page receives the block, prompt contains the paragraph, MainWindow context/prefill/recommendation
+    wiring, AST boundary check.
+    VERIFICATION (sandbox, Linux): pytest 446 passed, 5 skipped (full suite); ruff clean on the touched
+    files apart from the repo's pre-existing I001; Settings card rendered offscreen and inspected with
+    VALORANT / 800 DPI / 0.400 / 1.06x -> 0.424 shown.
+    NOT verified: Windows, real Ollama/online model replies to the new block (no model in the sandbox),
+    real game values (catalog yaw constants are published approximations).
+    Still NOT pushed.
+
+    REV74 STATUS: rev73 plus LOOSER RECORDING POLICY (user said "looser" when offered stricter/looser wording).
+    Behaviour: the Recording card gained a "Keep the recording" checkbox and a recordings folder picker
+    (default Videos/FPSCoach via QStandardPaths, saved as capture/record_keep and capture/record_dir).
+    Unticked (default) = old behaviour: the file is deleted at Stop or on app close. Ticked = the file is
+    KEPT, renamed fpscoach-recording-YYYYMMDD-HHMMSS.mp4 in the chosen folder, and it survives both Stop
+    and closing the app (RecordingService.shutdown() also saves it). Status reads "Saved" and the detail
+    names the path. RecordingService.start() takes keep= and save_dir=; RecordingSummary gained kept: bool
+    and path now points at the saved file; _save_file() renames with a counter on collisions. Analysis
+    interval range widened 0.5-60 s (was 0.5-30). Wording loosened in the same commit: docs/PRIVACY.md
+    "Screen capture" now describes discard-vs-keep plainly and says files are never uploaded by the app
+    but what the user does with a kept file is up to them; "unattended/background recording" removed from
+    the not-offered list (still stated that recording stops when the app closes unless kept); in-app
+    PRIVACY_POINTS updated; docs/architecture.md scope line and scratch-recording section updated;
+    README feature bullet and first-use step updated; docs/screen-recorder-tool.md updated.
+    Tests: tests/test_capture_recording.py 12 -> 20 (keep off by default + persists, default dir, kept file
+    lands in the chosen folder, kept file survives page shutdown, widened interval range, service keeps /
+    discards / shutdown-keeps). One trap found: page.record_dir_btn.click() opens a modal QFileDialog and
+    HANGS an offscreen test run; the test now only checks enabled state.
+    STILL NOT LOOSENED (deliberate): gameplay analysis from the file, target/shooting detection, aim
+    feedback, in-game overlays, input hooks - the fair-play/anti-cheat line in docs/PRIVACY.md stands. If
+    the user meant that line too, it needs an explicit decision, not a wording edit.
+    NOT verified: Windows, real display, mss on Windows, mp4v on Windows, PyInstaller freeze, Inno installer.
+    Still NOT pushed.
+
+    REV73 STATUS: rev72 plus SCRATCH RECORDING ON THE CAPTURE TAB (productised at the user's request).
+    The user asked for the rev72 recorder "added to the capture tab in fps coach", so it now ships in
+    the app: engine in python/fps_coach/screen_recorder.py (Qt-free), Qt glue in
+    python/fps_coach/capture_recording.py (RecordingService: started/analysis/stopped/failed signals,
+    poll(), shutdown()), UI card "Recording" on CapturePage (rate 15/30/60 saved as capture/record_fps,
+    analysis interval 0.5-30 s saved as capture/record_interval, Record/Stop, live "Recording · N s ·
+    N frames · N analyses", last analysis line, disabled + install hint when the extra is missing).
+    MainWindow.closeEvent calls capture_page.shutdown() so closing the app deletes the file. Packaging:
+    bootstrap.ps1 and build.ps1 install ".[dev,recorder]"; fpscoach.spec collects mss submodules.
+    Docs: README feature + layout + install line; docs/architecture.md new "Scratch recording" section;
+    docs/PRIVACY.md "Screen capture" rewritten; in-app PRIVACY_POINTS updated (pages_coach.py).
+    Tests: 34 engine + 12 Qt/card = 46 for this feature; full suite 410 passed, 5 skipped.
+    BOUNDARY / DECISION: this reverses the rev71b decline for RECORDING ONLY. What was built: a
+    user-started scratch video of the primary display that is deleted on stop/close, never uploaded, and
+    whose analysis timer samples frame statistics (size, mean brightness) only. Still NOT built, still
+    declined: gameplay analysis from the file, target/shooting detection, aim feedback, unattended or
+    background recording that outlives the session, per-game window targeting. docs/PRIVACY.md,
+    docs/architecture.md and the in-app privacy page were updated in the same commit to say exactly that.
+    The user should confirm the wording if they want the policy stricter or looser.
+    NOT verified: real display, Windows, mss/WGC behaviour, mp4v on Windows, PyInstaller freeze, Inno
+    installer. The encoder path was checked on Linux (OpenCV 5.0.0, numpy 2.3.5, mss 10.2.0): scratch mp4
+    written and decoded back, deleted on stop. PySide6 6.12 offscreen: card rendered and driven in tests.
+    Still NOT pushed.
+
+    REV72 STATUS: rev71c plus a screen-recorder DEVELOPER TOOL (tools/, not in the app).
+    What: tools/screen_recorder.py records the primary monitor with mss into a temp video on a background
+    thread, keeps the newest frame in a lock-protected single-slot buffer (LatestFrameBuffer, private copy per
+    read, sequence counter), and runs a second thread ("screen-analysis") that calls a configurable callback
+    every analysis_interval seconds. ScreenRecorder is a context manager: __exit__ -> cleanup() always runs,
+    which sets the stop event, joins both workers (join_timeout), releases cv2.VideoWriter and closes the mss
+    handle on the capture thread that made them (mss handles are per-thread), clears the buffer and unlinks
+    the temp file (idempotent; atexit hook covers interpreter exit). Tests: tests/test_screen_recorder.py,
+    32 headless tests (fake mss + fake writer, no display, no codec). Docs: docs/screen-recorder-tool.md.
+    DEPENDENCIES: new pyproject extra "recorder" (mss, numpy, opencv-python-headless); numpy added to "dev"
+    for the tests. README layout lists tools/.
+    BOUNDARY: the tool is NOT imported by fps_coach and is not in the wheel (wheel.packages is
+    python/fps_coach). It contains no game analysis and is not wired into the UI, so the fair-play boundary in
+    docs/PRIVACY.md and docs/architecture.md is unchanged and the rev71b decline still stands for product
+    features. DECISION TO CHECK: rev71b declined "record gameplay at 720p for offline AI aim analysis plus
+    auto-clearing temp recordings"; this rev adds the same mechanics only as an out-of-package developer
+    diagnostic utility (codec/timing experiments, synthetic test frames), not as a gameplay feature. Say the
+    word and it is removed, or moved into python/fps_coach to productise it (that WOULD change the boundary).
+    NOT verified: real display, Windows capture, real codec output on Windows (the encoder path was checked on
+    Linux with OpenCV 4.11: 320x240 @ 20 fps mp4 written and decoded back). Full repo pytest suite not run
+    here (PySide6 is not installed in the sandbox); the new file passes its own 32 tests and ruff.
+    Still NOT pushed.
+
     REV71 STATUS: Serious mode. The Dashboard has a "Serious mode" checkbox. When it is on, the six
     dashboard tiles leave the grid and bounce around the dashboard like the DVD screensaver: each starts at
     its grid cell with a random direction (20 to 70 degrees), turns at the edges of the stage, and can
@@ -1867,3 +2499,122 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
       The build pulls the Ollama tag qwen3:1.7b; the license has not been confirmed.
   [ ] Ollama redistribution terms for the embedded Full build (not confirmed).
   [ ] Target Windows arch and minimum OS. Installers are x64; no minimum OS is set.
+
+  2026-10-23 (rev72)  SCREEN RECORDER DEVELOPER TOOL (out of package).
+              - tools/screen_recorder.py (new, 909 lines): ScreenRecorder context manager on mss + cv2.VideoWriter;
+                LatestFrameBuffer (single slot, lock, sequence, copy-on-read, Event for wait_for_frame);
+                capture loop ("screen-capture") grabs the primary monitor, writes the frame, publishes it
+                (copy=False, fresh array per tick), drift-free pacing, 5 tolerated transient grab errors;
+                analysis loop ("screen-analysis") fires analysis_callback(frame_copy, sequence) on an absolute
+                schedule via Event.wait (no drift, no catch-up burst, callback exceptions logged and the timer
+                continues, ticks before the first frame skipped); stop()/cleanup()/__exit__/atexit teardown;
+                injectable sct_factory and writer_factory; CLI (--duration, --fps, --analysis-interval,
+                --monitor, --output-dir, --keep, --log-level).
+              - tests/test_screen_recorder.py (new, 32 tests): buffer integrity under three concurrent readers
+                (no torn frames), monotonic sequence, timer cadence and spacing, callback receives a private
+                copy, callback exception does not stop the timer, no callback before the first frame, stop from
+                inside the callback, cleanup after an exception in the with body, idempotent cleanup, keep /
+                output_dir, capture and writer failures reported via capture_error, atexit hook, param checks.
+              - docs/screen-recorder-tool.md (new); README layout lists tools/; pyproject extra "recorder"
+                (mss, numpy, opencv-python-headless) and numpy added to "dev".
+              - VERIFICATION (sandbox, Linux): pytest tests/test_screen_recorder.py 32/32; ruff check (repo
+                config) clean on both files; end-to-end with the REAL cv2.VideoWriter: 320x240 @ 20 fps mp4,
+                13 frames, decoded back with cv2.VideoCapture, temp file removed on exit; 20 start/stop cycles
+                left no threads, writers, or mss handles behind. NOT verified: real display, Windows, real
+                monitor sizes, GPU load. Full suite not run (PySide6 absent).
+              - Boundary: not imported by fps_coach, not in the wheel, no game analysis, no UI wiring.
+
+  2026-10-23 (rev73)  SCRATCH RECORDING ON THE CAPTURE TAB.
+              - python/fps_coach/screen_recorder.py (new, 807 lines): rev72 engine moved into the package;
+                numpy is imported behind a guard, missing_dependencies()/dependencies_available() added,
+                logger renamed fps_coach.screen_recorder, CLI removed (it moved to tools/).
+              - python/fps_coach/capture_recording.py (new, 222 lines): RecordingService(QObject) with
+                AnalysisTick/RecordingStatus/RecordingSummary dataclasses, availability() install hint,
+                start/stop/poll/shutdown, analysis callback guarded by a lock and a closed flag, frame
+                sampled every 8th pixel for the mean.
+              - python/fps_coach/ui/pages_setup.py: CapturePage._build_recording_card() under the Source
+                card (Recording rate, Analysis every, Record/Stop, status, detail, analysis line, note);
+                _start_recording/_stop_recording/_on_recording_started/_on_recording_stopped/
+                _on_recording_failed/_on_analysis_tick/_refresh_recording/_set_record_buttons/
+                _set_record_status/_show_record_detail/_apply_recording_availability/shutdown;
+                _refresh_stats() polls the recorder first; right column wrapped in a QWidget so both cards
+                scroll together.
+              - python/fps_coach/ui/main_window.py: closeEvent calls capture_page.shutdown().
+              - python/fps_coach/ui/pages_coach.py: PRIVACY_POINTS now describe the scratch recording and
+                that preview frames are not written to disk.
+              - tools/screen_recorder.py: now a thin CLI over fps_coach.screen_recorder (sys.path
+                bootstrap for source checkouts, dependency check with the install hint).
+              - scripts/bootstrap.ps1, scripts/build.ps1: ".[dev,recorder]"; installer/fpscoach.spec:
+                hiddenimports += collect_submodules("mss").
+              - tests/_recording_doubles.py (new): FakeScreenshot/FakeMSS/FakeWriter/Harness shared by both
+                suites. tests/test_screen_recorder.py repointed at the package (+2 tests: dependency report,
+                CLI --help). tests/test_capture_recording.py (new, 12 tests): card defaults and persistence,
+                disabled state, record/stop through the page, analysis ticks in the label, shutdown while
+                recording, capture failure through poll(), service signals and summary, MainWindow.closeEvent.
+              - docs/screen-recorder-tool.md rewritten for the in-app feature; README feature list, layout
+                and install line; docs/architecture.md "Scratch recording" section; docs/PRIVACY.md updated.
+              - VERIFICATION (sandbox, Linux): pytest 410 passed, 5 skipped (includes the 46 recorder
+                tests); ruff clean on every file this rev touched apart from the repo's pre-existing
+                I001/UP037/B905 in pages_setup.py/pages_coach.py; CapturePage rendered offscreen to a PNG
+                and inspected (Recording card sits under Source: 30 FPS, 2.0 s, Record enabled, Stop
+                disabled, Idle); end-to-end mp4 with the real cv2.VideoWriter decoded back and deleted.
+                NOT verified: Windows, real display, mss on Windows, PyInstaller freeze, Inno installer.
+
+  2026-10-23 (rev74)  LOOSER RECORDING POLICY: KEEP THE RECORDING, SAVED FOLDER.
+              - python/fps_coach/capture_recording.py: start(keep=False, save_dir=None) forwards
+                keep_temp_file/output_dir to the engine; _keep flag; RecordingSummary.kept; stop() and
+                shutdown() both call _save_file() when keep is on; _save_file renames the scratch file to
+                fpscoach-recording-<YYYYmmdd-HHMMSS>.mp4 (counter on collision, OSError logged and the
+                original path kept); docstring describes the retention rules.
+              - python/fps_coach/ui/pages_setup.py: "Keep the recording" QCheckBox, read-only folder
+                QLineEdit + "Folder..." button (QFileDialog.getExistingDirectory), default_record_dir()
+                (QStandardPaths MoviesLocation / FPSCoach), _sync_record_keep_controls(),
+                _on_record_keep_toggled(), _choose_record_dir(); start passes keep/save_dir; stop reports
+                "Saved" + path or "discarded"; interval range 0.5-60 s. Guard: _sync_record_keep_controls
+                runs during card construction, before self.recording exists (getattr guard).
+              - docs/PRIVACY.md, docs/architecture.md, docs/screen-recorder-tool.md, README.md,
+                python/fps_coach/ui/pages_coach.py (PRIVACY_POINTS): loosened wording, discard-vs-keep
+                described plainly, "unattended recording" removed from the not-offered list, kept files
+                explicitly outlive the session until the user deletes them.
+              - tests/test_capture_recording.py: 20 tests (8 new).
+              - VERIFICATION (sandbox, Linux): pytest tests/ 418 passed, 5 skipped; ruff clean on the
+                touched files apart from the repo's pre-existing I001/UP037/B905. Offscreen screenshot of
+                the card with Keep ticked and a saved file verified by hand.
+              - Still declined and untouched: gameplay analysis, target detection, aim feedback, overlays,
+                input hooks.
+
+  2026-10-23 (rev75)  IN-GAME MODE IN SETTINGS (off at every launch).
+              - python/fps_coach/ingame.py (new): GameProfile + GAMES catalog, counts_per_360, cm_per_360,
+                sensitivity_for_cm_per_360, effective_yaw (measured distance overrides the catalog), and
+                InGameMode with enabled=False at construction and no persistence of the flag; feedback(),
+                context_block(mult), question(mult).
+              - python/fps_coach/ui/pages_coach.py: SettingsPage._build_ingame_card() (session toggle, game,
+                DPI, sensitivity, measured 360, live conversion, counts line, Ask the coach, boundary note);
+                ingame_changed/ingame_question signals; set_recommendation(), ingame_model(),
+                ingame_context(); _on_ingame_toggled/_on_ingame_values_changed/_sync_ingame_controls/
+                _refresh_ingame_result/_ask_ingame. AIChatPage: _ingame_context, set_ingame_context(),
+                _with_ingame() in _refresh_context(). PRIVACY_POINTS gained the In-Game Mode point.
+              - python/fps_coach/ai_chat.py: SYSTEM_PROMPT paragraph for the "In-Game Mode is ON" block.
+              - python/fps_coach/ui/main_window.py: ingame_changed -> _sync_ingame_context();
+                ingame_question -> _on_ingame_question() (prefill + go to chat); _on_calibration_result also
+                stores _last_recommendation and calls settings_page.set_recommendation().
+              - docs/PRIVACY.md (rev75, new "In-Game Mode" section), docs/architecture.md (new section),
+                README.md (feature bullet).
+              - tests/test_ingame_mode.py (new, 28 tests) including an AST check that ingame.py has no I/O
+                or game access.
+              - VERIFICATION (sandbox, Linux): full suite 446 passed, 5 skipped; ruff clean apart from
+                pre-existing I001; card rendered offscreen and inspected.
+              - Still declined: engine-side game reading, input automation, target detection.
+
+  2026-10-23 (rev76)  FIX: CRASH AT STARTUP WITHOUT NUMPY.
+              - python/fps_coach/screen_recorder.py: AnalysisCallback now uses a string forward reference
+                ("np.ndarray") so the module imports when numpy is absent; _require_dependencies() checks
+                numpy first and all three dependency messages point at the recorder extra.
+              - tests/_blocked_deps.py (new): meta-path import blocker driven by FPSCoach_BLOCK_MODULES.
+              - tests/test_optional_deps.py (new, 5): engine imports with numpy / mss / cv2 / all three
+                blocked, missing_dependencies labels, start() error text, and an offscreen subprocess that
+                builds CapturePage + SettingsPage with the Recording card reading "Unavailable".
+              - docs/screen-recorder-tool.md: install section notes the app runs without the extra and names
+                this traceback; README: same one-liner.
+              - VERIFICATION (sandbox, Linux): pytest 451 passed, 5 skipped; ruff clean on the touched files;
+                MainWindow built by hand with all three packages blocked.

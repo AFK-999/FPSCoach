@@ -5,15 +5,19 @@ previous window. The layout is new: the transcript sits beside the tuning panel.
 """
 from __future__ import annotations
 
+import html
 import math
+import re
 from copy import deepcopy
 
 from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtGui import QColor, QPainter, QPen, QPixmap, QTextCursor
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDoubleSpinBox,
     QFileDialog,
+    QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -21,6 +25,8 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QSizePolicy,
+    QSpinBox,
     QTextEdit,
     QToolButton,
     QVBoxLayout,
@@ -28,35 +34,55 @@ from PySide6.QtWidgets import (
 )
 
 from fps_coach import scenarios as scenario_defs
-from fps_coach.ai_chat import ChatSettings, curve_context
-from fps_coach.tts_service import SPEED_MAX, SPEED_MIN, VOLUME_MAX, VOLUME_MIN, SpeechOptions
+from fps_coach.ai_chat import (
+    AIChatClient,
+    ChatSettings,
+    curve_context,
+    model_supports_images,
+    suggested_text_models,
+)
 from fps_coach.ai_curve_actions import apply_adjustment, parse_adjustment
 from fps_coach.analytics import AnalyticsStore
-from fps_coach.local_data import clear_calibration_history, count_calibration_records
 from fps_coach.chat_suggestions import suggest
+from fps_coach.curve_adjust import adjust_from_recommendation, apply_preset, normalized_overlay
+from fps_coach.curve_io import CurveFormatError, chart_points, recommendation_profile
 from fps_coach.dashboard_config import (
     BOUNCE_SPEED_DEFAULT,
     BOUNCE_SPEED_MAX,
     BOUNCE_SPEED_MIN,
     clamp_bounce_speed,
 )
-from fps_coach.curve_adjust import apply_preset, normalized_overlay
+from fps_coach.ingame import GAMES, InGameMode
+from fps_coach.local_data import clear_calibration_history, count_calibration_records
+from fps_coach.tts_service import SPEED_MAX, SPEED_MIN, VOLUME_MAX, VOLUME_MIN, SpeechOptions
+from fps_coach.visual_coach import LiveVisionSession, VisionSettings, suggested_vision_models
 
 from .styles import active_palette, fx_enabled
-from .threads import _ChatRequest, _ModelPullThread, _OllamaStatusCheck, _VoiceListenThread
+from .threads import (
+    _ChatRequest,
+    _LiveVisionThread,
+    _ModelListThread,
+    _ModelPullThread,
+    _OllamaStatusCheck,
+    _VoiceListenThread,
+)
 from .widgets import (
     CurveChart,
     ValueSlider,
     _card,
     _content_page,
-    _curve_samples,
     _divider,
     _label,
     _page_header,
     _page_root,
     _settings,
     set_glyph,
+    ComboField,
 )
+
+# Speech volume starts at the top of the range, not at Qt's default of the lowest value.
+VOLUME_DEFAULT = VOLUME_MAX
+VOLUME_KEY = "tts/volume"
 
 
 class ThinkingIndicator(QWidget):
@@ -160,6 +186,12 @@ def _scenario_label(key: str) -> str:
         return key
 
 
+def _visible_ai_reply(answer: str) -> str:
+    """Hide the parser-only curve directive from chat text and read-aloud output."""
+    visible = re.sub(r"\[ADJUST:\s*[^\]]+\]", "", answer, flags=re.IGNORECASE).strip()
+    return visible or "I prepared a curve proposal; see the adjacent preview."
+
+
 class AIChatPage(QWidget):
     """AI Coach chat. Sends turns through ai_chat.AIChatClient (Ollama by default),
     adds the latest calibration as context, and takes one spoken phrase as input.
@@ -174,7 +206,8 @@ class AIChatPage(QWidget):
     stop_speaking_requested = Signal()
     speech_options_changed = Signal(object)  # SpeechOptions, sent on every slider or voice change
     voice_test_requested = Signal()
-    replies_changed = Signal()  # the reply text size changed here; Settings > Replies follows
+    # Read aloud, Stop speaking and the reply text size live here; nothing else mirrors
+    # them, so there is no change signal to emit.
 
     _THINKING_STRIP = 44  # px reserved under the transcript text while a request runs
     TEXT_MIN, TEXT_DEFAULT, TEXT_MAX = 12, 14, 24  # transcript font size range, in px
@@ -185,13 +218,22 @@ class AIChatPage(QWidget):
         self._thread = None
         self._voice_thread = None
         self._messages: list[dict[str, str]] = []
+        self._transcript_items: list[tuple[str, str]] = []
         self._summary_context = ""
         self._calibration_context = ""
-        self._base_profile = None
+        self._ingame_context = ""
+        self._base_profile = None  # imported profile, when present
+        self._calibrated_profile = None  # latest data-derived calibration curve
+        self._last_recommendation = None
+        self._preview_base_profile = None
         self._adjusted_profile = None
         self._proactive_pending = None
         self._proactive_check = None
         self._proactive_request = None
+        self._capture_source = None      # CoreBackend; set by MainWindow
+        self._live_thread = None
+        self._live_session = None
+        self._live_failures = 0
 
         scroll, outer = _content_page(1280)
         _page_root(self, scroll)
@@ -230,6 +272,8 @@ class AIChatPage(QWidget):
         voice_lay.addLayout(self._build_text_size_bar())
         voice_lay.addWidget(_label("Voice", "formLabel"))
         voice_lay.addLayout(self._build_voice_bar())
+        voice_lay.addWidget(_label("Live vision", "formLabel"))
+        voice_lay.addLayout(self._build_live_vision_setting())
         self.voice_settings.setVisible(False)  # collapsed until the gear is opened
         lay.addWidget(self.voice_settings)
         self.transcript = QTextEdit()
@@ -269,12 +313,16 @@ class AIChatPage(QWidget):
         lay.addLayout(input_row)
         body.addWidget(card, 3)
 
+        live_card = self._build_live_vision_card()
+        body.addWidget(live_card, 2)
+
         tune_card, tune_lay = _card(
             "Curve tuning",
-            "Preview a quick action on the imported curve, then send it to Calibration.",
+            "Calibration and AI curve suggestions appear here as a visual before/after. Nothing is sent to Calibration until you choose.",
         )
         self.quick_hint = _label(
-            "Import a curve in Calibration to enable one-click tuning.", "cardSubtitle", wrap=True
+            "Run a calibration or import a curve to see its data-driven shape here.",
+            "cardSubtitle", wrap=True,
         )
         tune_lay.addWidget(self.quick_hint)
         self.quick_preview = CurveChart(editable=False)
@@ -300,9 +348,27 @@ class AIChatPage(QWidget):
         self._refresh_suggestions()
 
     def set_calibration_context(self, summary: dict, recommendation: dict) -> None:
-        """Give the coach the latest calibration so answers can refer to it."""
+        """Give the coach the latest data and display its curve beside the conversation."""
         self._summary_context = curve_context(summary, recommendation)
+        self._last_recommendation = deepcopy(recommendation)
+        try:
+            self._calibrated_profile = recommendation_profile(recommendation)
+        except CurveFormatError:
+            self._calibrated_profile = None
         self._refresh_context()
+        self._refresh_curve_preview()
+        self._refresh_suggestions()
+
+    def clear_calibration_context(self) -> None:
+        """Forget a cleared calibration; retain and display an imported curve if one exists."""
+        self._summary_context = ""
+        self._last_recommendation = None
+        self._calibrated_profile = None
+        self._adjusted_profile = None
+        self._preview_base_profile = None
+        self._refresh_context()
+        self._refresh_curve_preview()
+        self._refresh_suggestions()
 
     def notify_new_calibration(self, summary: dict, recommendation: dict) -> None:
         """Called when a calibration completes. The coach's context is always refreshed. An
@@ -377,10 +443,17 @@ class AIChatPage(QWidget):
         if self._focus_on("training"):
             parts.append("After each training drill: a note and a recommendation.")
         if self._focus_on("capture"):
-            parts.append(
-                "Capture: the coach sees capture settings (preset, FPS) only. "
-                "It cannot see the screen or gameplay."
-            )
+            thread = getattr(self, "_live_thread", None)
+            if thread is not None and thread.isRunning():
+                parts.append(
+                    "Capture: the coach sees the settings (preset, FPS) and still frames of the "
+                    "preview while Live vision is on. It sees no game events."
+                )
+            else:
+                parts.append(
+                    "Capture: the coach sees capture settings (preset, FPS) only. "
+                    "It cannot see the screen or gameplay."
+                )
         self.focus_note.setText(" ".join(parts))
 
     def _with_capture_focus(self, context: str) -> str:
@@ -388,41 +461,121 @@ class AIChatPage(QWidget):
             return context
         preset = str(self._settings.value("capture/preset", "balanced"))
         fps = self._settings.value("capture/fps", 60, type=int)
-        line = (
-            f"Capture settings: preset '{preset}', {fps} FPS. The coach cannot see the "
-            "screen or gameplay; this is configuration only."
-        )
-        return f"{context}\n\n{line}" if context else line
-
-    def set_base_profile(self, profile) -> None:
-        """Receive the imported curve so suggestions and AI adjustments can build on it."""
-        self._base_profile = deepcopy(profile) if profile is not None else None
-        self._adjusted_profile = None
-        if self._base_profile is not None:
-            self.quick_hint.setText(
-                f"Base curve: '{self._base_profile.name}'. Suggestions update as you type; "
-                "tap a tuning action to preview it below."
+        thread = getattr(self, "_live_thread", None)
+        watching = thread is not None and thread.isRunning()
+        if watching:
+            line = (
+                f"Capture settings: preset '{preset}', {fps} FPS. Live vision is on, so the coach "
+                "is receiving still frames of the capture preview; it sees no game events."
             )
         else:
-            self.quick_hint.setText("Import a curve in Calibration to enable one-click tuning.")
-            self.quick_preview.hide()
-            self.apply_to_rec.hide()
+            line = (
+                f"Capture settings: preset '{preset}', {fps} FPS. The coach cannot see the "
+                "screen or gameplay unless you turn Live vision on; this is configuration only."
+            )
+        return f"{context}\n\n{line}" if context else line
+
+    def set_ingame_context(self, block: str) -> None:
+        """Take the In-Game Mode block (game, DPI, cm/360°, suggestion) from Settings.
+
+        The block is built by ``fps_coach.ingame.InGameMode.context_block`` and is
+        empty while the mode is off, in which case the coach sees no in-game data.
+        """
+        self._ingame_context = str(block or "")
         self._refresh_context()
+
+    def _with_ingame(self, context: str) -> str:
+        if not self._ingame_context:
+            return context
+        return f"{context}\n\n{self._ingame_context}" if context else self._ingame_context
+
+    def set_base_profile(self, profile) -> None:
+        """Receive an imported curve and refresh the side-by-side tuning preview."""
+        self._base_profile = deepcopy(profile) if profile is not None else None
+        self._adjusted_profile = None
+        self._preview_base_profile = None
+        self._refresh_context()
+        self._refresh_curve_preview()
         self._refresh_suggestions()
 
-    def _refresh_context(self) -> None:
-        """Context = latest calibration summary + a description of the imported base curve."""
-        context = self._summary_context
+    def _active_curve_profile(self):
+        """The curve a quick action or AI directive should build on, if any."""
+        return self._adjusted_profile or self._base_profile or self._calibrated_profile
+
+    def _refresh_curve_preview(self) -> None:
+        """Show the latest calibration or imported curve without inventing a preset shape."""
+        self._adjusted_profile = None
+        self._preview_base_profile = None
+        profile = self._base_profile or self._calibrated_profile
+        if profile is None:
+            self.quick_preview.hide()
+            self.apply_to_rec.hide()
+            self.quick_hint.setText(
+                "Run a calibration or import a curve to see its data-driven shape here."
+            )
+            return
+
+        recommendation = self._last_recommendation
+        if self._base_profile is not None and recommendation and len(recommendation.get("points") or []) >= 2:
+            try:
+                adjusted, note = adjust_from_recommendation(self._base_profile, recommendation)
+            except (CurveFormatError, ValueError):
+                self._show_curve_profile(self._base_profile, "Imported curve; calibration preview unavailable.")
+                return
+            sample_count = int(recommendation.get("captured_sample_count", 0) or 0)
+            self._show_preview(
+                self._base_profile,
+                adjusted,
+                f"Calibration proposal · {sample_count:,} captured movement samples. {note}",
+            )
+            return
+
         if self._base_profile is not None:
+            self._show_curve_profile(
+                self._base_profile,
+                f"Imported curve · {self._base_profile.name}. Ask for a small adjustment to preview it here.",
+            )
+        else:
+            sample_count = int((recommendation or {}).get("captured_sample_count", 0) or 0)
+            point_count = len(recommendation.get("points") or []) if recommendation else 0
+            self._show_curve_profile(
+                profile,
+                f"Calibration curve · {sample_count:,} captured movement samples · "
+                f"{point_count} data-derived control points.",
+            )
+
+    def _show_curve_profile(self, profile, note: str) -> None:
+        """Draw a complete baseline using every measured/imported point, not five resamples."""
+        points = chart_points(profile)
+        if len(points) < 2:
+            self.quick_preview.hide()
+            self.apply_to_rec.hide()
+            self.quick_hint.setText(note)
+            return
+        xs = [x for x, _ in points]
+        self.quick_preview.set_previous(None)
+        self.quick_preview.xs = xs
+        self.quick_preview.points = [y for _, y in points]
+        self.quick_preview.update()
+        self.quick_preview.show()
+        self.apply_to_rec.hide()
+        self.quick_hint.setText(note)
+
+    def _refresh_context(self) -> None:
+        """Context = calibration summary + whichever source curve the coach should tune."""
+        context = self._summary_context
+        profile = self._base_profile or self._calibrated_profile
+        if profile is not None:
             pts = ", ".join(
-                f"({p.speed:.0f},{p.multiplier:.2f})" for p in self._base_profile.horizontal[:12]
+                f"({p.speed:.0f},{p.multiplier:.2f})" for p in profile.horizontal[:32]
             )
+            kind = "Imported base" if self._base_profile is not None else "Current calibrated"
             context = (
-                f"{context}\n\nImported base curve '{self._base_profile.name}' "
-                f"({self._base_profile.source_format}); horizontal speed,gain points: {pts}. "
-                "When asked for adjustments, modify THIS curve rather than designing a new one."
+                f"{context}\n\n{kind} curve '{profile.name}' "
+                f"({profile.source_format}); horizontal speed,gain points: {pts}. "
+                "When asked for adjustments, modify this curve rather than designing a new one."
             )
-        self._calibration_context = self._with_capture_focus(context)
+        self._calibration_context = self._with_ingame(self._with_capture_focus(context))
 
     def _local_proactive_note(self, summary: dict, recommendation: dict) -> str:
         title = str(recommendation.get("title", "Recommendation"))
@@ -481,10 +634,12 @@ class AIChatPage(QWidget):
 
     def _proactive_received(self, answer: str) -> None:
         self._messages.append({"role": "assistant", "content": answer})
-        self._append("Coach", answer)
-        self.assistant_said.emit(answer)
-        # Automatic answers are recommendations only. A curve change is applied from the chat,
-        # by the user, never from this path.
+        visible = _visible_ai_reply(answer)
+        self._append("Coach", visible)
+        self.assistant_said.emit(visible)
+        # A recognized recommendation only refreshes the adjacent preview. Sending it to
+        # Calibration still requires the user's explicit button click.
+        self._apply_ai_adjustment(answer)
 
     def _proactive_quiet_fail(self, _message: str) -> None:
         # The instant local note already covered the user; stay silent on failure.
@@ -502,7 +657,7 @@ class AIChatPage(QWidget):
             widget = item.widget()
             if widget is not None:
                 widget.deleteLater()
-        for s in suggest(self.input.text(), self._base_profile is not None):
+        for s in suggest(self.input.text(), self._active_curve_profile() is not None):
             chip = QPushButton(s["label"])
             chip.setObjectName("secondary")
             if s["kind"] == "preset":
@@ -517,60 +672,472 @@ class AIChatPage(QWidget):
         self.input.setText(prompt)
         self.input.setFocus()
 
-    def _show_preview(self, adjusted, note: str) -> None:
-        self._adjusted_profile = adjusted
-        prev_pts, cur_pts = normalized_overlay(self._base_profile, adjusted)
-        self.quick_preview.set_previous(_curve_samples(prev_pts))
-        self.quick_preview.points = _curve_samples(cur_pts)
+    def _show_preview(self, previous, adjusted, note: str) -> None:
+        """Show every before/after control point; sending it remains an explicit user action."""
+        self._preview_base_profile = deepcopy(previous)
+        self._adjusted_profile = deepcopy(adjusted)
+        prev_pts, cur_pts = normalized_overlay(previous, adjusted)
+        prev_xs, prev_ys = zip(*prev_pts, strict=True)
+        cur_xs, cur_ys = zip(*cur_pts, strict=True)
+        self.quick_preview.set_previous(list(prev_ys), xs=list(prev_xs))
+        self.quick_preview.xs = list(cur_xs)
+        self.quick_preview.points = list(cur_ys)
         self.quick_preview.update()
         self.quick_preview.show()
         self.apply_to_rec.show()
-        self.quick_hint.setText(note)
+        self.quick_hint.setText(
+            f"{note}\nSolid: proposed · dashed: before. Nothing is sent until you choose Send to calibration."
+        )
+        self._refresh_suggestions()
 
     def _apply_quick_action(self, key: str) -> None:
-        if self._base_profile is None:
-            self._append("Quick action", "Import a curve in Calibration first.")
+        base = self._active_curve_profile()
+        if base is None:
+            self._append("Quick action", "Run a calibration or import a curve first.")
             return
         try:
-            adjusted, note = apply_preset(self._base_profile, key)
+            adjusted, note = apply_preset(base, key)
         except KeyError:
             return
-        self._show_preview(adjusted, note)
+        self._show_preview(base, adjusted, note)
         self._append(
             "Quick action",
-            f"{note}\nPreview updated. Multiplier now {adjusted.horizontal[0].multiplier:.2f}x at the first point.",
+            f"{note}\nThe adjacent before/after graph is ready for review. "
+            f"First-point multiplier: {adjusted.horizontal[0].multiplier:.2f}x.",
         )
 
     def _apply_ai_adjustment(self, answer: str) -> None:
-        """If the assistant recommended a curve change, apply it to the imported curve
-        and show it in the preview and on the Calibration graph."""
-        if self._base_profile is None:
-            return
+        """Convert an AI curve suggestion into a visual proposal, never an automatic apply."""
         plan = parse_adjustment(answer)
-        if not plan:
+        base = self._active_curve_profile()
+        if not plan or base is None:
             return
         try:
-            adjusted, note = apply_adjustment(self._base_profile, plan)
+            adjusted, note = apply_adjustment(base, plan)
         except (ValueError, KeyError):
             return
-        self._show_preview(adjusted, note)
-        self.curve_adjusted.emit(deepcopy(self._base_profile), deepcopy(adjusted), note)
-        self._append("Applied", f"{note} Updated the Calibration graph automatically.")
+        self._show_preview(base, adjusted, f"AI curve proposal · {note}")
 
     def _send_adjusted_to_calibration(self) -> None:
-        if self._base_profile is None or self._adjusted_profile is None:
+        if self._preview_base_profile is None or self._adjusted_profile is None:
             return
+        note = self._adjusted_profile.description or "Adjusted via AI Coach curve preview."
         self.curve_adjusted.emit(
-            deepcopy(self._base_profile),
+            deepcopy(self._preview_base_profile),
             deepcopy(self._adjusted_profile),
-            self._adjusted_profile.description or "Adjusted via AI quick action.",
+            note,
         )
-        self._append("Quick action", "Sent the adjusted curve to Calibration (open it to review and export).")
+        self._append(
+            "Coach",
+            "Sent the visual curve proposal to Calibration for review. It has not been applied to the game.",
+        )
+
+    # -- live vision (coach watches the capture preview) ----------------------
+    def set_capture_source(self, backend) -> None:
+        """Hand the page the object whose ``latest_frame()`` feeds the coach.
+
+        MainWindow passes its CoreBackend. Without it the Live vision card
+        explains that there is nothing to watch instead of failing.
+        """
+        self._capture_source = backend
+        self._refresh_live_vision_note()
+
+    def _build_live_vision_setting(self) -> QVBoxLayout:
+        """The switch that decides whether the Live vision panel exists at all.
+
+        Off by default, so the tab is just the chat until you ask for the panel.
+        This is a layout preference and is remembered; the panel's own "Watch
+        live" switch is not, and stays off at every launch.
+        """
+        box = QVBoxLayout()
+        box.setSpacing(6)
+        self.live_enable = QCheckBox("Enable live vision")
+        self.live_enable.setToolTip(
+            "Shows the Live vision panel beside the chat, where the coach can be given "
+            "clips of the capture preview. Off: the panel is hidden and nothing is captured."
+        )
+        self.live_enable.setChecked(bool(_settings().value("ai/live_enabled", False, type=bool)))
+        self.live_enable.toggled.connect(self._on_live_enable_toggled)
+        box.addWidget(self.live_enable)
+        hint = _label(
+            "Adds a panel in the middle of this page that shows what the coach is shown. "
+            "Watching still starts off every launch.",
+            "cardSubtitle",
+            wrap=True,
+        )
+        box.addWidget(hint)
+        return box
+
+    def _on_live_enable_toggled(self, enabled: bool) -> None:
+        _settings().setValue("ai/live_enabled", bool(enabled))
+        card = getattr(self, "live_card", None)
+        if card is not None:
+            card.setVisible(bool(enabled))
+        if not enabled:
+            self._stop_live_vision()  # hiding the panel must stop its capture too
+
+    def _build_live_vision_card(self):
+        card, lay = _card(
+            "Live vision",
+            "The coach watches the live capture preview as a moving clip. Off at every launch.",
+        )
+        # Filmstrip: the frames of the window the model was last given, oldest first.
+        self.live_filmstrip = QWidget()
+        strip_lay = QHBoxLayout(self.live_filmstrip)
+        strip_lay.setContentsMargins(0, 0, 0, 0)
+        strip_lay.setSpacing(4)
+        self.live_slots: list[QLabel] = []
+        for _ in range(4):
+            slot = QLabel("")
+            slot.setObjectName("stage")
+            slot.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            slot.setFixedHeight(74)
+            slot.setMinimumWidth(40)
+            slot.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            slot.setScaledContents(False)
+            slot.installEventFilter(self)  # re-fit when the card is resized
+            strip_lay.addWidget(slot, 1)
+            self.live_slots.append(slot)
+        self._live_pixmaps: list = []
+        lay.addWidget(self.live_filmstrip)
+
+        self.live_motion = QProgressBar()
+        self.live_motion.setRange(0, 100)
+        self.live_motion.setValue(0)
+        self.live_motion.setTextVisible(True)
+        self.live_motion.setFormat("motion \u2014 no clip yet")
+        self.live_motion.setToolTip(
+            "How much the preview changed between the sampled frames. High motion means the "
+            "coach's answer is about movement, not a static picture."
+        )
+        lay.addWidget(self.live_motion)
+
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        self.live_toggle = QPushButton(" Watch live")
+        self.live_toggle.setObjectName("secondary")
+        self.live_toggle.setCheckable(True)
+        self.live_toggle.setChecked(False)  # never on at launch
+        set_glyph(self.live_toggle, "eye")
+        self.live_now = QPushButton(" Look now")
+        self.live_now.setObjectName("secondary")
+        set_glyph(self.live_now, "refresh")
+        self.live_now.setToolTip("Take a clip from the preview now, without starting the loop")
+        row.addWidget(self.live_toggle)
+        row.addWidget(self.live_now)
+        row.addStretch(1)
+        lay.addLayout(row)
+
+        form = QGridLayout()
+        form.setHorizontalSpacing(10)
+        form.setVerticalSpacing(8)
+        settings = _settings()
+
+        form.addWidget(_label("Clip length", "formLabel"), 0, 0)
+        self.live_frames = QSpinBox()
+        self.live_frames.setRange(1, 8)
+        self.live_frames.setSuffix(" frames")
+        self.live_frames.setValue(int(settings.value("ai/live_frames", 4, type=int)))
+        self.live_frames.setToolTip(
+            "How many frames one answer is based on. One frame is a snapshot; four frames half "
+            "a second apart is a two-second clip the model can compare."
+        )
+        self.live_frames.valueChanged.connect(
+            lambda value: settings.setValue("ai/live_frames", int(value))
+        )
+        form.addWidget(self.live_frames, 0, 1)
+
+        form.addWidget(_label("Sample every", "formLabel"), 1, 0)
+        self.live_sample = QDoubleSpinBox()
+        self.live_sample.setRange(0.1, 3.0)
+        self.live_sample.setSingleStep(0.1)
+        self.live_sample.setDecimals(1)
+        self.live_sample.setSuffix(" s")
+        self.live_sample.setValue(float(settings.value("ai/live_sample", 0.5, type=float)))
+        self.live_sample.setToolTip(
+            "Gap between the frames inside a clip. Smaller is closer to video and costs more per "
+            "answer; most local vision models stall below about 0.3 s."
+        )
+        self.live_sample.valueChanged.connect(
+            lambda value: settings.setValue("ai/live_sample", float(value))
+        )
+        form.addWidget(self.live_sample, 1, 1)
+
+        form.addWidget(_label("Ask every", "formLabel"), 2, 0)
+        self.live_interval = QDoubleSpinBox()
+        self.live_interval.setRange(2.0, 120.0)
+        self.live_interval.setSingleStep(1.0)
+        self.live_interval.setDecimals(0)
+        self.live_interval.setSuffix(" s")
+        self.live_interval.setValue(float(settings.value("ai/live_interval", 4.0, type=float)))
+        self.live_interval.setToolTip(
+            "How long to wait after each reply before taking the next clip. A longer gap means "
+            "fewer, less repetitive comments; the model's own speed is the real limit."
+        )
+        self.live_interval.valueChanged.connect(
+            lambda value: settings.setValue("ai/live_interval", float(value))
+        )
+        form.addWidget(self.live_interval, 2, 1)
+        lay.addLayout(form)
+
+        self.live_change_only = QCheckBox("Only when the picture changes")
+        self.live_change_only.setToolTip(
+            "Skip requests while the preview is not moving, so a paused game costs nothing. "
+            "Look now always sends."
+        )
+        self.live_change_only.setChecked(bool(settings.value("ai/live_change_only", True, type=bool)))
+        self.live_change_only.toggled.connect(
+            lambda checked: settings.setValue("ai/live_change_only", bool(checked))
+        )
+        lay.addWidget(self.live_change_only)
+
+        self.live_status = _label("Off", "statusLabel", wrap=True)
+        lay.addWidget(self.live_status)
+
+        self.live_note = _label("", "cardSubtitle", wrap=True)
+        lay.addWidget(self.live_note)
+        self._refresh_live_vision_note()
+
+        lay.addStretch(1)  # keep the controls together at the top of the tall card
+        self.live_toggle.toggled.connect(self._toggle_live_vision)
+        self.live_now.clicked.connect(self._ask_live_now)
+        self.live_card = card
+        card.setVisible(self.live_enable.isChecked())  # hidden unless the Setting is on
+        return card
+
+    def _live_frame_provider(self):
+        """The newest captured frame, or None while the preview is not running."""
+        source = self._capture_source
+        latest = getattr(source, "latest_frame", None)
+        if not callable(latest):
+            return None
+        try:
+            frame = latest()
+        except Exception:  # noqa: BLE001 - the loop reports a broken backend itself
+            return None
+        return frame if isinstance(frame, dict) and frame.get("bgra") else None
+
+    def _refresh_live_vision_note(self) -> None:
+        """Say whether the configured model can see, and where the frames go."""
+        if not hasattr(self, "live_note"):
+            return
+        settings = self._chat_settings()
+        notes: list[str] = []
+        if not callable(getattr(self._capture_source, "latest_frame", None)):
+            notes.append("Live vision needs the capture backend; it is not available here.")
+        recommended = suggested_vision_models()[0]
+        if not model_supports_images(settings.model, settings.provider):
+            notes.append(
+                f"{settings.model or 'This model'} cannot see images. Pick a vision model in "
+                f"Settings - {recommended} is the best fit (ollama pull {recommended})."
+            )
+        elif not _is_timestamp_model(settings.model):
+            notes.append(
+                f"Yes, it can see. {recommended} is the better fit for a clip: it is trained on "
+                "timestamped video frames, so it follows what changed and when."
+            )
+        if settings.provider == "openai":
+            notes.append(
+                "Frames are uploaded to your configured API endpoint while this runs."
+            )
+        elif model_supports_images(settings.model, settings.provider):
+            notes.append("Local model: frames stay on this machine.")
+        self.live_note.setText(" ".join(notes))
+        self.live_note.setVisible(bool(notes))
+
+    def _set_live_status(self, text: str, state: str = "") -> None:
+        self.live_status.setText(text)
+        self.live_status.setProperty("state", state)
+        self.live_status.style().unpolish(self.live_status)
+        self.live_status.style().polish(self.live_status)
+
+    def _toggle_live_vision(self, checked: bool) -> None:
+        if checked and not self.live_enable.isChecked():
+            self._on_live_enable_toggled(True)  # never watch from a hidden panel
+            self.live_enable.setChecked(True)
+        if checked:
+            self._start_live_vision()
+        else:
+            self._stop_live_vision()
+
+    def _live_vision_settings(self) -> VisionSettings:
+        return VisionSettings(
+            frames_per_request=int(self.live_frames.value()),
+            sample_interval=float(self.live_sample.value()),
+            min_interval=float(self.live_interval.value()),
+            adaptive=self.live_change_only.isChecked(),
+        )
+
+    def _start_live_vision(self) -> None:
+        if self._live_thread is not None:
+            return  # already starting or running
+        if not callable(getattr(self._capture_source, "latest_frame", None)):
+            self._stop_live_vision()
+            self._set_live_status("No capture backend, so there is nothing to watch.", "bad")
+            return
+        settings = self._chat_settings()
+        if not model_supports_images(settings.model, settings.provider):
+            self._set_live_status(
+                f"{settings.model} cannot see images — choose a vision model in Settings.",
+                "warn",
+            )
+        else:
+            self._set_live_status("Starting…", "good")
+        self._live_failures = 0
+        self._live_session = LiveVisionSession(
+            frame_provider=self._live_frame_provider,
+            chat=AIChatClient(settings),
+            settings=self._live_vision_settings(),
+            context_provider=lambda: self._calibration_context,
+        )
+        self._live_thread = _LiveVisionThread(self._live_session, self)
+        self._live_thread.reply_ready.connect(self._live_vision_reply)
+        self._live_thread.request_failed.connect(self._live_vision_failed)
+        self._live_thread.status_changed.connect(self._live_vision_status)
+        self._live_thread.window_sent.connect(self._live_vision_window)
+        self._live_thread.finished.connect(self._live_vision_finished)
+        blocked = self.live_toggle.blockSignals(True)
+        self.live_toggle.setChecked(True)
+        self.live_toggle.blockSignals(blocked)
+        self.live_interval.setEnabled(False)
+        self.live_frames.setEnabled(False)
+        self.live_sample.setEnabled(False)
+        self._live_thread.start()
+
+    def _stop_live_vision(self) -> None:
+        if self._live_thread is not None:
+            self._live_thread.stop_session()
+            if not self._live_thread.isRunning():
+                self._live_thread.deleteLater()
+                self._live_thread = None
+        self._live_session = None
+        signals_blocked = self.live_toggle.blockSignals(True)
+        self.live_toggle.setChecked(False)
+        self.live_toggle.blockSignals(signals_blocked)
+        self.live_interval.setEnabled(True)
+        self.live_frames.setEnabled(True)
+        self.live_sample.setEnabled(True)
+        self._live_motion_reset()
+        self._set_live_status("Off")
+
+    def _ask_live_now(self) -> None:
+        """One frame, one answer — the loop runs once if it is not already."""
+        if not callable(getattr(self._capture_source, "latest_frame", None)):
+            self._set_live_status("No capture backend, so there is nothing to look at.", "bad")
+            return
+        if self._live_thread is not None and self._live_thread.isRunning():
+            self._live_thread.ask_now()
+            self._set_live_status("Looking at the newest frame…", "good")
+            return
+        self._start_live_vision()
+        if self._live_thread is not None:
+            self._live_thread.ask_now()
+
+    def _live_vision_reply(self, text: str, meta) -> None:
+        meta = meta or {}
+        frames = int(meta.get("frames") or 1)
+        stamp = f"{frames} frame{'s' if frames != 1 else ''}"
+        if meta.get("span"):
+            stamp += f" / {float(meta['span']):.1f} s"
+        if meta.get("motion_word"):
+            stamp += f" · {meta['motion_word']} motion"
+        if meta.get("latency"):
+            stamp += f" · {float(meta['latency']):.1f} s"
+        if meta.get("changed") is not None and hasattr(self, "live_motion"):
+            # The bar shows how much of the frame moved, which is the readable number.
+            share = max(0.0, min(1.0, float(meta["changed"])))
+            self.live_motion.setValue(int(round(share * 100)))
+            where = meta.get("band") if meta.get("band") not in (None, "none") else "no area"
+            self.live_motion.setFormat(
+                f"motion {meta.get('motion_word', '')} · {share * 100:.0f}% ({where})"
+            )
+        self._append("Coach (live)", f"{text} <i>— {stamp}</i>")
+        counters = self._live_session.counters if self._live_session is not None else None
+        self._set_live_status(counters.line() if counters else "Watching", "good")
+
+    def _live_vision_failed(self, message: str) -> None:
+        self._live_failures += 1
+        self._set_live_status(f"Live vision: {message}", "bad")
+
+    def _live_vision_status(self, message: str) -> None:
+        if message.startswith("Live vision stopped"):
+            return  # the toggle and the counters already say so
+        state = "warn" if message.startswith("No frame yet") else ""
+        self._set_live_status(message, state)
+
+    def _live_vision_window(self, frames, meta) -> None:
+        """Show the clip the model was given — oldest frame first, newest last."""
+        meta = meta or {}
+        details = list(meta.get("frames") or [])
+        jpegs = list(frames or [])
+        visible = jpegs[-len(self.live_slots):]
+        details = details[-len(self.live_slots):]
+        self._live_pixmaps = []
+        for index, slot in enumerate(self.live_slots):
+            slot.clear()
+            slot.setText("")
+            if index >= len(visible):
+                self._live_pixmaps.append(None)
+                continue
+            pixmap = QPixmap()
+            if not pixmap.loadFromData(visible[index], "JPEG"):
+                self._live_pixmaps.append(None)
+                continue
+            info = details[index] if index < len(details) else {}
+            self._live_pixmaps.append(pixmap)
+            slot.setToolTip(
+                f"{info.get('width', '?')}\u00d7{info.get('height', '?')} \u00b7 "
+                f"{info.get('bytes', 0) / 1024:.0f} KB \u00b7 "
+                f"{info.get('age', 0):.1f} s before the newest frame"
+            )
+        self._fit_live_strip()
+
+    def _fit_live_strip(self) -> None:
+        for slot, pixmap in zip(self.live_slots, self._live_pixmaps, strict=False):
+            if pixmap is None:
+                continue
+            slot.setPixmap(
+                pixmap.scaled(
+                    max(32, slot.width() - 4),
+                    max(32, slot.height() - 4),
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            )
+
+    def _live_motion_reset(self) -> None:
+        if hasattr(self, "live_motion"):
+            self.live_motion.setValue(0)
+            self.live_motion.setFormat("motion \u2014 no clip yet")
+
+    def eventFilter(self, obj, event):  # noqa: N802 - Qt naming
+        if event.type() == QEvent.Type.Resize and obj in getattr(self, "live_slots", []):
+            self._fit_live_strip()
+        return super().eventFilter(obj, event)
+
+    def _live_vision_finished(self) -> None:
+        self._live_session = None
+        if self._live_thread is not None:
+            self._live_thread.deleteLater()
+            self._live_thread = None
+        signals_blocked = self.live_toggle.blockSignals(True)
+        self.live_toggle.setChecked(False)
+        self.live_toggle.blockSignals(signals_blocked)
+        self.live_interval.setEnabled(True)
+        self.live_frames.setEnabled(True)
+        self.live_sample.setEnabled(True)
 
     def shutdown(self) -> None:
-        for thread in (self._thread, self._voice_thread, self._proactive_check, self._proactive_request):
+        self._stop_live_vision()
+        for thread in (
+            self._thread,
+            self._voice_thread,
+            self._proactive_check,
+            self._proactive_request,
+            self._live_thread,
+        ):
             if thread is not None and thread.isRunning():
-                thread.wait(2000)
+                thread.wait(3000)
 
     # -- read aloud and text size ----------------------------------------------
     def _build_speech_bar(self) -> QHBoxLayout:
@@ -579,7 +1146,7 @@ class AIChatPage(QWidget):
         self.read_aloud = QCheckBox("Read replies aloud")
         self.read_aloud.setToolTip(
             "Speaks each AI reply with the text-to-speech engine. "
-            "Same setting as Settings > Replies > Read replies aloud."
+            "Same saved value as Speak responses aloud in Settings > Voice."
         )
         self.read_aloud.toggled.connect(self._on_read_aloud_toggled)
         row.addWidget(self.read_aloud)
@@ -609,6 +1176,9 @@ class AIChatPage(QWidget):
         sliders.addWidget(self.speed_slider, 1)
         sliders.addWidget(_label("Volume", "formLabel"))
         self.volume_slider = ValueSlider(VOLUME_MIN, VOLUME_MAX, fmt=lambda v: f"{v}%")
+        # Explicit: a new slider would sit at the range minimum (0%, silent), so the
+        # default is set here before refresh_from_settings restores anything saved.
+        self.volume_slider.setValue(VOLUME_DEFAULT)
         self.volume_slider.setToolTip("Speech volume. Changes apply to the next sentence spoken.")
         self.volume_slider.valueChanged.connect(lambda _v: self._emit_speech_options())
         sliders.addWidget(self.volume_slider, 1)
@@ -617,7 +1187,7 @@ class AIChatPage(QWidget):
         voice_row = QHBoxLayout()
         voice_row.setSpacing(10)
         voice_row.addWidget(_label("Voice", "formLabel"))
-        self.voice_combo = QComboBox()
+        self.voice_combo = ComboField()
         self.voice_combo.setToolTip("Voices this system's speech engine offers.")
         self.voice_combo.addItem("Engine default", "")
         self.voice_combo.currentIndexChanged.connect(lambda _i: self._on_voice_chosen())
@@ -666,7 +1236,7 @@ class AIChatPage(QWidget):
     def _emit_speech_options(self) -> None:
         options = self.speech_options()
         self._settings.setValue("tts/speed", options.speed)
-        self._settings.setValue("tts/volume", options.volume)
+        self._settings.setValue(VOLUME_KEY, options.volume)
         self._update_voice_tooltip()
         self.speech_options_changed.emit(options)
 
@@ -696,8 +1266,28 @@ class AIChatPage(QWidget):
         row.addWidget(self.font_reset_btn)
         return row
 
+    @staticmethod
+    def ensure_volume_default(settings) -> int:
+        """Store the 100% default once, so the volume is explicit from the first launch.
+
+        Returns the value that will be used: the stored one when the user has ever set
+        it (including 0, which means muted), otherwise 100.
+        """
+        stored = settings.value(VOLUME_KEY)
+        if stored is None:
+            settings.setValue(VOLUME_KEY, VOLUME_DEFAULT)
+            return VOLUME_DEFAULT
+        try:
+            return SpeechOptions(volume=stored).clamped().volume
+        except (TypeError, ValueError):
+            # A corrupt value must not silence the coach: fall back to the default.
+            settings.setValue(VOLUME_KEY, VOLUME_DEFAULT)
+            return VOLUME_DEFAULT
+
     def refresh_from_settings(self) -> None:
         """Show the saved read-aloud and text-size values. Signals stay quiet."""
+        if hasattr(self, "live_note"):
+            self._refresh_live_vision_note()  # the model may have changed in Settings
         enabled = self._settings.value("ui/tts_enabled", False, type=bool)
         px = self._settings.value("chat/font_px", self.TEXT_DEFAULT, type=int)
         px = max(self.TEXT_MIN, min(self.TEXT_MAX, int(px)))
@@ -710,7 +1300,7 @@ class AIChatPage(QWidget):
         # Speech controls: saved values, shown without emitting.
         saved = SpeechOptions(
             speed=self._settings.value("tts/speed", 1.0, type=float),
-            volume=self._settings.value("tts/volume", 100, type=int),
+            volume=self.ensure_volume_default(self._settings),
             voice=str(self._settings.value("tts/voice", "") or ""),
         ).clamped()
         self._voice_name = saved.voice
@@ -722,6 +1312,8 @@ class AIChatPage(QWidget):
         self.volume_slider.blockSignals(False)
         self._apply_text_size(px)
         self._show_default_speech_text()
+        if self._transcript_items:
+            self._render_transcript()
 
     def _on_read_aloud_toggled(self, checked: bool) -> None:
         self._settings.setValue("ui/tts_enabled", bool(checked))
@@ -747,17 +1339,6 @@ class AIChatPage(QWidget):
         self._apply_text_size(px)
         self._settings.setValue("chat/font_px", int(px))
         self._update_voice_tooltip()
-        self.replies_changed.emit()
-
-    def set_text_size(self, px: int) -> None:
-        """Set the reply text size from Settings > Replies. Does not emit replies_changed."""
-        px = max(self.TEXT_MIN, min(self.TEXT_MAX, int(px)))
-        self.font_slider.blockSignals(True)
-        self.font_slider.setValue(px)
-        self.font_slider.blockSignals(False)
-        self._apply_text_size(px)
-        self._settings.setValue("chat/font_px", px)
-        self._update_voice_tooltip()
 
     def _apply_text_size(self, px: int) -> None:
         px = int(px)
@@ -772,7 +1353,48 @@ class AIChatPage(QWidget):
         self.transcript.document().setDefaultFont(font)
 
     def _append(self, who, text):
-        self.transcript.append(f"<b>{who}:</b> {text}")
+        """Keep a theme-aware message record and insert a right/left-aligned bubble."""
+        self._transcript_items.append((str(who), str(text)))
+        self._insert_chat_bubble(who, text)
+
+    def _render_transcript(self) -> None:
+        self.transcript.clear()
+        for who, text in self._transcript_items:
+            self._insert_chat_bubble(who, text)
+
+    def _insert_chat_bubble(self, who, text) -> None:
+        """Insert an escaped chat bubble: user right, coach left."""
+        is_user = str(who).strip().casefold() in {"you", "user"}
+        palette = active_palette()
+        if is_user:
+            base = QColor(palette["surface"])
+            accent = QColor(palette["accent"])
+            mix = 0.14
+            background = QColor(
+                round(base.red() * (1.0 - mix) + accent.red() * mix),
+                round(base.green() * (1.0 - mix) + accent.green() * mix),
+                round(base.blue() * (1.0 - mix) + accent.blue() * mix),
+            ).name()
+            border = accent.name()
+            alignment = "right"
+        else:
+            background = palette["surface2"]
+            border = palette["line2"]
+            alignment = "left"
+        label = html.escape(str(who))
+        body = html.escape(str(text)).replace("\r\n", "\n").replace("\r", "\n").replace("\n", "<br/>")
+        fragment = (
+            f'<table align="{alignment}" width="78%" cellspacing="0" cellpadding="8" '
+            f'border="1" bordercolor="{border}" bgcolor="{background}"><tr>'
+            f'<td bgcolor="{background}"><span style="color:{palette["accent"]};">'
+            f"<b>{label}:</b></span> <span style=\"color:{palette['text']}\">{body}</span>"
+            "</td></tr></table>"
+        )
+        cursor = self.transcript.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.insertHtml(fragment)
+        self.transcript.setTextCursor(cursor)
+        self.transcript.ensureCursorVisible()
 
     def _chat_settings(self) -> ChatSettings:
         s = self._settings
@@ -815,8 +1437,9 @@ class AIChatPage(QWidget):
 
     def _on_reply(self, answer: str):
         self._messages.append({"role": "assistant", "content": answer})
-        self._append("Coach", answer)
-        self.assistant_said.emit(answer)
+        visible = _visible_ai_reply(answer)
+        self._append("Coach", visible)
+        self.assistant_said.emit(visible)
         self._apply_ai_adjustment(answer)
 
     def _on_failed(self, message: str):
@@ -844,12 +1467,39 @@ class AIChatPage(QWidget):
     def clear_history(self) -> None:
         """Forget the on-screen transcript and the messages sent to the model (Privacy page)."""
         self._messages = []
+        self._transcript_items.clear()
         self.transcript.clear()
 
 
+def _is_timestamp_model(model: str) -> bool:
+    """True for the families trained on interleaved timestamp + video-frame input."""
+    name = (model or "").strip().lower()
+    return any(hint in name for hint in ("qwen3-vl", "qwen3vl", "qwen2.5-vl", "qwen2.5vl"))
+
+
 PRIVACY_POINTS: tuple[str, ...] = (
-        "Screen capture frames are processed in memory and never written to disk.",
-        "AI requests are sent only to the endpoint you configure in Settings.",
+        "Calibration observes timestamped cursor positions only during the explicit in-app target task. "
+        "Its movement-speed analysis and data-derived curve run locally; raw cursor samples are processed "
+        "in memory and are not sent to the AI endpoint. Calibration does not use screen frames.",
+        "Recording (Capture tab) is off unless you start it. It records the primary display. "
+        "Without \"Keep the recording\" the file is deleted when you stop or close the app; with "
+        "it, the video is saved to the folder you pick and stays there until you delete it. "
+        "Recordings are never uploaded by the app. The analysis timer samples frame statistics "
+        "only, never targets or gameplay events.",
+        "In-Game Mode (Settings) is off at every launch and only turns on when you enable it "
+        "for that session. It never reads or changes the game: you type your game, DPI, and "
+        "in-game sensitivity, and the app converts those numbers. While it is on, those numbers "
+        "are included in the context sent to your configured AI endpoint.",
+        "Live vision (AI Coach) is off at every launch. While it is on, the capture preview is "
+        "sampled into short clips of downscaled frames (4 frames half a second apart by default) and "
+        "each clip is sent to the AI endpoint you configured, one clip at a time, with the reply in "
+        "the chat. The frames are held in memory only and are never recorded by this feature. With a "
+        "local Ollama model they stay on this machine; with an online provider they are uploaded to "
+        "it. Turn it off and nothing leaves the app. The coach is asked to comment on the movement "
+        "and the setup only - never on targets, enemies, or aim.",
+        "AI requests are sent only to the endpoint you configure in Settings. Text-coaching requests can include "
+        "the conversation, calibration summary, and up to 32 horizontal speed/gain points from the active curve; "
+        "raw cursor samples are never sent. In-Game Mode values are included only while that session toggle is on.",
         "Voice recognition can run fully offline via a local model.",
         "The crosshair overlay is off by default. When it is on, or while you edit its "
         "position, it draws a crosshair on your primary screen only. The active crosshair "
@@ -971,8 +1621,8 @@ class PrivacyPage(QWidget):
 class SettingsPage(QWidget):
     settings_changed = Signal()
     bounce_speed_changed = Signal(int)  # serious-mode speed percentage, sent on every slider step
-    stop_speaking_requested = Signal()  # Settings > Replies > Stop speaking
-    text_size_changed = Signal(int)  # Settings > Replies > Reply text size, sent while dragging
+    ingame_changed = Signal()  # In-Game Mode toggle or any of its values changed
+    ingame_question = Signal(str)  # "Ask the coach" with a ready-made question
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -998,7 +1648,11 @@ class SettingsPage(QWidget):
         right = QVBoxLayout()
         right.setSpacing(20)
         right.addWidget(self._build_ui_card())
-        right.addWidget(self._build_replies_card())
+        # No Replies card: read aloud, Stop speaking and the reply text size belong to the
+        # AI Coach tab's Settings block, and duplicating them here meant two controls for
+        # one saved value. The Voice card below keeps the "Speak responses aloud" switch.
+        # In-Game Mode lives inside Advanced now: it is a session-only extra that most
+        # people never open, so it should not take a card's worth of room by default.
         right.addWidget(self._build_advanced_card())
         right.addStretch(1)
         columns.addLayout(left, 1)
@@ -1012,7 +1666,7 @@ class SettingsPage(QWidget):
         form.setVerticalSpacing(10)
 
         form.addWidget(_label("Provider", "formLabel"), 0, 0)
-        self.provider = QComboBox()
+        self.provider = ComboField()
         self.provider.addItems(["ollama", "openai-compatible"])
         self.provider.setCurrentText(self.s.value("ai/provider", "ollama"))
         self.provider.currentTextChanged.connect(self._on_ai_changed)
@@ -1025,15 +1679,38 @@ class SettingsPage(QWidget):
 
         form.addWidget(_label("Model", "formLabel"), 2, 0)
         model_row = QHBoxLayout()
-        self.model = QLineEdit(self.s.value("ai/model", "qwen3:1.7b"))
-        self.model.editingFinished.connect(self._on_ai_changed)
+        # Editable, so a name can be picked from the list *or* typed (a model that is not
+        # installed yet, a tag this endpoint names differently). Picking saves immediately;
+        # typing is committed on focus-out, as before.
+        self.model = ComboField()
+        self.model.setEditable(True)
+        self.model.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.model.setToolTip(
+            "Pick a model from the list, or type a name. The list button asks the provider "
+            "which models it has."
+        )
+        self.model.lineEdit().setPlaceholderText("Pick a model, or type one")
+        self.model.textActivated.connect(lambda _text: self._on_ai_changed())
+        self.model.lineEdit().editingFinished.connect(self._on_ai_changed)
         self.pull_btn = QToolButton()
         set_glyph(self.pull_btn, "download")
         self.pull_btn.setObjectName("iconButton")
+        self.pull_btn.setToolTip("Download the model named above into the local Ollama.")
         self.pull_btn.clicked.connect(self._pull_model)
+        self.model_list_btn = QToolButton()
+        set_glyph(self.model_list_btn, "refresh")
+        self.model_list_btn.setObjectName("iconButton")
+        self.model_list_btn.setToolTip(
+            "List the models this provider offers (Ollama: the ones installed on this machine)."
+        )
+        self.model_list_btn.clicked.connect(self._list_models)
         model_row.addWidget(self.model, 1)
         model_row.addWidget(self.pull_btn)
+        model_row.addWidget(self.model_list_btn)
         form.addLayout(model_row, 2, 1)
+
+        self.model_hint = _label("", "cardSubtitle", wrap=True)
+        form.addWidget(self.model_hint, 4, 0, 1, 2)
 
         form.addWidget(_label("Temperature", "formLabel"), 3, 0)
         # Stored as 0.00-1.50; the slider works in hundredths so the readout shows the stored value.
@@ -1043,6 +1720,7 @@ class SettingsPage(QWidget):
         form.addWidget(self.temperature, 3, 1)
 
         lay.addLayout(form)
+        self._fill_model_choices()
 
         self.pull_progress = QProgressBar()
         self.pull_progress.setValue(0)
@@ -1063,16 +1741,172 @@ class SettingsPage(QWidget):
 
         return card
 
+    MODEL_CACHE_KEY = "ai/model_list"  # names the provider reported last time
+
+    def _model_name(self) -> str:
+        """The chosen name, without the "(suggested)" label, or whatever was typed."""
+        typed = str(self.model.currentText() or "").strip()
+        index = self.model.currentIndex()
+        if index >= 0:
+            data = self.model.itemData(index) or {}
+            name = str(data.get("name", "") or "").strip()
+            if name and typed.casefold() == self._model_label(name, str(data.get("source", ""))).casefold():
+                return name
+        return typed
+
+    @staticmethod
+    def _model_label(name: str, source: str) -> str:
+        """How an entry reads in the list. Suggestions say so, so a pick is never a surprise."""
+        if source == "suggested":
+            return f"{name} (suggested, not installed)"
+        return name
+
+    def _model_index(self, name: str) -> int:
+        """Index of ``name`` in the list, matched on the real name rather than the label."""
+        target = str(name or "").strip().casefold()
+        if not target:
+            return -1
+        for index in range(self.model.count()):
+            data = self.model.itemData(index) or {}
+            if str(data.get("name", "")).strip().casefold() == target:
+                return index
+        return -1
+
+    def _saved_model(self) -> str:
+        return str(self.s.value("ai/model", "qwen3:1.7b") or "").strip()
+
+    def _cached_models(self) -> list[str]:
+        """Names the provider listed last time. Survives a restart, so the list is never empty."""
+        stored = self.s.value(self.MODEL_CACHE_KEY, [])
+        if isinstance(stored, str):
+            stored = [stored]
+        return [str(name).strip() for name in (stored or []) if str(name).strip()]
+
+    def _fill_model_choices(self, installed: list[str] | None = None) -> None:
+        """Rebuild the model list: remembered names first, then suggestions.
+
+        The current name is never dropped from the box even when the provider no longer
+        lists it, and every item records where it came from so the hint can say whether
+        picking it means "already installed" or "will be downloaded".
+        """
+        current = self._model_name() or self._saved_model()
+        known = self._cached_models() if installed is None else list(installed)
+        ordered: list[tuple[str, str]] = []
+        if current:
+            ordered.append((current, "current"))
+        for name in known:
+            ordered.append((name, "installed"))
+        for name in suggested_text_models():
+            ordered.append((name, "suggested"))
+
+        seen: set[str] = set()
+        items: list[tuple[str, str]] = []
+        for name, source in ordered:
+            key = str(name).strip().casefold()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            items.append((str(name).strip(), source))
+
+        blocked = self.model.blockSignals(True)
+        self.model.clear()
+        for name, source in items:
+            self.model.addItem(self._model_label(name, source), {"name": name, "source": source})
+        self.model.setCurrentIndex(self._model_index(current))
+        self.model.blockSignals(blocked)
+        self._update_model_hint(len(known))
+
+    def _update_model_hint(self, known_count: int | None = None) -> None:
+        known = self._cached_models() if known_count is None else known_count
+        current = self._model_name()
+        parts = [
+            f"{known} model(s) from the provider" if known else "No list from the provider yet",
+            f"{len(suggested_text_models())} suggested names",
+        ]
+        data = self.model.currentData()
+        source = str(data.get("source", "")) if isinstance(data, dict) and current else None
+        if source == "suggested":
+            detail = (
+                f"\"{current}\" is a suggested name, not a listed one: pull it with the "
+                "download button."
+            )
+        elif source == "installed":
+            detail = f"\"{current}\" is one the provider lists."
+        elif current:
+            detail = f"\"{current}\" is the saved name."
+        else:
+            detail = "Nothing is selected: pick a name from the list, or type one."
+        self.model_hint.setText(" · ".join(parts) + ". " + detail)
+
+    def _provider_key(self) -> str:
+        """The provider name ai_chat understands ("openai-compatible" is "openai" there)."""
+        text = str(self.provider.currentText() or "").strip().lower()
+        return "openai" if text.startswith("openai") else "ollama"
+
+    def _list_models(self) -> None:
+        """Ask the provider which models it has, then refill the list."""
+        running = getattr(self, "_model_thread", None)
+        if running is not None and running.isRunning():
+            return
+        self.status_label.setText("Listing models…")
+        self._model_thread = _ModelListThread(self.base_url.text(), self._provider_key(), parent=self)
+        self._model_thread.models_ready.connect(self._on_models_ready)
+        self._model_thread.failed.connect(self._on_models_failed)
+        self._model_thread.finished.connect(self._model_list_finished)
+        self._model_thread.start()
+
+    def _model_list_finished(self) -> None:
+        thread = getattr(self, "_model_thread", None)
+        self._model_thread = None
+        if thread is not None:
+            thread.deleteLater()
+
+    def _on_models_ready(self, models) -> None:
+        names = [str(name).strip() for name in (models or []) if str(name).strip()]
+        self.s.setValue(self.MODEL_CACHE_KEY, names)
+        self._fill_model_choices(installed=names)
+        if names:
+            self._on_status(True, f"Found {len(names)} model(s) on this provider.")
+        else:
+            self._on_status(
+                False, "The provider answered but lists no models. Pull one with the download button."
+            )
+
+    def _on_models_failed(self, message: str) -> None:
+        self._update_model_hint()
+        self._on_status(False, f"Could not list models: {message}. Known names are still selectable.")
+
+    def showEvent(self, event) -> None:
+        """First time the page is opened, fill the list from the provider by itself."""
+        super().showEvent(event)
+        if getattr(self, "_models_probed", False):
+            return
+        self._models_probed = True
+        if not self._cached_models():
+            self._list_models()
+
+    def shutdown(self) -> None:
+        """Let any background request finish before the page goes away."""
+        for name in ("_model_thread", "_status_thread", "_pull_thread"):
+            thread = getattr(self, name, None)
+            if thread is None:
+                continue
+            try:
+                if thread.isRunning():
+                    thread.wait(3000)
+            except RuntimeError:  # Qt already deleted it; nothing left to wait for
+                continue
+
     def _on_ai_changed(self, *_args):
         self.s.setValue("ai/provider", self.provider.currentText())
         self.s.setValue("ai/base_url", self.base_url.text())
-        self.s.setValue("ai/model", self.model.text())
+        self.s.setValue("ai/model", self._model_name())
         self.s.setValue("ai/temperature", self.temperature.value() / 100.0)
         self.settings_changed.emit()
 
     def _check_status(self):
         self.status_label.setText("Checking…")
-        self._status_thread = _OllamaStatusCheck(self.base_url.text(), self.model.text())
+        self._status_thread = _OllamaStatusCheck(self.base_url.text(), self._model_name())
         self._status_thread.status_ready.connect(self._on_status_ready)
         self._status_thread.start()
 
@@ -1093,10 +1927,10 @@ class SettingsPage(QWidget):
     def _pull_model(self):
         self.pull_progress.setVisible(True)
         self.pull_progress.setValue(0)
-        self._pull_thread = _ModelPullThread(self.base_url.text(), self.model.text())
+        self._pull_thread = _ModelPullThread(self.base_url.text(), self._model_name())
         self._pull_thread.progress.connect(lambda msg: self.pull_progress.setFormat(msg))
         self._pull_thread.finished_ok.connect(
-            lambda: self._on_pull_finished(True, f"Model {self.model.text()} is installed.")
+            lambda: self._on_pull_finished(True, f"Model {self._model_name()} is installed.")
         )
         self._pull_thread.failed.connect(lambda msg: self._on_pull_finished(False, msg))
         self._pull_thread.start()
@@ -1112,14 +1946,14 @@ class SettingsPage(QWidget):
         form.setVerticalSpacing(10)
 
         form.addWidget(_label("Mode", "formLabel"), 0, 0)
-        self.mode = QComboBox()
+        self.mode = ComboField()
         self.mode.addItems(["luxurious", "performance"])
         self.mode.setCurrentText(self.s.value("ui/mode", "luxurious"))
         self.mode.currentTextChanged.connect(self._on_ui_changed)
         form.addWidget(self.mode, 0, 1)
 
         form.addWidget(_label("Theme", "formLabel"), 1, 0)
-        self.theme = QComboBox()
+        self.theme = ComboField()
         self.theme.addItems(["system", "dark", "light"])
         self.theme.setCurrentText(self.s.value("ui/theme", "system"))
         self.theme.currentTextChanged.connect(self._on_ui_changed)
@@ -1180,6 +2014,23 @@ class SettingsPage(QWidget):
         self.tts_enabled.toggled.connect(self._on_voice_changed)
         lay.addWidget(self.tts_enabled)
 
+        # The app asks the engine for 100% volume, so anything quieter than that is the
+        # system's own output level. Say so here, where the voice is switched on.
+        self.volume_note = _label(
+            "Voice too quiet? Vantage already asks the speech engine for 100% volume, so "
+            "check the device before the app.\n"
+            "In Windows: Settings > System > Sound > Volume, and Volume mixer to lift Vantage "
+            "above the game. Also set Sound > More sound settings > Communications to "
+            "\"Do nothing\", so Windows stops turning other audio down when it detects voice chat.",
+            "cardSubtitle",
+            wrap=True,
+        )
+        self.volume_note.setToolTip(
+            "Windows controls the volume of the whole app. Vantage's own volume slider "
+            "(AI Coach > Settings > Voice) is already at its maximum of 100% by default."
+        )
+        lay.addWidget(self.volume_note)
+
         model_row = QHBoxLayout()
         model_row.addWidget(_label("Vosk model path", "formLabel"))
         self.vosk_path = QLineEdit(self.s.value("voice/vosk_model_path", ""))
@@ -1194,75 +2045,207 @@ class SettingsPage(QWidget):
 
         return card
 
-    # ---- Replies (same saved values as the AI Coach tab) ------------------
-    def _build_replies_card(self):
-        card, lay = _card(
-            "Replies",
-            "Read aloud, stop speech, and reply text size. Same settings as the AI Coach tab.",
-        )
-        self.replies_read_aloud = QCheckBox("Read replies aloud")
-        self.replies_read_aloud.setToolTip("Same setting as Speak responses aloud under Voice.")
-        self.replies_read_aloud.toggled.connect(self._on_replies_read_aloud)
-        lay.addWidget(self.replies_read_aloud)
+    # ---- In-Game Mode -----------------------------------------------------
+    def _build_ingame_card(self, embedded: bool = False):
+        """Session-only mode: name the game, get the conversion, ask the coach.
 
-        stop_row = QHBoxLayout()
-        self.replies_stop_btn = QPushButton(" Stop speaking")
-        self.replies_stop_btn.setObjectName("secondary")
-        set_glyph(self.replies_stop_btn, "stop")
-        self.replies_stop_btn.setToolTip(
-            "Clears replies waiting to be read. The sentence being read finishes."
-        )
-        self.replies_stop_btn.clicked.connect(self.stop_speaking_requested.emit)
-        stop_row.addWidget(self.replies_stop_btn)
-        stop_row.addStretch(1)
-        lay.addLayout(stop_row)
+        Off at every launch by design: ``InGameMode`` starts disabled and the
+        checkbox state is never written to QSettings, so a restart always lands
+        back in the off state. Only the game, DPI, and the user's own
+        sensitivity are remembered.
 
-        size_row = QHBoxLayout()
-        size_row.setSpacing(10)
-        size_row.addWidget(_label("Reply text size", "formLabel"))
-        self.replies_font_slider = ValueSlider(
-            AIChatPage.TEXT_MIN, AIChatPage.TEXT_MAX, fmt=lambda v: f"{v} px"
+        ``embedded=True`` renders it as a section inside Settings > Advanced: same
+        widgets, no card frame, so it does not look like a card inside a card.
+        """
+        title = "In-Game Mode"
+        subtitle = (
+            "Tell Vantage which game you are practising and what sensitivity you use there, so "
+            "the coach can talk in that game's numbers."
         )
-        self.replies_font_slider.setToolTip("Makes the chat transcript text larger or smaller.")
-        self.replies_font_slider.valueChanged.connect(self._on_replies_text_size)
-        size_row.addWidget(self.replies_font_slider, 1)
-        self.replies_font_reset = QPushButton("Reset")
-        self.replies_font_reset.setObjectName("secondary")
-        self.replies_font_reset.setToolTip(f"Back to {AIChatPage.TEXT_DEFAULT} px")
-        self.replies_font_reset.clicked.connect(
-            lambda: self.replies_font_slider.setValue(AIChatPage.TEXT_DEFAULT)
-        )
-        size_row.addWidget(self.replies_font_reset)
-        lay.addLayout(size_row)
+        if embedded:
+            card = QFrame()
+            card.setObjectName("advancedSection")
+            lay = QVBoxLayout(card)
+            lay.setContentsMargins(0, 14, 0, 0)
+            lay.setSpacing(10)
+            lay.addWidget(_label(title, "cardTitle"))
+            lay.addWidget(_label(subtitle, "cardSubtitle", wrap=True))
+        else:
+            card, lay = _card(title, subtitle)
 
-        self.refresh_replies()
+        self.ingame_enabled = QCheckBox("Enable In-Game Mode (this session only)")
+        self.ingame_enabled.setToolTip(
+            "Turns off automatically every time Vantage starts. Vantage does not read or change "
+            "your game; you enter these values yourself."
+        )
+        self.ingame_enabled.setChecked(False)  # never restored from settings
+        self.ingame_enabled.toggled.connect(self._on_ingame_toggled)
+        lay.addWidget(self.ingame_enabled)
+
+        form = QGridLayout()
+        form.setHorizontalSpacing(12)
+        form.setVerticalSpacing(10)
+
+        form.addWidget(_label("Game", "formLabel"), 0, 0)
+        self.ingame_game = ComboField()
+        for game in GAMES:
+            self.ingame_game.addItem(game.name, game.key)
+        saved_key = str(self.s.value("ingame/game", GAMES[0].key))
+        index = self.ingame_game.findData(saved_key)
+        self.ingame_game.setCurrentIndex(index if index >= 0 else 0)
+        self.ingame_game.currentIndexChanged.connect(self._on_ingame_values_changed)
+        form.addWidget(self.ingame_game, 0, 1)
+
+        form.addWidget(_label("Mouse DPI", "formLabel"), 1, 0)
+        self.ingame_dpi = QDoubleSpinBox()
+        self.ingame_dpi.setRange(100.0, 32000.0)
+        self.ingame_dpi.setSingleStep(50.0)
+        self.ingame_dpi.setDecimals(0)
+        self.ingame_dpi.setValue(float(self.s.value("ingame/dpi", 800.0, type=float)))
+        self.ingame_dpi.valueChanged.connect(self._on_ingame_values_changed)
+        form.addWidget(self.ingame_dpi, 1, 1)
+
+        form.addWidget(_label("In-game sensitivity", "formLabel"), 2, 0)
+        self.ingame_sens = QDoubleSpinBox()
+        self.ingame_sens.setRange(0.001, 100.0)
+        self.ingame_sens.setSingleStep(0.01)
+        self.ingame_sens.setDecimals(3)
+        self.ingame_sens.setValue(float(self.s.value("ingame/sensitivity", 1.0, type=float)))
+        self.ingame_sens.valueChanged.connect(self._on_ingame_values_changed)
+        form.addWidget(self.ingame_sens, 2, 1)
+
+        form.addWidget(_label("Measured 360°", "formLabel"), 3, 0)
+        self.ingame_measured = QDoubleSpinBox()
+        self.ingame_measured.setRange(0.0, 200.0)
+        self.ingame_measured.setSingleStep(0.5)
+        self.ingame_measured.setDecimals(1)
+        self.ingame_measured.setSuffix(" cm")
+        self.ingame_measured.setSpecialValueText("Not measured")
+        self.ingame_measured.setValue(float(self.s.value("ingame/measured_cm360", 0.0, type=float)))
+        self.ingame_measured.setToolTip(
+            "Optional: swipe a full turn in game, measure the distance, and enter it here. "
+            "The conversion then uses your measurement instead of the published constant."
+        )
+        self.ingame_measured.valueChanged.connect(self._on_ingame_values_changed)
+        form.addWidget(self.ingame_measured, 3, 1)
+
+        lay.addLayout(form)
+
+        self.ingame_result = _label("", "cardSubtitle", wrap=True)
+        lay.addWidget(self.ingame_result)
+
+        ask_row = QHBoxLayout()
+        self.ingame_ask_btn = QPushButton(" Ask the coach")
+        self.ingame_ask_btn.setObjectName("secondary")
+        set_glyph(self.ingame_ask_btn, "chat")
+        self.ingame_ask_btn.clicked.connect(self._ask_ingame)
+        ask_row.addWidget(self.ingame_ask_btn)
+        ask_row.addStretch(1)
+        lay.addLayout(ask_row)
+
+        self.ingame_note = _label(
+            "Vantage never reads, hooks, or changes the game. If other software must stay "
+            "closed while you play, keep this mode off.",
+            "cardSubtitle",
+            wrap=True,
+        )
+        lay.addWidget(self.ingame_note)
+
+        self._ingame = InGameMode(
+            game_key=saved_key,
+            dpi=self.ingame_dpi.value(),
+            sensitivity=self.ingame_sens.value(),
+            measured_cm360=self.ingame_measured.value(),
+        )
+        self._ingame_multiplier: float | None = None
+        self.ingame_stats = _label("", "cardSubtitle", wrap=True)
+        lay.addWidget(self.ingame_stats)
+        self._sync_ingame_controls()
+        self._refresh_ingame_result()
         return card
 
-    def refresh_replies(self) -> None:
-        """Show the saved read-aloud and text-size values. Signals stay quiet.
+    def ingame_model(self) -> InGameMode:
+        """The session state, used by MainWindow to build the AI context."""
+        return self._ingame
 
-        Called when the AI Coach tab changes the same values.
+    def ingame_context(self) -> str:
+        """AI context block for the current state (empty while the mode is off)."""
+        return self._ingame.context_block(self._ingame_multiplier)
+
+    def set_recommendation(self, recommendation: dict | None) -> None:
+        """Show what the app's current recommendation means in this game's units."""
+        multiplier = None
+        if recommendation:
+            try:
+                value = float(recommendation.get("sensitivity_multiplier", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                value = 0.0
+            if value > 0:
+                multiplier = value
+        self._ingame_multiplier = multiplier
+        self._refresh_ingame_result()
+        self.ingame_changed.emit()
+
+    def _on_ingame_toggled(self, checked: bool) -> None:
+        # Session only: the flag is intentionally not written to QSettings.
+        if checked:
+            self._ingame.enable()
+        else:
+            self._ingame.disable()
+        self._sync_ingame_controls()
+        self._refresh_ingame_result()
+        self.ingame_changed.emit()
+
+    def _on_ingame_values_changed(self, *_args) -> None:
+        game_key = self.ingame_game.currentData()
+        self._ingame.set_game(str(game_key) if game_key else GAMES[0].key)
+        self._ingame.set_dpi(self.ingame_dpi.value())
+        self._ingame.set_sensitivity(self.ingame_sens.value())
+        self._ingame.set_measured_cm360(self.ingame_measured.value())
+        self.s.setValue("ingame/game", self._ingame.game.key)
+        self.s.setValue("ingame/dpi", float(self.ingame_dpi.value()))
+        self.s.setValue("ingame/sensitivity", float(self.ingame_sens.value()))
+        self.s.setValue("ingame/measured_cm360", float(self.ingame_measured.value()))
+        self._refresh_ingame_result()
+        self.ingame_changed.emit()
+
+    def _sync_ingame_controls(self) -> None:
+        active = self._ingame.enabled
+        for widget in (self.ingame_game, self.ingame_dpi, self.ingame_sens,
+                       self.ingame_measured, self.ingame_ask_btn):
+            widget.setEnabled(active)
+        self.ingame_result.setEnabled(active)
+
+    def _refresh_ingame_result(self) -> None:
+        if not self._ingame.enabled:
+            self.ingame_result.setText("Off. Enable it to see your cm / 360° and the suggestion.")
+            self.ingame_stats.setText("")
+            return
+        self.ingame_result.setText(self._ingame.feedback(self._ingame_multiplier))
+        self.ingame_stats.setText(
+            f"{self._ingame.counts_per_360:,.0f} counts per 360°. "
+            + (
+                "Using your measured distance."
+                if self._ingame.measured_cm360 > 0
+                else f"Using the {self._ingame.game.name} scale (measure your 360° to refine it)."
+            )
+        )
+
+    def _ask_ingame(self) -> None:
+        if not self._ingame.enabled:
+            return
+        self.ingame_question.emit(self._ingame.question(self._ingame_multiplier))
+
+    def refresh_voice_state(self) -> None:
+        """Show the saved read-aloud value. Signals stay quiet.
+
+        The AI Coach tab owns the switch; this keeps the Voice card's copy in step when
+        the chat's "Read replies aloud" changes the same saved value.
         """
         enabled = self.s.value("ui/tts_enabled", False, type=bool)
-        px = self.s.value("chat/font_px", AIChatPage.TEXT_DEFAULT, type=int)
-        px = max(AIChatPage.TEXT_MIN, min(AIChatPage.TEXT_MAX, int(px)))
-        for box in (self.replies_read_aloud, self.tts_enabled):
-            box.blockSignals(True)
-            box.setChecked(bool(enabled))
-            box.blockSignals(False)
-        self.replies_font_slider.blockSignals(True)
-        self.replies_font_slider.setValue(px)
-        self.replies_font_slider.blockSignals(False)
-
-    def _on_replies_read_aloud(self, checked: bool) -> None:
-        self.s.setValue("ui/tts_enabled", bool(checked))
-        self.refresh_replies()
-        self.settings_changed.emit()
-
-    def _on_replies_text_size(self, px: int) -> None:
-        px = int(px)
-        self.s.setValue("chat/font_px", px)
-        self.text_size_changed.emit(px)
+        self.tts_enabled.blockSignals(True)
+        self.tts_enabled.setChecked(bool(enabled))
+        self.tts_enabled.blockSignals(False)
 
     def _browse_model(self):
         path = QFileDialog.getExistingDirectory(self, "Select voice model folder")
@@ -1275,7 +2258,7 @@ class SettingsPage(QWidget):
         self.s.setValue("ui/wake_word", self.wake_word.text())
         self.s.setValue("ui/tts_enabled", self.tts_enabled.isChecked())
         self.s.setValue("voice/vosk_model_path", self.vosk_path.text())
-        self.refresh_replies()
+        self.refresh_voice_state()
         self.settings_changed.emit()
 
     # ---- Advanced (disclosure) --------------------------------------------
@@ -1294,11 +2277,15 @@ class SettingsPage(QWidget):
         self.advanced_body = QWidget()
         body_lay = QVBoxLayout(self.advanced_body)
         body_lay.setContentsMargins(0, 8, 0, 0)
+        body_lay.setSpacing(12)
         body_lay.addWidget(_label(
-            "No advanced options are exposed yet. Hardware acceleration is set on the Capture page. "
-            "An API key field for hosted providers is not part of this build.",
+            "Session-only and setup options. Hardware acceleration is set on the Capture page; "
+            "an API key field for hosted providers is not part of this build.",
             "cardSubtitle", wrap=True,
         ))
+        # In-Game Mode: off at every launch, and only reaches the coach while it is on.
+        self.ingame_card = self._build_ingame_card(embedded=True)
+        body_lay.addWidget(self.ingame_card)
         self.advanced_body.setVisible(False)
         lay.addWidget(self.advanced_body)
 

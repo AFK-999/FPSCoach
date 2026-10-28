@@ -34,6 +34,7 @@ py::dict summary_dict(const MovementSummary& value) {
 py::dict recommendation_dict(const CurveRecommendation& value) {
     py::dict result;
     result["points"] = value.points;
+    result["captured_sample_count"] = value.captured_sample_count;
     result["sensitivity_multiplier"] = value.sensitivity_multiplier;
     result["confidence"] = value.confidence;
     result["title"] = value.title;
