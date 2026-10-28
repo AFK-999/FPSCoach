@@ -75,6 +75,10 @@ from .widgets import (
     set_glyph,
 )
 
+# Speech volume starts at the top of the range, not at Qt's default of the lowest value.
+VOLUME_DEFAULT = VOLUME_MAX
+VOLUME_KEY = "tts/volume"
+
 
 class ThinkingIndicator(QWidget):
     """A small "Coach is thinking" pill with three pulsing dots.
@@ -1067,6 +1071,9 @@ class AIChatPage(QWidget):
         sliders.addWidget(self.speed_slider, 1)
         sliders.addWidget(_label("Volume", "formLabel"))
         self.volume_slider = ValueSlider(VOLUME_MIN, VOLUME_MAX, fmt=lambda v: f"{v}%")
+        # Explicit: a new slider would sit at the range minimum (0%, silent), so the
+        # default is set here before refresh_from_settings restores anything saved.
+        self.volume_slider.setValue(VOLUME_DEFAULT)
         self.volume_slider.setToolTip("Speech volume. Changes apply to the next sentence spoken.")
         self.volume_slider.valueChanged.connect(lambda _v: self._emit_speech_options())
         sliders.addWidget(self.volume_slider, 1)
@@ -1124,7 +1131,7 @@ class AIChatPage(QWidget):
     def _emit_speech_options(self) -> None:
         options = self.speech_options()
         self._settings.setValue("tts/speed", options.speed)
-        self._settings.setValue("tts/volume", options.volume)
+        self._settings.setValue(VOLUME_KEY, options.volume)
         self._update_voice_tooltip()
         self.speech_options_changed.emit(options)
 
@@ -1154,6 +1161,24 @@ class AIChatPage(QWidget):
         row.addWidget(self.font_reset_btn)
         return row
 
+    @staticmethod
+    def ensure_volume_default(settings) -> int:
+        """Store the 100% default once, so the volume is explicit from the first launch.
+
+        Returns the value that will be used: the stored one when the user has ever set
+        it (including 0, which means muted), otherwise 100.
+        """
+        stored = settings.value(VOLUME_KEY)
+        if stored is None:
+            settings.setValue(VOLUME_KEY, VOLUME_DEFAULT)
+            return VOLUME_DEFAULT
+        try:
+            return SpeechOptions(volume=stored).clamped().volume
+        except (TypeError, ValueError):
+            # A corrupt value must not silence the coach: fall back to the default.
+            settings.setValue(VOLUME_KEY, VOLUME_DEFAULT)
+            return VOLUME_DEFAULT
+
     def refresh_from_settings(self) -> None:
         """Show the saved read-aloud and text-size values. Signals stay quiet."""
         if hasattr(self, "live_note"):
@@ -1170,7 +1195,7 @@ class AIChatPage(QWidget):
         # Speech controls: saved values, shown without emitting.
         saved = SpeechOptions(
             speed=self._settings.value("tts/speed", 1.0, type=float),
-            volume=self._settings.value("tts/volume", 100, type=int),
+            volume=self.ensure_volume_default(self._settings),
             voice=str(self._settings.value("tts/voice", "") or ""),
         ).clamped()
         self._voice_name = saved.voice
@@ -1665,6 +1690,23 @@ class SettingsPage(QWidget):
         self.tts_enabled.setChecked(self.s.value("ui/tts_enabled", False, type=bool))
         self.tts_enabled.toggled.connect(self._on_voice_changed)
         lay.addWidget(self.tts_enabled)
+
+        # The app asks the engine for 100% volume, so anything quieter than that is the
+        # system's own output level. Say so here, where the voice is switched on.
+        self.volume_note = _label(
+            "Voice too quiet? Vantage already asks the speech engine for 100% volume, so "
+            "check the device before the app.\n"
+            "In Windows: Settings > System > Sound > Volume, and Volume mixer to lift Vantage "
+            "above the game. Also set Sound > More sound settings > Communications to "
+            "\"Do nothing\", so Windows stops turning other audio down when it detects voice chat.",
+            "cardSubtitle",
+            wrap=True,
+        )
+        self.volume_note.setToolTip(
+            "Windows controls the volume of the whole app. Vantage's own volume slider "
+            "(AI Coach > Settings > Voice) is already at its maximum of 100% by default."
+        )
+        lay.addWidget(self.volume_note)
 
         model_row = QHBoxLayout()
         model_row.addWidget(_label("Vosk model path", "formLabel"))

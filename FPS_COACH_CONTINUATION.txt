@@ -1,7 +1,7 @@
 ================================================================================
 FPS COACH — CONTINUATION / HANDOFF DOCUMENT
 Copy-paste this whole file into a new agent chat to resume with zero context loss.
-Last updated: 2026-10-23 (rev 83)  (update after EVERY response)
+Last updated: 2026-10-28 (rev 85)  (update after EVERY response)
 
 *** IMPORTANT (rev4): The REAL repo was provided and differs a lot from the
 *** earlier scaffold. Work on the REAL repo at /home/user/workspace/FPSCoach
@@ -74,6 +74,26 @@ Last updated: 2026-10-23 (rev 83)  (update after EVERY response)
                 advanced_body holds it and starts collapsed.
               - tests +2 (placement + mode still works from inside Advanced).
               - VERIFICATION: pytest 545 passed, 5 skipped.
+
+  2026-10-28 (rev84 - WITHDRAWN)  Loud mode (post-synthesis gain) was added and then removed at
+              the user's request ("completely revert and remove the previously applied patch titled
+              'Loud Mode Boost Spoken Replies'"). No trace of it remains in the code: git history on
+              the branch was reset to rev83, tests/test_tts_loudness.py and the rev84 patch file are
+              gone. Do not re-add it unless asked again.
+
+  2026-10-28 (rev85)  SPEECH VOLUME: EXPLICIT 100% DEFAULT + WINDOWS GUIDANCE NOTE.
+              - ui/pages_coach: VOLUME_DEFAULT / VOLUME_KEY module constants; the volume slider is
+                explicitly set to VOLUME_DEFAULT (a bare QSlider starts at its 0% minimum) and
+                AIChatPage.ensure_volume_default() writes tts/volume=100 once when the key has never
+                been stored. A stored value - including 0 (muted) - is never overwritten; a corrupt
+                value falls back to 100 instead of silencing the coach.
+              - Settings > Voice: new volume_note under "Speak responses aloud" saying the app already
+                asks for 100% and pointing at Windows Settings > System > Sound > Volume, Volume mixer
+                (lift Vantage above the game) and Sound > More sound settings > Communications >
+                "Do nothing" (so Windows stops ducking audio). Tooltip points back at the in-app slider.
+              - docs/architecture.md "Spoken replies: volume default and guidance (rev85)".
+              - tests: tests/test_voice_volume_guidance.py, 14 tests.
+              - VERIFICATION: pytest 562 passed, 2 skipped (5 skipped without pyttsx3 installed).
 
 ================================================================================
 
@@ -210,6 +230,25 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     /home/user/workspace/FPSCoach   (clone of https://github.com/AFK-999/FPSCoach.git)
     Remote origin/main = e9e69a2   (the visual REDESIGN; based on 04e6b0f)
     Working branch     = fix/redesign-backend-wiring (from e9e69a2), NOT pushed.
+    REV85 STATUS: rev83 plus an explicit 100% speech-volume default and a Windows volume note in
+    Settings > Voice. rev84 (Loud mode) was withdrawn and is no longer in the tree.
+    Requested: (1) "completely revert and remove the previously applied patch titled 'Loud Mode Boost
+    Spoken Replies'", (2) "ensure that the volume setting is explicitly initialized to 100% by default
+    upon application startup", (3) "add a note ... within the Settings tab, specifically under the
+    Voice section, that guides users to check their device's volume preferences in Windows if they
+    perceive the AI's voice as being too low".
+      - Revert: git history reset to 4d374e6 (rev83); tts_service.py, pages_coach.py, README,
+        docs/architecture.md and FPS_COACH_CONTINUATION.txt are back to rev83 content, and
+        tests/test_tts_loudness.py plus patches/0013-rev84-*.patch were removed. The rev84 zip is gone.
+      - Volume default: VOLUME_DEFAULT = VOLUME_MAX (100) in ui/pages_coach; the slider is set to it
+        explicitly, and AIChatPage.ensure_volume_default(settings) writes tts/volume once at startup
+        when absent. Saved 0 stays 0; garbage falls back to 100.
+      - Settings > Voice note (self.volume_note, objectName cardSubtitle, word-wrapped) sits under
+        "Speak responses aloud" and names Windows' volume, Volume mixer and Communications ducking.
+      - tests: tests/test_voice_volume_guidance.py (14 tests) covers the default, the preserved user
+        choice, the corrupt value, and the note's presence, wording and honesty.
+    VERIFICATION: 562 passed, 2 skipped. Screenshot: settings-voice-volume-note.png. Still NOT pushed.
+
     REV83 STATUS: rev82 plus In-Game Mode moved under Settings > Advanced.
     Requested: "in the settings tab of the app move 'In-Game Mode' option to be under the 'Advance'
     expendable option".

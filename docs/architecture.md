@@ -101,6 +101,14 @@ When it is on, `MainWindow._sync_ingame_context()` appends `InGameMode.context_b
 
 No part of this module touches a game: there is no window enumeration, input injection, process access, file access, or capture. `tests/test_ingame_mode.py` asserts that by walking the module's AST (stdlib `dataclasses` only, no `open`, `subprocess`, `ctypes`, or window/input APIs) as well as checking the behaviour.
 
+## Spoken replies: volume default and guidance (rev85)
+
+Speech volume is `tts/volume` in `QSettings`, range 0–100, and **defaults to 100**. The default is made explicit rather than implied: `AIChatPage.ensure_volume_default` writes `VOLUME_DEFAULT` (`VOLUME_MAX`) the first time the app starts with no stored value, and the slider is set to it before `refresh_from_settings` restores anything. A stored value is never overwritten — including `0`, which is a deliberate mute — and a corrupt non-numeric value falls back to 100 instead of silencing the coach.
+
+`SettingsPage._build_voice_card` carries `volume_note` under **Speak responses aloud**: it states that the app already asks the engine for 100% and points at the places that can still be quiet — Windows' own volume and Volume mixer (to lift Vantage above the game), and Sound → More sound settings → Communications → "Do nothing", so Windows stops ducking other audio when it detects voice chat. The note makes no promise about output the app does not control, and its tooltip points back at the in-app slider.
+
+There is no post-synthesis gain stage: the previous loud-mode attempt (rev84) was withdrawn at the user's request, so speech goes straight to pyttsx3/SAPI5 or System.Speech at the stored percentage.
+
 ## Movement model
 
 Calibration gives the native analyzer timestamped pointer positions plus each known target. Per trial it extracts:
