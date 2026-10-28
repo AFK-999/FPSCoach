@@ -1,7 +1,7 @@
 ================================================================================
 FPS COACH — CONTINUATION / HANDOFF DOCUMENT
 Copy-paste this whole file into a new agent chat to resume with zero context loss.
-Last updated: 2026-10-23 (rev 72)  (update after EVERY response)
+Last updated: 2026-10-23 (rev 73)  (update after EVERY response)
 
 *** IMPORTANT (rev4): The REAL repo was provided and differs a lot from the
 *** earlier scaffold. Work on the REAL repo at /home/user/workspace/FPSCoach
@@ -145,6 +145,13 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     /home/user/workspace/FPSCoach   (clone of https://github.com/AFK-999/FPSCoach.git)
     Remote origin/main = e9e69a2   (the visual REDESIGN; based on 04e6b0f)
     Working branch     = fix/redesign-backend-wiring (from e9e69a2), NOT pushed.
+    REV73 STATUS: AI Coach transcript as chat bubbles. The user's messages are on the right in the
+    accent colour; the coach's replies and the app's notices are on the left in a neutral colour. The
+    speaker label stays inline ("Coach: ..."). Bubbles are redrawn on a theme change. Escaping is new:
+    typed text is shown as text, not HTML. Line breaks in a reply are kept. NOT in this change: showing
+    curve refinements beside the chat (the user dropped it). Tests: test_chat_bubbles.py (8),
+    test_chat_bubbles_page.py (4). Suite 382 passed, 2 skipped (native). Wiring 32/32. ruff F clean.
+    Visual check: offscreen renders in both themes. NOT verified on Windows.
     REV72 STATUS: the 1120 px top-bar overlap is FIXED. The window's minimum width is now the top bar's
     measured need, re-measured after every theme change (it was measured once at start-up, before the
     stylesheet, and came out 21 px short: 1223 px against a 1244 px need). At the narrowest size the tab
@@ -1315,6 +1322,19 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
               - Native stress: 23,832 pulls in tight loops and 3 start/stop rounds, 0 torn frames.
               - Full suite 342 passed. ruff F clean. Wiring 32/32.
               - Harness used for the baseline: committed HEAD built with the same fake layer.
+
+  2026-10-23 (rev73)  AI COACH: CHAT BUBBLES.
+              - NEW python/fps_coach/ui/chat_bubbles.py: message_html(who, text, palette) builds a bubble.
+                The user's ("You") messages are right-aligned in the accent colour; all others are
+                left-aligned in the raised colour. Text is HTML-escaped; newlines become <br>.
+              - pages_coach.py: AIChatPage._append stores (who, text) in _transcript_items and appends the
+                bubble. _render_transcript() redraws from the stored list; refresh_from_settings() calls it,
+                so a theme change recolours existing bubbles. clear_history() empties the list.
+              - Behaviour changes: escaping (text that looked like HTML now shows as text); line breaks in
+                replies are kept. The label is still "Who: text" on one line in the plain text.
+              - Tests: tests/test_chat_bubbles.py (8), tests/test_chat_bubbles_page.py (4).
+              - Suite 382 passed, 2 skipped (native fake build). Wiring 32/32. ruff F clean.
+              - Offscreen renders checked in dark and light.
 
   2026-10-23 (rev72)  TOP BAR: 1120 PX OVERLAP FIXED.
               - main_window.py: MIN_WINDOW_SIZE = (1120, 680) constant. The width minimum is set by

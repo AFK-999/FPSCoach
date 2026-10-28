@@ -42,6 +42,7 @@ from fps_coach.dashboard_config import (
 )
 from fps_coach.curve_adjust import apply_preset, normalized_overlay
 
+from .chat_bubbles import message_html
 from .styles import active_palette, fx_enabled
 from .threads import _ChatRequest, _ModelPullThread, _OllamaStatusCheck, _VoiceListenThread
 from .widgets import (
@@ -185,6 +186,8 @@ class AIChatPage(QWidget):
         self._thread = None
         self._voice_thread = None
         self._messages: list[dict[str, str]] = []
+        # What the transcript shows, as (speaker, text), so bubbles can be redrawn on a theme change.
+        self._transcript_items: list[tuple[str, str]] = []
         self._summary_context = ""
         self._calibration_context = ""
         self._base_profile = None
@@ -721,6 +724,8 @@ class AIChatPage(QWidget):
         self.volume_slider.setValue(saved.volume)
         self.volume_slider.blockSignals(False)
         self._apply_text_size(px)
+        # Bubbles take their colours from the active theme, so a theme change redraws them.
+        self._render_transcript()
         self._show_default_speech_text()
 
     def _on_read_aloud_toggled(self, checked: bool) -> None:
@@ -772,7 +777,15 @@ class AIChatPage(QWidget):
         self.transcript.document().setDefaultFont(font)
 
     def _append(self, who, text):
-        self.transcript.append(f"<b>{who}:</b> {text}")
+        self._transcript_items.append((who, text))
+        self.transcript.append(message_html(who, text, active_palette()))
+
+    def _render_transcript(self) -> None:
+        """Redraw every bubble with the active theme's colours."""
+        self.transcript.clear()
+        palette = active_palette()
+        for who, text in self._transcript_items:
+            self.transcript.append(message_html(who, text, palette))
 
     def _chat_settings(self) -> ChatSettings:
         s = self._settings
@@ -844,6 +857,7 @@ class AIChatPage(QWidget):
     def clear_history(self) -> None:
         """Forget the on-screen transcript and the messages sent to the model (Privacy page)."""
         self._messages = []
+        self._transcript_items = []
         self.transcript.clear()
 
 
