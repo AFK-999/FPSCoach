@@ -24,7 +24,6 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QColor, QImage, QKeySequence, QPainter, QShortcut
 from PySide6.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QDoubleSpinBox,
     QFileDialog,
     QFrame,
@@ -73,6 +72,7 @@ from .widgets import (
     _page_header,
     _page_root,
     _settings,
+    ComboField,
 )
 
 if TYPE_CHECKING:
@@ -600,12 +600,12 @@ class CapturePage(QWidget):
         form.setVerticalSpacing(10)
 
         form.addWidget(_label("Display output", "formLabel"), 0, 0)
-        self.output_combo = QComboBox()
+        self.output_combo = ComboField()
         form.addWidget(self.output_combo, 0, 1)
 
         form.addWidget(_label("Window", "formLabel"), 1, 0)
         source_row = QHBoxLayout()
-        self.source_combo = QComboBox()
+        self.source_combo = ComboField()
         source_row.addWidget(self.source_combo, 1)
         self.window_refresh_btn = QToolButton()
         self.window_refresh_btn.setObjectName("iconButton")
@@ -615,7 +615,7 @@ class CapturePage(QWidget):
         form.addLayout(source_row, 1, 1)
 
         form.addWidget(_label("Preset", "formLabel"), 2, 0)
-        self.preset = QComboBox()
+        self.preset = ComboField()
         for label, value, _region, _fps in self.PRESETS:
             self.preset.addItem(label, value)
         index = self.preset.findData(str(s.value("capture/preset", "balanced")))
@@ -628,7 +628,7 @@ class CapturePage(QWidget):
         self.custom_widget = QWidget()
         custom_row = QHBoxLayout(self.custom_widget)
         custom_row.setContentsMargins(0, 0, 0, 0)
-        self.custom_region = QComboBox()
+        self.custom_region = ComboField()
         self.custom_region.addItem("Center 640 × 360", (640, 360))
         self.custom_region.addItem("Center 960 × 540", (960, 540))
         custom_row.addWidget(self.custom_region, 1)
@@ -636,7 +636,7 @@ class CapturePage(QWidget):
 
         # Frame rate is always visible. A preset sets it when chosen; the user can change it.
         form.addWidget(_label("Frame rate", "formLabel"), 4, 0)
-        self.fps_combo = QComboBox()
+        self.fps_combo = ComboField()
         for fps in self.FPS_CHOICES:
             self.fps_combo.addItem(f"{fps} FPS", fps)
         # Without a saved choice, start from the saved preset's own frame rate.
@@ -785,7 +785,7 @@ class CapturePage(QWidget):
         form.setVerticalSpacing(10)
 
         form.addWidget(_label("Recording rate", "formLabel"), 0, 0)
-        self.record_fps = QComboBox()
+        self.record_fps = ComboField()
         for fps in self.RECORD_FPS_CHOICES:
             self.record_fps.addItem(f"{fps} FPS", fps)
         saved_fps = int(_settings().value("capture/record_fps", 30, type=int))

@@ -13,6 +13,7 @@ from PySide6.QtCore import QPointF, QRectF, QSettings, QSize, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QFontMetrics, QLinearGradient, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QAbstractButton,
+    QComboBox,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -66,6 +67,42 @@ def refresh_glyphs(root: QWidget) -> None:
     for widget in root.findChildren(QWidget):
         if widget.property("glyph"):
             _paint_glyph(widget)
+
+
+class ComboField(QComboBox):
+    """A combo box with a chevron drawn at its right edge.
+
+    The stylesheet restyles ``QComboBox::drop-down`` so the field ends flush on the right,
+    and on several styles that also removes Qt's own arrow: an editable box then reads as a
+    plain text field with no hint that a list is behind it. The chevron is painted here, in
+    the active theme's text colour, so every combo box shows the affordance in every theme.
+    """
+
+    ARROW_WIDTH = 22  # matches QComboBox::drop-down width in styles.py
+    ARROW_SIZE = 16
+
+    def arrow_colour(self) -> str:
+        """The theme's text colour, muted while the field is disabled."""
+        palette = active_palette()
+        return palette["text3"] if not self.isEnabled() else palette["text"]
+
+    def arrow_rect(self) -> QRectF:
+        """Where the chevron sits: centred in the drop-down strip on the right."""
+        size = float(self.ARROW_SIZE)
+        left = float(self.width() - self.ARROW_WIDTH) + (self.ARROW_WIDTH - size) / 2.0
+        top = (self.height() - size) / 2.0
+        return QRectF(left, top, size, size)
+
+    def paintEvent(self, event) -> None:  # noqa: N802 - Qt API
+        super().paintEvent(event)
+        self._paint_arrow()
+
+    def _paint_arrow(self) -> None:
+        chevron = pixmap("chevron_down", self.arrow_colour(), self.ARROW_SIZE)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        painter.drawPixmap(self.arrow_rect().topLeft(), chevron)
+        painter.end()
 
 
 def _settings() -> QSettings:

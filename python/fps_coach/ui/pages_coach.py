@@ -75,6 +75,7 @@ from .widgets import (
     _page_root,
     _settings,
     set_glyph,
+    ComboField,
 )
 
 # Speech volume starts at the top of the range, not at Qt's default of the lowest value.
@@ -1085,7 +1086,7 @@ class AIChatPage(QWidget):
         voice_row = QHBoxLayout()
         voice_row.setSpacing(10)
         voice_row.addWidget(_label("Voice", "formLabel"))
-        self.voice_combo = QComboBox()
+        self.voice_combo = ComboField()
         self.voice_combo.setToolTip("Voices this system's speech engine offers.")
         self.voice_combo.addItem("Engine default", "")
         self.voice_combo.currentIndexChanged.connect(lambda _i: self._on_voice_chosen())
@@ -1515,7 +1516,7 @@ class SettingsPage(QWidget):
         form.setVerticalSpacing(10)
 
         form.addWidget(_label("Provider", "formLabel"), 0, 0)
-        self.provider = QComboBox()
+        self.provider = ComboField()
         self.provider.addItems(["ollama", "openai-compatible"])
         self.provider.setCurrentText(self.s.value("ai/provider", "ollama"))
         self.provider.currentTextChanged.connect(self._on_ai_changed)
@@ -1531,7 +1532,7 @@ class SettingsPage(QWidget):
         # Editable, so a name can be picked from the list *or* typed (a model that is not
         # installed yet, a tag this endpoint names differently). Picking saves immediately;
         # typing is committed on focus-out, as before.
-        self.model = QComboBox()
+        self.model = ComboField()
         self.model.setEditable(True)
         self.model.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self.model.setToolTip(
@@ -1795,14 +1796,14 @@ class SettingsPage(QWidget):
         form.setVerticalSpacing(10)
 
         form.addWidget(_label("Mode", "formLabel"), 0, 0)
-        self.mode = QComboBox()
+        self.mode = ComboField()
         self.mode.addItems(["luxurious", "performance"])
         self.mode.setCurrentText(self.s.value("ui/mode", "luxurious"))
         self.mode.currentTextChanged.connect(self._on_ui_changed)
         form.addWidget(self.mode, 0, 1)
 
         form.addWidget(_label("Theme", "formLabel"), 1, 0)
-        self.theme = QComboBox()
+        self.theme = ComboField()
         self.theme.addItems(["system", "dark", "light"])
         self.theme.setCurrentText(self.s.value("ui/theme", "system"))
         self.theme.currentTextChanged.connect(self._on_ui_changed)
@@ -1936,7 +1937,7 @@ class SettingsPage(QWidget):
         form.setVerticalSpacing(10)
 
         form.addWidget(_label("Game", "formLabel"), 0, 0)
-        self.ingame_game = QComboBox()
+        self.ingame_game = ComboField()
         for game in GAMES:
             self.ingame_game.addItem(game.name, game.key)
         saved_key = str(self.s.value("ingame/game", GAMES[0].key))

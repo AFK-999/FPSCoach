@@ -1,7 +1,7 @@
 ================================================================================
 FPS COACH — CONTINUATION / HANDOFF DOCUMENT
 Copy-paste this whole file into a new agent chat to resume with zero context loss.
-Last updated: 2026-10-28 (rev 87)  (update after EVERY response)
+Last updated: 2026-10-28 (rev 88)  (update after EVERY response)
 
 *** IMPORTANT (rev4): The REAL repo was provided and differs a lot from the
 *** earlier scaffold. Work on the REAL repo at /home/user/workspace/FPSCoach
@@ -139,6 +139,24 @@ Last updated: 2026-10-28 (rev 87)  (update after EVERY response)
                 online provider breaks chat with "Unknown AI provider selection". list_models() maps the
                 label correctly; the chat path was left alone because it was not part of this request.
 
+  2026-10-28 (rev88)  UI: EVERY COMBO BOX NOW SHOWS A CHEVRON ("dropdown arrow").
+              - User: "add a visual indicator, such as a dropdown arrow icon, to the far right of the text
+                box in the models dropdown menu ... clear to users that a dropdown menu is available".
+              - Cause: styles.py sets QComboBox::drop-down (borderless, width 22px) with no down-arrow rule,
+                which on these styles removes Qt's own arrow. Every combo looked like a text field; the
+                editable Model field looked exactly like one.
+              - widgets.ComboField(QComboBox): paints the "chevron_down" glyph in paintEvent, centred in the
+                reserved 22px strip (ARROW_WIDTH/ARROW_SIZE), coloured from active_palette()["text"]
+                ("text3" when disabled), so it follows theme switches with no registration step.
+              - styles.py: QComboBox::down-arrow { image: none; width: 0; height: 0; } so no second arrow.
+              - All 15 QComboBox() call sites are now ComboField(): pages_coach (6), pages_setup (6),
+                pages_practice (3). Unused QComboBox imports removed where they became unused.
+              - tests/test_combo_arrow.py (14): geometry, the arrow is painted and only inside the strip,
+                theme/disabled colours, the stylesheet rule, the ARROW_WIDTH/strip agreement, and an AST
+                check that no page builds a bare QComboBox().
+              - VERIFICATION: pytest 615 passed, 2 skipped. Screenshots: combo-arrow-model.png,
+                combo-arrow-provider.png, settings-model-list.png, settings-model-dropdown.png.
+
 ================================================================================
 
 --------------------------------------------------------------------------------
@@ -274,6 +292,16 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     /home/user/workspace/FPSCoach   (clone of https://github.com/AFK-999/FPSCoach.git)
     Remote origin/main = e9e69a2   (the visual REDESIGN; based on 04e6b0f)
     Working branch     = fix/redesign-backend-wiring (from e9e69a2), NOT pushed.
+    REV88 STATUS: rev87 plus a chevron on every combo box (so a dropdown reads as a dropdown).
+    Requested: "add a visual indicator, such as a dropdown arrow icon, to the far right of the text box in
+    the models dropdown menu. This will make it clear to users that a dropdown menu is available."
+      - Root cause: the stylesheet styles ::drop-down but never ::down-arrow, so Qt's arrow disappears on
+        these styles and every combo box looked like a plain text field.
+      - Fix: widgets.ComboField paints the chevron in the reserved strip (theme text colour, muted when
+        disabled); QComboBox::down-arrow { image: none } avoids a duplicate; all 15 combos use it.
+      - tests: tests/test_combo_arrow.py (14).
+    VERIFICATION: 615 passed, 2 skipped. Still NOT pushed.
+
     REV87 STATUS: rev86 plus a model dropdown in Settings > AI coach (re-pick a model instead of retyping).
     Requested: "investigate the settings module, specifically the models section. I need you to implement a
     solution that allows me to reselect a model from a list if its name was accidentally removed, avoiding

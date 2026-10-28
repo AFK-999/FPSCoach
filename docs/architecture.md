@@ -101,6 +101,12 @@ When it is on, `MainWindow._sync_ingame_context()` appends `InGameMode.context_b
 
 No part of this module touches a game: there is no window enumeration, input injection, process access, file access, or capture. `tests/test_ingame_mode.py` asserts that by walking the module's AST (stdlib `dataclasses` only, no `open`, `subprocess`, `ctypes`, or window/input APIs) as well as checking the behaviour.
 
+## Combo boxes always show a chevron (rev88)
+
+`styles.py` restyles `QComboBox::drop-down` so the field ends flush at the right edge, and on the styles this app runs on that also removes Qt's own arrow — so every combo box (Provider, Model, Mode, Theme, the Capture page's display/preset/FPS fields) looked like a plain text box. The editable Model field was the worst case, because it *is* a text box until you click it.
+
+`widgets.ComboField` is a `QComboBox` that paints the chevron itself, in the drop-down strip the stylesheet reserves (`ARROW_WIDTH = 22`, matching `QComboBox::drop-down { width: 22px }`), using the `chevron_down` glyph in the active theme's text colour (`text3` when disabled). Painting in `paintEvent` means it repaints on theme switches without any registration step. `QComboBox::down-arrow { image: none; width: 0; height: 0; }` stops the style from drawing a second arrow on platforms where it still would. All fifteen combo boxes in the app are `ComboField` instances, and `tests/test_combo_arrow.py` parses the page modules to make sure no bare `QComboBox()` comes back.
+
 ## The model list in Settings (rev87)
 
 The model name used to be a plain text field, so a name that had been typed once and then cleared had to be recalled from memory. `SettingsPage._build_ai_card` now presents it as an **editable** `QComboBox`: pick from a list, or type (a model that is not installed yet, or a tag this endpoint spells differently).
