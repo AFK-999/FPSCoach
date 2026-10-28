@@ -131,8 +131,7 @@ def test_start_up_also_covers_the_settings_page(qapp, saved, pages) -> None:
 
     chat = pages(AIChatPage)
     chat.volume_slider.setValue(70)
-    settings_page = pages(SettingsPage)
-    settings_page.refresh_replies()
+    pages(SettingsPage)  # builds the Settings page against the same store
     assert saved.value("tts/volume", type=int) == 70
     assert chat.speech_options().volume == 70
 

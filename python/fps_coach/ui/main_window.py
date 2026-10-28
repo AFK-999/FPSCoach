@@ -46,8 +46,8 @@ from fps_coach.analytics import AnalyticsStore
 from fps_coach.backend import CoreBackend
 from fps_coach.local_data import CALIBRATION_HISTORY_NAME
 
-from .pages_coach import AIChatPage, PrivacyPage, SettingsPage
 from .crosshair_overlay import CrosshairOverlay
+from .pages_coach import AIChatPage, PrivacyPage, SettingsPage
 from .pages_practice import CrosshairPage, TrainingPage
 from .pages_setup import CalibrationPage, CapturePage, DashboardPage, GuidePage, RecommendationPage
 from .styles import build_style, fx_enabled, set_active_theme
@@ -322,9 +322,6 @@ class MainWindow(QMainWindow):
         self.chat_page.stop_speaking_requested.connect(self._on_stop_speaking)
         self.chat_page.speech_options_changed.connect(self._on_speech_options_changed)
         self.chat_page.voice_test_requested.connect(self._on_voice_test)
-        self.chat_page.replies_changed.connect(self.settings_page.refresh_replies)
-        self.settings_page.stop_speaking_requested.connect(self._on_stop_speaking)
-        self.settings_page.text_size_changed.connect(self._on_reply_text_size)
         self.settings_page.settings_changed.connect(self._on_settings_changed)
         self.settings_page.ingame_changed.connect(self._sync_ingame_context)
         self.settings_page.ingame_question.connect(self._on_ingame_question)
@@ -560,11 +557,7 @@ class MainWindow(QMainWindow):
     def _on_read_aloud_changed(self, enabled: bool):
         """The chat's switch and the Settings checkbox share one saved value."""
         self._sync_tts()
-        self.settings_page.refresh_replies()
-
-    def _on_reply_text_size(self, px: int):
-        """Settings > Replies moved the text size. The AI Coach transcript follows."""
-        self.chat_page.set_text_size(px)
+        self.settings_page.refresh_voice_state()
 
     def _on_speech_options_changed(self, options):
         """Speed, volume, or voice changed. A running speaker picks it up on the next sentence."""
