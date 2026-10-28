@@ -10,6 +10,7 @@ from fps_coach.ai_chat import (
     ChatProviderError,
     ChatSettings,
     check_ollama,
+    list_models,
     pull_model,
 )
 from fps_coach.tts_service import SpeechOptions, speakable_text
@@ -28,6 +29,27 @@ class _OllamaStatusCheck(QThread):
     def run(self) -> None:
         result = check_ollama(self._base_url, self._model)
         self.status_ready.emit(bool(result["reachable"]), bool(result["has_model"]))
+
+
+class _ModelListThread(QThread):
+    """Ask the provider which models it has, off the UI thread (ai_chat.list_models)."""
+
+    models_ready = Signal(list)
+    failed = Signal(str)
+
+    def __init__(self, base_url: str, provider: str = "ollama", api_key: str = "", parent=None):
+        super().__init__(parent)
+        self._base_url = base_url
+        self._provider = provider
+        self._api_key = api_key
+
+    def run(self) -> None:
+        try:
+            models = list_models(self._base_url, self._provider, self._api_key)
+        except Exception as exc:  # noqa: BLE001 - report anything to the card
+            self.failed.emit(str(exc) or type(exc).__name__)
+            return
+        self.models_ready.emit(list(models))
 
 
 class _ModelPullThread(QThread):

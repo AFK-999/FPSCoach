@@ -101,6 +101,20 @@ When it is on, `MainWindow._sync_ingame_context()` appends `InGameMode.context_b
 
 No part of this module touches a game: there is no window enumeration, input injection, process access, file access, or capture. `tests/test_ingame_mode.py` asserts that by walking the module's AST (stdlib `dataclasses` only, no `open`, `subprocess`, `ctypes`, or window/input APIs) as well as checking the behaviour.
 
+## The model list in Settings (rev87)
+
+The model name used to be a plain text field, so a name that had been typed once and then cleared had to be recalled from memory. `SettingsPage._build_ai_card` now presents it as an **editable** `QComboBox`: pick from a list, or type (a model that is not installed yet, or a tag this endpoint spells differently).
+
+The list is built by `_fill_model_choices()` from three sources, in this order, deduplicated case-insensitively:
+
+1. the **saved** name (`ai/model`), so the configured model is never missing from its own list;
+2. the names the **provider reported** last time (`ai/model_list` in `QSettings`), so the list survives a restart;
+3. `ai_chat.suggested_text_models()` — labelled `(suggested, not installed)`, because a name in a list is not a promise that it is installed.
+
+Each item stores `{"name", "source"}` as its data, so a label such as `phi4-mini (suggested, not installed)` saves the plain `phi4-mini`; `_model_name()` returns the real name, or exactly what was typed. Picking an item saves immediately (`textActivated`); typing is committed on focus-out, as before.
+
+`ai_chat.list_models(base_url, provider)` fetches the real list: Ollama's `/api/tags` for local, an OpenAI-compatible `/models` (with `Bearer` only when a key exists) for online, both parsed leniently (`name`/`model`/`id`, or a bare list) and sorted. `_ModelListThread` runs it off the UI thread; the card's refresh button calls it, and `SettingsPage.showEvent` calls it once when the page is first opened and nothing is cached — so opening Settings is enough to get a usable list. Failures are reported in the card's status line and never clear the names already offered. `SettingsPage.shutdown()` (called from `MainWindow.closeEvent`) waits for the request so the page is not torn out from under a running thread.
+
 ## Spoken replies: volume default and guidance (rev85)
 
 Speech volume is `tts/volume` in `QSettings`, range 0–100, and **defaults to 100**. The default is made explicit rather than implied: `AIChatPage.ensure_volume_default` writes `VOLUME_DEFAULT` (`VOLUME_MAX`) the first time the app starts with no stored value, and the slider is set to it before `refresh_from_settings` restores anything. A stored value is never overwritten — including `0`, which is a deliberate mute — and a corrupt non-numeric value falls back to 100 instead of silencing the coach.

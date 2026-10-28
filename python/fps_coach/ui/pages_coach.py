@@ -37,6 +37,7 @@ from fps_coach.ai_chat import (
     ChatSettings,
     curve_context,
     model_supports_images,
+    suggested_text_models,
 )
 from fps_coach.ai_curve_actions import apply_adjustment, parse_adjustment
 from fps_coach.analytics import AnalyticsStore
@@ -57,6 +58,7 @@ from .styles import active_palette, fx_enabled
 from .threads import (
     _ChatRequest,
     _LiveVisionThread,
+    _ModelListThread,
     _ModelPullThread,
     _OllamaStatusCheck,
     _VoiceListenThread,
@@ -1526,15 +1528,38 @@ class SettingsPage(QWidget):
 
         form.addWidget(_label("Model", "formLabel"), 2, 0)
         model_row = QHBoxLayout()
-        self.model = QLineEdit(self.s.value("ai/model", "qwen3:1.7b"))
-        self.model.editingFinished.connect(self._on_ai_changed)
+        # Editable, so a name can be picked from the list *or* typed (a model that is not
+        # installed yet, a tag this endpoint names differently). Picking saves immediately;
+        # typing is committed on focus-out, as before.
+        self.model = QComboBox()
+        self.model.setEditable(True)
+        self.model.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.model.setToolTip(
+            "Pick a model from the list, or type a name. The list button asks the provider "
+            "which models it has."
+        )
+        self.model.lineEdit().setPlaceholderText("Pick a model, or type one")
+        self.model.textActivated.connect(lambda _text: self._on_ai_changed())
+        self.model.lineEdit().editingFinished.connect(self._on_ai_changed)
         self.pull_btn = QToolButton()
         set_glyph(self.pull_btn, "download")
         self.pull_btn.setObjectName("iconButton")
+        self.pull_btn.setToolTip("Download the model named above into the local Ollama.")
         self.pull_btn.clicked.connect(self._pull_model)
+        self.model_list_btn = QToolButton()
+        set_glyph(self.model_list_btn, "refresh")
+        self.model_list_btn.setObjectName("iconButton")
+        self.model_list_btn.setToolTip(
+            "List the models this provider offers (Ollama: the ones installed on this machine)."
+        )
+        self.model_list_btn.clicked.connect(self._list_models)
         model_row.addWidget(self.model, 1)
         model_row.addWidget(self.pull_btn)
+        model_row.addWidget(self.model_list_btn)
         form.addLayout(model_row, 2, 1)
+
+        self.model_hint = _label("", "cardSubtitle", wrap=True)
+        form.addWidget(self.model_hint, 4, 0, 1, 2)
 
         form.addWidget(_label("Temperature", "formLabel"), 3, 0)
         # Stored as 0.00-1.50; the slider works in hundredths so the readout shows the stored value.
@@ -1544,6 +1569,7 @@ class SettingsPage(QWidget):
         form.addWidget(self.temperature, 3, 1)
 
         lay.addLayout(form)
+        self._fill_model_choices()
 
         self.pull_progress = QProgressBar()
         self.pull_progress.setValue(0)
@@ -1564,16 +1590,172 @@ class SettingsPage(QWidget):
 
         return card
 
+    MODEL_CACHE_KEY = "ai/model_list"  # names the provider reported last time
+
+    def _model_name(self) -> str:
+        """The chosen name, without the "(suggested)" label, or whatever was typed."""
+        typed = str(self.model.currentText() or "").strip()
+        index = self.model.currentIndex()
+        if index >= 0:
+            data = self.model.itemData(index) or {}
+            name = str(data.get("name", "") or "").strip()
+            if name and typed.casefold() == self._model_label(name, str(data.get("source", ""))).casefold():
+                return name
+        return typed
+
+    @staticmethod
+    def _model_label(name: str, source: str) -> str:
+        """How an entry reads in the list. Suggestions say so, so a pick is never a surprise."""
+        if source == "suggested":
+            return f"{name} (suggested, not installed)"
+        return name
+
+    def _model_index(self, name: str) -> int:
+        """Index of ``name`` in the list, matched on the real name rather than the label."""
+        target = str(name or "").strip().casefold()
+        if not target:
+            return -1
+        for index in range(self.model.count()):
+            data = self.model.itemData(index) or {}
+            if str(data.get("name", "")).strip().casefold() == target:
+                return index
+        return -1
+
+    def _saved_model(self) -> str:
+        return str(self.s.value("ai/model", "qwen3:1.7b") or "").strip()
+
+    def _cached_models(self) -> list[str]:
+        """Names the provider listed last time. Survives a restart, so the list is never empty."""
+        stored = self.s.value(self.MODEL_CACHE_KEY, [])
+        if isinstance(stored, str):
+            stored = [stored]
+        return [str(name).strip() for name in (stored or []) if str(name).strip()]
+
+    def _fill_model_choices(self, installed: list[str] | None = None) -> None:
+        """Rebuild the model list: remembered names first, then suggestions.
+
+        The current name is never dropped from the box even when the provider no longer
+        lists it, and every item records where it came from so the hint can say whether
+        picking it means "already installed" or "will be downloaded".
+        """
+        current = self._model_name() or self._saved_model()
+        known = self._cached_models() if installed is None else list(installed)
+        ordered: list[tuple[str, str]] = []
+        if current:
+            ordered.append((current, "current"))
+        for name in known:
+            ordered.append((name, "installed"))
+        for name in suggested_text_models():
+            ordered.append((name, "suggested"))
+
+        seen: set[str] = set()
+        items: list[tuple[str, str]] = []
+        for name, source in ordered:
+            key = str(name).strip().casefold()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            items.append((str(name).strip(), source))
+
+        blocked = self.model.blockSignals(True)
+        self.model.clear()
+        for name, source in items:
+            self.model.addItem(self._model_label(name, source), {"name": name, "source": source})
+        self.model.setCurrentIndex(self._model_index(current))
+        self.model.blockSignals(blocked)
+        self._update_model_hint(len(known))
+
+    def _update_model_hint(self, known_count: int | None = None) -> None:
+        known = self._cached_models() if known_count is None else known_count
+        current = self._model_name()
+        parts = [
+            f"{known} model(s) from the provider" if known else "No list from the provider yet",
+            f"{len(suggested_text_models())} suggested names",
+        ]
+        data = self.model.currentData()
+        source = str(data.get("source", "")) if isinstance(data, dict) and current else None
+        if source == "suggested":
+            detail = (
+                f"\"{current}\" is a suggested name, not a listed one: pull it with the "
+                "download button."
+            )
+        elif source == "installed":
+            detail = f"\"{current}\" is one the provider lists."
+        elif current:
+            detail = f"\"{current}\" is the saved name."
+        else:
+            detail = "Nothing is selected: pick a name from the list, or type one."
+        self.model_hint.setText(" · ".join(parts) + ". " + detail)
+
+    def _provider_key(self) -> str:
+        """The provider name ai_chat understands ("openai-compatible" is "openai" there)."""
+        text = str(self.provider.currentText() or "").strip().lower()
+        return "openai" if text.startswith("openai") else "ollama"
+
+    def _list_models(self) -> None:
+        """Ask the provider which models it has, then refill the list."""
+        running = getattr(self, "_model_thread", None)
+        if running is not None and running.isRunning():
+            return
+        self.status_label.setText("Listing models…")
+        self._model_thread = _ModelListThread(self.base_url.text(), self._provider_key(), parent=self)
+        self._model_thread.models_ready.connect(self._on_models_ready)
+        self._model_thread.failed.connect(self._on_models_failed)
+        self._model_thread.finished.connect(self._model_list_finished)
+        self._model_thread.start()
+
+    def _model_list_finished(self) -> None:
+        thread = getattr(self, "_model_thread", None)
+        self._model_thread = None
+        if thread is not None:
+            thread.deleteLater()
+
+    def _on_models_ready(self, models) -> None:
+        names = [str(name).strip() for name in (models or []) if str(name).strip()]
+        self.s.setValue(self.MODEL_CACHE_KEY, names)
+        self._fill_model_choices(installed=names)
+        if names:
+            self._on_status(True, f"Found {len(names)} model(s) on this provider.")
+        else:
+            self._on_status(
+                False, "The provider answered but lists no models. Pull one with the download button."
+            )
+
+    def _on_models_failed(self, message: str) -> None:
+        self._update_model_hint()
+        self._on_status(False, f"Could not list models: {message}. Known names are still selectable.")
+
+    def showEvent(self, event) -> None:
+        """First time the page is opened, fill the list from the provider by itself."""
+        super().showEvent(event)
+        if getattr(self, "_models_probed", False):
+            return
+        self._models_probed = True
+        if not self._cached_models():
+            self._list_models()
+
+    def shutdown(self) -> None:
+        """Let any background request finish before the page goes away."""
+        for name in ("_model_thread", "_status_thread", "_pull_thread"):
+            thread = getattr(self, name, None)
+            if thread is None:
+                continue
+            try:
+                if thread.isRunning():
+                    thread.wait(3000)
+            except RuntimeError:  # Qt already deleted it; nothing left to wait for
+                continue
+
     def _on_ai_changed(self, *_args):
         self.s.setValue("ai/provider", self.provider.currentText())
         self.s.setValue("ai/base_url", self.base_url.text())
-        self.s.setValue("ai/model", self.model.text())
+        self.s.setValue("ai/model", self._model_name())
         self.s.setValue("ai/temperature", self.temperature.value() / 100.0)
         self.settings_changed.emit()
 
     def _check_status(self):
         self.status_label.setText("Checking…")
-        self._status_thread = _OllamaStatusCheck(self.base_url.text(), self.model.text())
+        self._status_thread = _OllamaStatusCheck(self.base_url.text(), self._model_name())
         self._status_thread.status_ready.connect(self._on_status_ready)
         self._status_thread.start()
 
@@ -1594,10 +1776,10 @@ class SettingsPage(QWidget):
     def _pull_model(self):
         self.pull_progress.setVisible(True)
         self.pull_progress.setValue(0)
-        self._pull_thread = _ModelPullThread(self.base_url.text(), self.model.text())
+        self._pull_thread = _ModelPullThread(self.base_url.text(), self._model_name())
         self._pull_thread.progress.connect(lambda msg: self.pull_progress.setFormat(msg))
         self._pull_thread.finished_ok.connect(
-            lambda: self._on_pull_finished(True, f"Model {self.model.text()} is installed.")
+            lambda: self._on_pull_finished(True, f"Model {self._model_name()} is installed.")
         )
         self._pull_thread.failed.connect(lambda msg: self._on_pull_finished(False, msg))
         self._pull_thread.start()

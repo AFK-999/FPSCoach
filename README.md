@@ -19,7 +19,7 @@ A lightweight, local-first foundation for an FPS movement/sensitivity coach. It 
 - **Custom Curve compatibility** for importing/exporting modern `.cc4` JSON profiles and legacy `.ccurve` text profiles, selected explicitly in the UI.
 - **In-Game Mode (Settings → Advanced)** — off at every launch. Turn it on for a session, pick your game, and enter your DPI and in-game sensitivity; Vantage converts that to cm/360°, shows what its recommendation means in that game's units, and can ask the coach for a specific value. It never reads or changes the game.
 - **Live vision (AI Coach)** — off at every launch. Turn it on and the coach watches the live capture preview: it samples the preview into short clips (4 frames half a second apart by default), measures what moved between them, and comments on the movement and the setup. **Look now** takes a clip on demand. It is instructed never to analyse targets, enemies, or aim. Needs a vision model (for example `gemma3:4b`); the card says so before you start.
-- **Optional AI coach** using local Ollama models (defaults to `qwen3:1.7b`, with `phi4-mini` as an option) or a user-configured OpenAI-compatible online API.
+- **Optional AI coach** using local Ollama models (defaults to `qwen3:1.7b`, with `phi4-mini` as an option) or a user-configured OpenAI-compatible online API. Settings → AI coach lists the models your provider actually offers, so a model can be re-picked from a dropdown instead of retyped.
 - **Portable Python reference analyzer** so UI/model work can be previewed without the Windows extension.
 
 ## Layout

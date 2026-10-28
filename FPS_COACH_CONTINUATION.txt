@@ -1,7 +1,7 @@
 ================================================================================
 FPS COACH — CONTINUATION / HANDOFF DOCUMENT
 Copy-paste this whole file into a new agent chat to resume with zero context loss.
-Last updated: 2026-10-28 (rev 86)  (update after EVERY response)
+Last updated: 2026-10-28 (rev 87)  (update after EVERY response)
 
 *** IMPORTANT (rev4): The REAL repo was provided and differs a lot from the
 *** earlier scaffold. Work on the REAL repo at /home/user/workspace/FPSCoach
@@ -109,6 +109,35 @@ Last updated: 2026-10-28 (rev 86)  (update after EVERY response)
                 are gone, no "Replies" heading remains, the AI Coach tab still has read aloud / stop /
                 text size, and the shared read-aloud value still stays in step both ways.
               - VERIFICATION: pytest 567 passed, 2 skipped.
+
+  2026-10-28 (rev87)  SETTINGS: THE MODEL FIELD IS A DROPDOWN YOU CAN RE-PICK FROM.
+              - User: "investigate the settings module, specifically the models section ... implement a
+                solution that allows me to reselect a model from a list if its name was accidentally
+                removed, avoiding the need to manually type it in".
+              - ai_chat.list_models(base_url, provider, api_key="", timeout=6.0): Ollama /api/tags, or an
+                OpenAI-compatible /models (Bearer only when a key is given). Lenient parsing via
+                _names_from_tags / _names_from_models (_unique_names: strip, drop blanks, case-insensitive
+                dedupe, sorted); _models_endpoint handles base URLs with/without /v1 or /chat/completions.
+                suggested_text_models() = qwen3:1.7b, phi4-mini, qwen3:4b, llama3.2:3b, qwen2.5:7b,
+                mistral:7b (names to offer, NOT a claim that they are installed).
+              - ui/threads.py: _ModelListThread(base_url, provider, api_key) -> models_ready(list) / failed(str).
+              - ui/pages_coach SettingsPage: self.model is an editable QComboBox (placeholder "Pick a model,
+                or type one"). Items come from the saved ai/model, then the cached ai/model_list, then the
+                suggestions; each item's data is {"name", "source"} so "(suggested, not installed)" labels
+                still save the plain name. Picking saves at once (textActivated); typing still commits on
+                editingFinished. New refresh QToolButton (glyph "refresh") calls _list_models(); showEvent
+                probes once when nothing is cached; model_hint explains counts and the current pick;
+                status_label reports "Found N model(s) or the failure. SettingsPage.shutdown() waits for the
+                thread and MainWindow.closeEvent calls it.
+              - tests/test_model_picker.py (34 tests): parsing, endpoints, a real loopback HTTP server for
+                both provider shapes (incl. 401 and unreachable), the thread, and the card - including the
+                exact case the user described (ai/model cleared, names still listable and re-pickable).
+              - VERIFICATION: pytest 601 passed, 2 skipped. Screenshots: settings-model-list.png and
+                settings-model-dropdown.png (served by a fake Ollama on 127.0.0.1:11434).
+              - KNOWN, NOT FIXED (pre-existing, unrelated to this change): the Settings provider combo
+                stores "openai-compatible" but ai_chat.chat() only understands "openai", so choosing the
+                online provider breaks chat with "Unknown AI provider selection". list_models() maps the
+                label correctly; the chat path was left alone because it was not part of this request.
 
 ================================================================================
 
@@ -245,6 +274,20 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     /home/user/workspace/FPSCoach   (clone of https://github.com/AFK-999/FPSCoach.git)
     Remote origin/main = e9e69a2   (the visual REDESIGN; based on 04e6b0f)
     Working branch     = fix/redesign-backend-wiring (from e9e69a2), NOT pushed.
+    REV87 STATUS: rev86 plus a model dropdown in Settings > AI coach (re-pick a model instead of retyping).
+    Requested: "investigate the settings module, specifically the models section. I need you to implement a
+    solution that allows me to reselect a model from a list if its name was accidentally removed, avoiding
+    the need to manually type it in."
+      - The Model row is an editable QComboBox fed by: saved ai/model, cached ai/model_list (the last list the
+        provider gave), then suggested_text_models() labelled "(suggested, not installed)". Item data holds
+        {"name","source"} so the saved value is always the plain name.
+      - ai_chat.list_models() reads Ollama /api/tags or an OpenAI-compatible /models; _ModelListThread runs it
+        off the UI thread; the card has a refresh button, probes once on first show when nothing is cached,
+        keeps known names when the request fails, and reports the result in status_label.
+      - SettingsPage.shutdown() waits for the thread; MainWindow.closeEvent calls it.
+      - tests: tests/test_model_picker.py (34). docs/architecture.md "The model list in Settings (rev87)".
+    VERIFICATION: 601 passed, 2 skipped. Still NOT pushed.
+
     REV86 STATUS: rev85 plus the Settings > Replies card removed (it duplicated the AI Coach tab).
     Requested: "remove the 'Replise' option in the settings tab of the app because it already is in
     the ai coach tab settings".

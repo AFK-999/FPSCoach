@@ -719,6 +719,7 @@ class MainWindow(QMainWindow):
             self._tts_service.stop()
             self._tts_service.wait(3000)
         self.chat_page.shutdown()
+        self.settings_page.shutdown()  # lets a model list request finish
         self.capture_page.shutdown()  # stops the scratch recording and deletes its file
         self._backend.close()
         self.s.sync()

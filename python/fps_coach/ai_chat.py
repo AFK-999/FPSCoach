@@ -403,6 +403,108 @@ class AIChatClient:
         return content.strip()
 
 
+# Names worth offering in the model list before anything has been fetched. These are
+# suggestions to pull, not a claim that they are installed.
+_SUGGESTED_TEXT_MODELS = (
+    "qwen3:1.7b",
+    "phi4-mini",
+    "qwen3:4b",
+    "llama3.2:3b",
+    "qwen2.5:7b",
+    "mistral:7b",
+)
+
+
+def suggested_text_models() -> tuple[str, ...]:
+    """Model names to offer when the provider has not been asked yet."""
+    return _SUGGESTED_TEXT_MODELS
+
+
+def _unique_names(names) -> list[str]:
+    """Strip, drop blanks, and drop case-insensitive duplicates, keeping the first spelling."""
+    seen: dict[str, str] = {}
+    for name in names or ():
+        text = str(name or "").strip()
+        if text:
+            seen.setdefault(text.casefold(), text)
+    return sorted(seen.values(), key=str.casefold)
+
+
+def _models_endpoint(base_url: str) -> str:
+    """The OpenAI-compatible ``/models`` URL for whatever shape the base URL has."""
+    base_url = str(base_url or "").strip().rstrip("/")
+    if base_url.endswith("/chat/completions"):
+        return base_url[: -len("/chat/completions")] + "/models"
+    if base_url.endswith("/v1"):
+        return base_url + "/models"
+    return base_url + "/v1/models"
+
+
+def _names_from_tags(payload: dict) -> list[str]:
+    """Model names from an Ollama ``/api/tags`` response."""
+    entries = payload.get("models")
+    if not isinstance(entries, list):
+        return []
+    names = []
+    for entry in entries:
+        if isinstance(entry, dict):
+            names.append(entry.get("name") or entry.get("model") or "")
+    return _unique_names(names)
+
+
+def _names_from_models(payload: dict) -> list[str]:
+    """Model names from an OpenAI-compatible ``/v1/models`` response (or a tags-like one)."""
+    entries = payload.get("data")
+    if not isinstance(entries, list):
+        return _names_from_tags(payload)
+    names = []
+    for entry in entries:
+        if isinstance(entry, dict):
+            names.append(entry.get("id") or entry.get("name") or "")
+        elif isinstance(entry, str):
+            names.append(entry)
+    return _unique_names(names)
+
+
+def list_models(
+    base_url: str,
+    provider: str = "ollama",
+    api_key: str = "",
+    timeout: float = 6.0,
+) -> list[str]:
+    """Ask the provider which models it has, and return their names sorted.
+
+    Ollama answers ``/api/tags`` with the models installed on this machine; an
+    OpenAI-compatible server answers ``/models``. The result is what the Settings
+    model list shows, so a name that was typed once can be picked again instead of
+    remembered. Raises :class:`ChatProviderError` with a message fit for the UI.
+    """
+    key = str(provider or "").strip().lower()
+    client = AIChatClient(
+        ChatSettings(base_url=base_url, model="", timeout_seconds=max(2, int(timeout)))
+    )
+    base = client._validated_base_url(base_url)
+    if key in {"ollama", "local"}:
+        payload = client._get(client._ollama_api_base(base) + "/tags", {})
+        return _names_from_tags(payload)
+    if key in {"openai", "openai-compatible", "online"}:
+        headers = {}
+        if str(api_key or "").strip():
+            headers["Authorization"] = f"Bearer {api_key.strip()}"
+        try:
+            payload = client._get(_models_endpoint(base), headers)
+        except ChatProviderError as error:
+            if "HTTP 401" in str(error) or "HTTP 403" in str(error):
+                raise ChatProviderError(
+                    "This endpoint needs an API key to list its models, and this build "
+                    "stores no key. Type the model name instead, or use a provider whose "
+                    "model list is open."
+                ) from error
+            raise
+        return _names_from_models(payload)
+    raise ChatProviderError("Unknown AI provider selection.")
+
+
 def check_ollama(base_url: str, model: str, timeout: float = 1.5) -> dict[str, bool]:
     """Probe a local Ollama server. Returns {"reachable": bool, "has_model": bool}.
 
