@@ -644,6 +644,7 @@ class MainWindow(QMainWindow):
         self._backend.analyzer.reset()  # the trials Generate recommendation would use
         self._last_summary = None
         self._last_recommendation = None
+        self.chat_page.clear_calibration_context()
         self.calibration_page.clear_recommendation_state()
         self.recommendation_page.clear_result()
         self._refresh_dashboard()
@@ -651,6 +652,8 @@ class MainWindow(QMainWindow):
 
     def _on_recommendation(self, result):
         self._last_recommendation = dict(result)
+        if self._last_summary is not None:
+            self.chat_page.set_calibration_context(self._last_summary, self._last_recommendation)
         mult = float(result.get("sensitivity_multiplier", 1.0))
         confidence = float(result.get("confidence", 0.0))
         self.coach_panel.say(f"New recommendation: \u00d7{mult:.2f} (confidence {confidence:.0%}).")

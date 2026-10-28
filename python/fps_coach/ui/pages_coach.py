@@ -5,11 +5,13 @@ previous window. The layout is new: the transcript sits beside the tuning panel.
 """
 from __future__ import annotations
 
+import html
 import math
+import re
 from copy import deepcopy
 
 from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QPainter, QPen, QPixmap, QTextCursor
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -42,7 +44,8 @@ from fps_coach.ai_chat import (
 from fps_coach.ai_curve_actions import apply_adjustment, parse_adjustment
 from fps_coach.analytics import AnalyticsStore
 from fps_coach.chat_suggestions import suggest
-from fps_coach.curve_adjust import apply_preset, normalized_overlay
+from fps_coach.curve_adjust import adjust_from_recommendation, apply_preset, normalized_overlay
+from fps_coach.curve_io import CurveFormatError, chart_points, recommendation_profile
 from fps_coach.dashboard_config import (
     BOUNCE_SPEED_DEFAULT,
     BOUNCE_SPEED_MAX,
@@ -68,7 +71,6 @@ from .widgets import (
     ValueSlider,
     _card,
     _content_page,
-    _curve_samples,
     _divider,
     _label,
     _page_header,
@@ -184,6 +186,12 @@ def _scenario_label(key: str) -> str:
         return key
 
 
+def _visible_ai_reply(answer: str) -> str:
+    """Hide the parser-only curve directive from chat text and read-aloud output."""
+    visible = re.sub(r"\[ADJUST:\s*[^\]]+\]", "", answer, flags=re.IGNORECASE).strip()
+    return visible or "I prepared a curve proposal; see the adjacent preview."
+
+
 class AIChatPage(QWidget):
     """AI Coach chat. Sends turns through ai_chat.AIChatClient (Ollama by default),
     adds the latest calibration as context, and takes one spoken phrase as input.
@@ -210,10 +218,14 @@ class AIChatPage(QWidget):
         self._thread = None
         self._voice_thread = None
         self._messages: list[dict[str, str]] = []
+        self._transcript_items: list[tuple[str, str]] = []
         self._summary_context = ""
         self._calibration_context = ""
         self._ingame_context = ""
-        self._base_profile = None
+        self._base_profile = None  # imported profile, when present
+        self._calibrated_profile = None  # latest data-derived calibration curve
+        self._last_recommendation = None
+        self._preview_base_profile = None
         self._adjusted_profile = None
         self._proactive_pending = None
         self._proactive_check = None
@@ -306,10 +318,11 @@ class AIChatPage(QWidget):
 
         tune_card, tune_lay = _card(
             "Curve tuning",
-            "Preview a quick action on the imported curve, then send it to Calibration.",
+            "Calibration and AI curve suggestions appear here as a visual before/after. Nothing is sent to Calibration until you choose.",
         )
         self.quick_hint = _label(
-            "Import a curve in Calibration to enable one-click tuning.", "cardSubtitle", wrap=True
+            "Run a calibration or import a curve to see its data-driven shape here.",
+            "cardSubtitle", wrap=True,
         )
         tune_lay.addWidget(self.quick_hint)
         self.quick_preview = CurveChart(editable=False)
@@ -335,9 +348,27 @@ class AIChatPage(QWidget):
         self._refresh_suggestions()
 
     def set_calibration_context(self, summary: dict, recommendation: dict) -> None:
-        """Give the coach the latest calibration so answers can refer to it."""
+        """Give the coach the latest data and display its curve beside the conversation."""
         self._summary_context = curve_context(summary, recommendation)
+        self._last_recommendation = deepcopy(recommendation)
+        try:
+            self._calibrated_profile = recommendation_profile(recommendation)
+        except CurveFormatError:
+            self._calibrated_profile = None
         self._refresh_context()
+        self._refresh_curve_preview()
+        self._refresh_suggestions()
+
+    def clear_calibration_context(self) -> None:
+        """Forget a cleared calibration; retain and display an imported curve if one exists."""
+        self._summary_context = ""
+        self._last_recommendation = None
+        self._calibrated_profile = None
+        self._adjusted_profile = None
+        self._preview_base_profile = None
+        self._refresh_context()
+        self._refresh_curve_preview()
+        self._refresh_suggestions()
 
     def notify_new_calibration(self, summary: dict, recommendation: dict) -> None:
         """Called when a calibration completes. The coach's context is always refreshed. An
@@ -459,32 +490,90 @@ class AIChatPage(QWidget):
         return f"{context}\n\n{self._ingame_context}" if context else self._ingame_context
 
     def set_base_profile(self, profile) -> None:
-        """Receive the imported curve so suggestions and AI adjustments can build on it."""
+        """Receive an imported curve and refresh the side-by-side tuning preview."""
         self._base_profile = deepcopy(profile) if profile is not None else None
         self._adjusted_profile = None
-        if self._base_profile is not None:
-            self.quick_hint.setText(
-                f"Base curve: '{self._base_profile.name}'. Suggestions update as you type; "
-                "tap a tuning action to preview it below."
-            )
-        else:
-            self.quick_hint.setText("Import a curve in Calibration to enable one-click tuning.")
-            self.quick_preview.hide()
-            self.apply_to_rec.hide()
+        self._preview_base_profile = None
         self._refresh_context()
+        self._refresh_curve_preview()
         self._refresh_suggestions()
 
-    def _refresh_context(self) -> None:
-        """Context = latest calibration summary + a description of the imported base curve."""
-        context = self._summary_context
-        if self._base_profile is not None:
-            pts = ", ".join(
-                f"({p.speed:.0f},{p.multiplier:.2f})" for p in self._base_profile.horizontal[:12]
+    def _active_curve_profile(self):
+        """The curve a quick action or AI directive should build on, if any."""
+        return self._adjusted_profile or self._base_profile or self._calibrated_profile
+
+    def _refresh_curve_preview(self) -> None:
+        """Show the latest calibration or imported curve without inventing a preset shape."""
+        self._adjusted_profile = None
+        self._preview_base_profile = None
+        profile = self._base_profile or self._calibrated_profile
+        if profile is None:
+            self.quick_preview.hide()
+            self.apply_to_rec.hide()
+            self.quick_hint.setText(
+                "Run a calibration or import a curve to see its data-driven shape here."
             )
+            return
+
+        recommendation = self._last_recommendation
+        if self._base_profile is not None and recommendation and len(recommendation.get("points") or []) >= 2:
+            try:
+                adjusted, note = adjust_from_recommendation(self._base_profile, recommendation)
+            except (CurveFormatError, ValueError):
+                self._show_curve_profile(self._base_profile, "Imported curve; calibration preview unavailable.")
+                return
+            sample_count = int(recommendation.get("captured_sample_count", 0) or 0)
+            self._show_preview(
+                self._base_profile,
+                adjusted,
+                f"Calibration proposal · {sample_count:,} captured movement samples. {note}",
+            )
+            return
+
+        if self._base_profile is not None:
+            self._show_curve_profile(
+                self._base_profile,
+                f"Imported curve · {self._base_profile.name}. Ask for a small adjustment to preview it here.",
+            )
+        else:
+            sample_count = int((recommendation or {}).get("captured_sample_count", 0) or 0)
+            point_count = len(recommendation.get("points") or []) if recommendation else 0
+            self._show_curve_profile(
+                profile,
+                f"Calibration curve · {sample_count:,} captured movement samples · "
+                f"{point_count} data-derived control points.",
+            )
+
+    def _show_curve_profile(self, profile, note: str) -> None:
+        """Draw a complete baseline using every measured/imported point, not five resamples."""
+        points = chart_points(profile)
+        if len(points) < 2:
+            self.quick_preview.hide()
+            self.apply_to_rec.hide()
+            self.quick_hint.setText(note)
+            return
+        xs = [x for x, _ in points]
+        self.quick_preview.set_previous(None)
+        self.quick_preview.xs = xs
+        self.quick_preview.points = [y for _, y in points]
+        self.quick_preview.update()
+        self.quick_preview.show()
+        self.apply_to_rec.hide()
+        self.quick_hint.setText(note)
+
+    def _refresh_context(self) -> None:
+        """Context = calibration summary + whichever source curve the coach should tune."""
+        context = self._summary_context
+        profile = self._base_profile or self._calibrated_profile
+        if profile is not None:
+            pts = ", ".join(
+                f"({p.speed:.0f},{p.multiplier:.2f})" for p in profile.horizontal[:32]
+            )
+            kind = "Imported base" if self._base_profile is not None else "Current calibrated"
             context = (
-                f"{context}\n\nImported base curve '{self._base_profile.name}' "
-                f"({self._base_profile.source_format}); horizontal speed,gain points: {pts}. "
-                "When asked for adjustments, modify THIS curve rather than designing a new one."
+                f"{context}\n\n{kind} curve '{profile.name}' "
+                f"({profile.source_format}); horizontal speed,gain points: {pts}. "
+                "When asked for adjustments, modify this curve rather than designing a new one."
             )
         self._calibration_context = self._with_ingame(self._with_capture_focus(context))
 
@@ -545,10 +634,12 @@ class AIChatPage(QWidget):
 
     def _proactive_received(self, answer: str) -> None:
         self._messages.append({"role": "assistant", "content": answer})
-        self._append("Coach", answer)
-        self.assistant_said.emit(answer)
-        # Automatic answers are recommendations only. A curve change is applied from the chat,
-        # by the user, never from this path.
+        visible = _visible_ai_reply(answer)
+        self._append("Coach", visible)
+        self.assistant_said.emit(visible)
+        # A recognized recommendation only refreshes the adjacent preview. Sending it to
+        # Calibration still requires the user's explicit button click.
+        self._apply_ai_adjustment(answer)
 
     def _proactive_quiet_fail(self, _message: str) -> None:
         # The instant local note already covered the user; stay silent on failure.
@@ -566,7 +657,7 @@ class AIChatPage(QWidget):
             widget = item.widget()
             if widget is not None:
                 widget.deleteLater()
-        for s in suggest(self.input.text(), self._base_profile is not None):
+        for s in suggest(self.input.text(), self._active_curve_profile() is not None):
             chip = QPushButton(s["label"])
             chip.setObjectName("secondary")
             if s["kind"] == "preset":
@@ -581,55 +672,65 @@ class AIChatPage(QWidget):
         self.input.setText(prompt)
         self.input.setFocus()
 
-    def _show_preview(self, adjusted, note: str) -> None:
-        self._adjusted_profile = adjusted
-        prev_pts, cur_pts = normalized_overlay(self._base_profile, adjusted)
-        self.quick_preview.set_previous(_curve_samples(prev_pts))
-        self.quick_preview.points = _curve_samples(cur_pts)
+    def _show_preview(self, previous, adjusted, note: str) -> None:
+        """Show every before/after control point; sending it remains an explicit user action."""
+        self._preview_base_profile = deepcopy(previous)
+        self._adjusted_profile = deepcopy(adjusted)
+        prev_pts, cur_pts = normalized_overlay(previous, adjusted)
+        prev_xs, prev_ys = zip(*prev_pts, strict=True)
+        cur_xs, cur_ys = zip(*cur_pts, strict=True)
+        self.quick_preview.set_previous(list(prev_ys), xs=list(prev_xs))
+        self.quick_preview.xs = list(cur_xs)
+        self.quick_preview.points = list(cur_ys)
         self.quick_preview.update()
         self.quick_preview.show()
         self.apply_to_rec.show()
-        self.quick_hint.setText(note)
+        self.quick_hint.setText(
+            f"{note}\nSolid: proposed · dashed: before. Nothing is sent until you choose Send to calibration."
+        )
+        self._refresh_suggestions()
 
     def _apply_quick_action(self, key: str) -> None:
-        if self._base_profile is None:
-            self._append("Quick action", "Import a curve in Calibration first.")
+        base = self._active_curve_profile()
+        if base is None:
+            self._append("Quick action", "Run a calibration or import a curve first.")
             return
         try:
-            adjusted, note = apply_preset(self._base_profile, key)
+            adjusted, note = apply_preset(base, key)
         except KeyError:
             return
-        self._show_preview(adjusted, note)
+        self._show_preview(base, adjusted, note)
         self._append(
             "Quick action",
-            f"{note}\nPreview updated. Multiplier now {adjusted.horizontal[0].multiplier:.2f}x at the first point.",
+            f"{note}\nThe adjacent before/after graph is ready for review. "
+            f"First-point multiplier: {adjusted.horizontal[0].multiplier:.2f}x.",
         )
 
     def _apply_ai_adjustment(self, answer: str) -> None:
-        """If the assistant recommended a curve change, apply it to the imported curve
-        and show it in the preview and on the Calibration graph."""
-        if self._base_profile is None:
-            return
+        """Convert an AI curve suggestion into a visual proposal, never an automatic apply."""
         plan = parse_adjustment(answer)
-        if not plan:
+        base = self._active_curve_profile()
+        if not plan or base is None:
             return
         try:
-            adjusted, note = apply_adjustment(self._base_profile, plan)
+            adjusted, note = apply_adjustment(base, plan)
         except (ValueError, KeyError):
             return
-        self._show_preview(adjusted, note)
-        self.curve_adjusted.emit(deepcopy(self._base_profile), deepcopy(adjusted), note)
-        self._append("Applied", f"{note} Updated the Calibration graph automatically.")
+        self._show_preview(base, adjusted, f"AI curve proposal · {note}")
 
     def _send_adjusted_to_calibration(self) -> None:
-        if self._base_profile is None or self._adjusted_profile is None:
+        if self._preview_base_profile is None or self._adjusted_profile is None:
             return
+        note = self._adjusted_profile.description or "Adjusted via AI Coach curve preview."
         self.curve_adjusted.emit(
-            deepcopy(self._base_profile),
+            deepcopy(self._preview_base_profile),
             deepcopy(self._adjusted_profile),
-            self._adjusted_profile.description or "Adjusted via AI quick action.",
+            note,
         )
-        self._append("Quick action", "Sent the adjusted curve to Calibration (open it to review and export).")
+        self._append(
+            "Coach",
+            "Sent the visual curve proposal to Calibration for review. It has not been applied to the game.",
+        )
 
     # -- live vision (coach watches the capture preview) ----------------------
     def set_capture_source(self, backend) -> None:
@@ -1211,6 +1312,8 @@ class AIChatPage(QWidget):
         self.volume_slider.blockSignals(False)
         self._apply_text_size(px)
         self._show_default_speech_text()
+        if self._transcript_items:
+            self._render_transcript()
 
     def _on_read_aloud_toggled(self, checked: bool) -> None:
         self._settings.setValue("ui/tts_enabled", bool(checked))
@@ -1250,7 +1353,48 @@ class AIChatPage(QWidget):
         self.transcript.document().setDefaultFont(font)
 
     def _append(self, who, text):
-        self.transcript.append(f"<b>{who}:</b> {text}")
+        """Keep a theme-aware message record and insert a right/left-aligned bubble."""
+        self._transcript_items.append((str(who), str(text)))
+        self._insert_chat_bubble(who, text)
+
+    def _render_transcript(self) -> None:
+        self.transcript.clear()
+        for who, text in self._transcript_items:
+            self._insert_chat_bubble(who, text)
+
+    def _insert_chat_bubble(self, who, text) -> None:
+        """Insert an escaped chat bubble: user right, coach left."""
+        is_user = str(who).strip().casefold() in {"you", "user"}
+        palette = active_palette()
+        if is_user:
+            base = QColor(palette["surface"])
+            accent = QColor(palette["accent"])
+            mix = 0.14
+            background = QColor(
+                round(base.red() * (1.0 - mix) + accent.red() * mix),
+                round(base.green() * (1.0 - mix) + accent.green() * mix),
+                round(base.blue() * (1.0 - mix) + accent.blue() * mix),
+            ).name()
+            border = accent.name()
+            alignment = "right"
+        else:
+            background = palette["surface2"]
+            border = palette["line2"]
+            alignment = "left"
+        label = html.escape(str(who))
+        body = html.escape(str(text)).replace("\r\n", "\n").replace("\r", "\n").replace("\n", "<br/>")
+        fragment = (
+            f'<table align="{alignment}" width="78%" cellspacing="0" cellpadding="8" '
+            f'border="1" bordercolor="{border}" bgcolor="{background}"><tr>'
+            f'<td bgcolor="{background}"><span style="color:{palette["accent"]};">'
+            f"<b>{label}:</b></span> <span style=\"color:{palette['text']}\">{body}</span>"
+            "</td></tr></table>"
+        )
+        cursor = self.transcript.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.insertHtml(fragment)
+        self.transcript.setTextCursor(cursor)
+        self.transcript.ensureCursorVisible()
 
     def _chat_settings(self) -> ChatSettings:
         s = self._settings
@@ -1293,8 +1437,9 @@ class AIChatPage(QWidget):
 
     def _on_reply(self, answer: str):
         self._messages.append({"role": "assistant", "content": answer})
-        self._append("Coach", answer)
-        self.assistant_said.emit(answer)
+        visible = _visible_ai_reply(answer)
+        self._append("Coach", visible)
+        self.assistant_said.emit(visible)
         self._apply_ai_adjustment(answer)
 
     def _on_failed(self, message: str):
@@ -1322,6 +1467,7 @@ class AIChatPage(QWidget):
     def clear_history(self) -> None:
         """Forget the on-screen transcript and the messages sent to the model (Privacy page)."""
         self._messages = []
+        self._transcript_items.clear()
         self.transcript.clear()
 
 
@@ -1332,7 +1478,9 @@ def _is_timestamp_model(model: str) -> bool:
 
 
 PRIVACY_POINTS: tuple[str, ...] = (
-        "The live capture preview is processed in memory for the calibration analysis.",
+        "Calibration observes timestamped cursor positions only during the explicit in-app target task. "
+        "Its movement-speed analysis and data-derived curve run locally; raw cursor samples are processed "
+        "in memory and are not sent to the AI endpoint. Calibration does not use screen frames.",
         "Recording (Capture tab) is off unless you start it. It records the primary display. "
         "Without \"Keep the recording\" the file is deleted when you stop or close the app; with "
         "it, the video is saved to the folder you pick and stays there until you delete it. "
@@ -1349,7 +1497,9 @@ PRIVACY_POINTS: tuple[str, ...] = (
         "local Ollama model they stay on this machine; with an online provider they are uploaded to "
         "it. Turn it off and nothing leaves the app. The coach is asked to comment on the movement "
         "and the setup only - never on targets, enemies, or aim.",
-        "AI requests are sent only to the endpoint you configure in Settings.",
+        "AI requests are sent only to the endpoint you configure in Settings. Text-coaching requests can include "
+        "the conversation, calibration summary, and up to 32 horizontal speed/gain points from the active curve; "
+        "raw cursor samples are never sent. In-Game Mode values are included only while that session toggle is on.",
         "Voice recognition can run fully offline via a local model.",
         "The crosshair overlay is off by default. When it is on, or while you edit its "
         "position, it draws a crosshair on your primary screen only. The active crosshair "

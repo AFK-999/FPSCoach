@@ -22,6 +22,7 @@ struct MovementSummary {
 
 struct CurveRecommendation {
     std::vector<std::pair<double, double>> points;
+    std::size_t captured_sample_count{};
     double sensitivity_multiplier{1.0};
     double confidence{};
     std::string title;
@@ -78,6 +79,8 @@ private:
     bool active_{false};
     Trial current_;
     std::vector<TrialMetrics> completed_;
+    std::vector<double> captured_speeds_px_s_;
+    std::size_t captured_sample_count_{};
 };
 
 } // namespace fpscoach

@@ -51,7 +51,11 @@ class FakeAnalyzer:
         return {"trial_count": 12}
 
     def recommend(self) -> dict:
-        return {"points": [], "sensitivity_multiplier": 1.0}
+        return {
+            "points": [(0.0, 0.0), (0.5, 0.4), (1.0, 1.0)],
+            "captured_sample_count": len(self.samples),
+            "sensitivity_multiplier": 1.0,
+        }
 
 
 def test_canvas_defaults_to_1000_hz_and_uses_a_one_millisecond_precise_timer(qapp) -> None:
@@ -98,6 +102,40 @@ def test_changing_rate_during_a_session_keeps_sampling_active(qapp) -> None:
     assert canvas._sample_timer.isActive()
     assert canvas._sample_timer.interval() == 2
     canvas.cancel_session()
+    assert not canvas._sample_timer.isActive()
+
+
+def test_canvas_updates_the_curve_after_each_completed_target(qapp) -> None:
+    from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+
+    canvas = CalibrationCanvas(FakeAnalyzer())
+    canvas.resize(600, 380)
+    canvas.show()
+    _KEEP_ALIVE.append(canvas)
+    updates: list[tuple[dict, dict]] = []
+    completed: list[tuple[dict, dict]] = []
+    canvas.recommendation_updated.connect(lambda summary, rec: updates.append((summary, rec)))
+    canvas.completed.connect(lambda summary, rec: completed.append((summary, rec)))
+    canvas.start_session(3)
+    qapp.processEvents()
+
+    for _ in range(3):
+        local = QPointF(canvas._target)
+        global_point = canvas.mapToGlobal(QPoint(round(local.x()), round(local.y())))
+        event = QMouseEvent(
+            QEvent.Type.MouseButtonPress,
+            local,
+            QPointF(global_point),
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        canvas.mousePressEvent(event)
+
+    assert len(updates) == 2  # the finished recommendation is sent once, via completed
+    assert all(len(rec["points"]) == 3 for _summary, rec in updates)
+    assert len(completed) == 1
     assert not canvas._sample_timer.isActive()
 
 

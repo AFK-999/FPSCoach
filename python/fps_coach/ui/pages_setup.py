@@ -1244,6 +1244,7 @@ class CalibrationPage(QWidget):
         self._redo: list[dict] = []
         # Speed the chart's x positions are scaled by (None: the curve's own top speed).
         self._chart_scale: float | None = None
+        self._live_snapshot: dict | None = None
         self._sample_settings = _settings()
         try:
             saved_sample_rate = int(
@@ -1261,7 +1262,7 @@ class CalibrationPage(QWidget):
         _page_root(self, scroll)
         outer.addWidget(_page_header(
             "Calibration",
-            "Measure your movement with the 12-target task, then review the response curve.",
+            "Capture your cursor movement across 12 targets. The curve is built from the speeds you actually use.",
             eyebrow="Input",
         ))
 
@@ -1321,14 +1322,23 @@ class CalibrationPage(QWidget):
         # Right: the curve.
         curve_card, curve_lay = _card(
             "Sensitivity curve",
-            "Solid line: current curve. Dashed amber: older curve. Drag a dot to change gain; "
-            "drag an interior dot left or right to change speed. Right-click to add or delete one.",
+            "Live control points follow measured cursor-speed samples; their number adapts to the data. "
+            "Solid line: current curve. Dashed amber: previous curve. Drag a dot to change gain or speed; "
+            "right-click to add or delete one.",
         )
         self.legend = CurveLegend()
         curve_lay.addWidget(self.legend)
         self.chart = CurveChart()
         self.chart.setMinimumHeight(260)
+        # There is no recommended curve until captured movement data exists.
+        self.chart.points = []
+        self.chart.xs = []
         curve_lay.addWidget(self.chart, 1)
+        self.curve_status = _label(
+            "Waiting for captured movement. The live estimate appears after the first target.",
+            "cardSubtitle", wrap=True,
+        )
+        curve_lay.addWidget(self.curve_status)
 
         btn_row = QHBoxLayout()
         btn_row.setSpacing(8)
@@ -1360,6 +1370,9 @@ class CalibrationPage(QWidget):
         self.reset_btn.clicked.connect(self.canvas.cancel_session)
         self.canvas.progress_changed.connect(self._on_progress)
         self.canvas.hint_changed.connect(self.hint.setText)
+        self.canvas.session_started.connect(self._on_session_started)
+        self.canvas.session_cancelled.connect(self._on_session_cancelled)
+        self.canvas.recommendation_updated.connect(self._on_live_recommendation)
         self.canvas.completed.connect(self._on_complete)
         self.chart.curve_structure_changed.connect(self._on_chart_structure_changed)
         self.chart.curve_geometry_changed.connect(self._on_curve_adjusted)
@@ -1390,6 +1403,61 @@ class CalibrationPage(QWidget):
     def _on_progress(self, completed: int, total: int):
         self.progress.setRange(0, max(1, total))
         self.progress.setValue(completed)
+
+    def _set_curve_controls_enabled(self, enabled: bool) -> None:
+        """Keep the provisional graph read-only while the movement model is updating it."""
+        self.chart.set_editable(enabled)
+        self.recalibrate_btn.setEnabled(enabled)
+        for control in (self.undo_btn, self.redo_btn, self.import_btn, self.save_btn):
+            control.setEnabled(enabled)
+        if enabled:
+            self._update_history_buttons()
+
+    def _on_session_started(self) -> None:
+        if self._live_snapshot is None:
+            self._live_snapshot = self._snapshot()
+        self._set_curve_controls_enabled(False)
+        self.curve_status.setText(
+            "Capturing cursor movement. A provisional curve will update after each completed target."
+        )
+
+    def _on_session_cancelled(self) -> None:
+        if self._live_snapshot is not None:
+            snapshot, self._live_snapshot = self._live_snapshot, None
+            self._restore(snapshot, "Calibration cancelled; previous curve restored.")
+        self._set_curve_controls_enabled(True)
+
+    def _on_live_recommendation(self, summary: dict, recommendation: dict) -> None:
+        """Draw the measured curve after each completed target without exporting it yet."""
+        raw_points = list(recommendation.get("points") or [])
+        if len(raw_points) < 2:
+            return
+        try:
+            if self._base_profile is not None:
+                adjusted, _note = adjust_from_recommendation(self._base_profile, recommendation)
+                previous, current = normalized_overlay(self._base_profile, adjusted)
+                self._set_overlay(current, previous, _shared_speed(self._base_profile, adjusted))
+            else:
+                xs, ys = _curve_points(raw_points)
+                previous = list(self.chart.points) if len(self.chart.points) >= 2 else None
+                previous_xs = self.chart.x_positions() if previous else None
+                self._set_chart(
+                    ys,
+                    previous=previous,
+                    xs=xs,
+                    previous_xs=previous_xs,
+                    scale=RECOMMENDATION_MAX_SPEED,
+                )
+        except CurveFormatError as exc:
+            self.curve_status.setText(f"Live curve is not available yet: {exc}")
+            return
+        sample_count = int(recommendation.get("captured_sample_count", 0) or 0)
+        trials = int(summary.get("trial_count", 0) or 0)
+        self.curve_status.setText(
+            f"Live estimate · {trials} completed target{'s' if trials != 1 else ''} · "
+            f"{sample_count:,} captured movement samples · {len(raw_points)} data-derived control points. "
+            "Updates as you work; the finished run determines the exportable curve."
+        )
 
     def _on_sample_rate_changed(self, index: int) -> None:
         """Apply and persist the selected precise-timer sampling target."""
@@ -1443,14 +1511,18 @@ class CalibrationPage(QWidget):
             "hint": self.hint.text(),
         }
 
-    def _checkpoint(self, points=None, xs=_UNSET, baseline=_UNSET, baseline_xs=_UNSET) -> None:
-        """Record the state before a change. Call this before mutating the curve."""
-        self._undo.append(
-            self._snapshot(points, xs=xs, baseline=baseline, baseline_xs=baseline_xs)
-        )
+    def _push_undo_snapshot(self, snapshot: dict) -> None:
+        """Add a complete pre-change state to the bounded Undo stack."""
+        self._undo.append(snapshot)
         del self._undo[:-self._HISTORY_LIMIT]
         self._redo.clear()
         self._update_history_buttons()
+
+    def _checkpoint(self, points=None, xs=_UNSET, baseline=_UNSET, baseline_xs=_UNSET) -> None:
+        """Record the state before a change. Call this before mutating the curve."""
+        self._push_undo_snapshot(
+            self._snapshot(points, xs=xs, baseline=baseline, baseline_xs=baseline_xs)
+        )
 
     def _restore(self, snap: dict, message: str) -> None:
         self._profile = deepcopy(snap["profile"])
@@ -1467,6 +1539,10 @@ class CalibrationPage(QWidget):
         self._chart_scale = snap.get("scale")
         self.chart.update()
         self.hint.setText(message)
+        self.curve_status.setText(
+            f"Curve restored · {len(self.chart.points)} control points."
+            if self.chart.points else "Waiting for captured movement data."
+        )
         self.profile_changed.emit({"restored": True})
         if self._base_profile is not None:
             self.base_profile_changed.emit(deepcopy(self._base_profile))
@@ -1495,6 +1571,7 @@ class CalibrationPage(QWidget):
         )
 
     def _on_complete(self, summary: dict, recommendation: dict):
+        self._set_curve_controls_enabled(True)
         self._last_recommendation = recommendation
         self.apply_recommendation(recommendation)
         self.recommendation_ready.emit(summary, recommendation)
@@ -1505,7 +1582,13 @@ class CalibrationPage(QWidget):
         Used when a calibration finishes and when Generate recommendation is clicked. The
         change is recorded for Undo.
         """
-        self._checkpoint()  # a recommendation is a change: the old curve can be undone
+        if self._live_snapshot is not None:
+            # Treat all interim graph refreshes as one change: Undo returns to the
+            # curve that existed before this calibration session began.
+            snapshot, self._live_snapshot = self._live_snapshot, None
+            self._push_undo_snapshot(snapshot)
+        else:
+            self._checkpoint()  # a recommendation is a change: the old curve can be undone
         try:
             if self._base_profile is not None:
                 # An imported curve is adjusted by the result instead of replaced.
@@ -1517,13 +1600,29 @@ class CalibrationPage(QWidget):
             else:
                 self._profile = recommendation_profile(recommendation)
                 xs, ys = _curve_points(recommendation.get("points") or [])
+                old_points = list(self.chart.points) if len(self.chart.points) >= 2 else None
                 self._set_chart(
                     ys,
-                    previous=list(self.chart.points),
+                    previous=old_points,
                     xs=xs,
-                    previous_xs=self.chart.x_positions(),
+                    previous_xs=self.chart.x_positions() if old_points else None,
                     scale=RECOMMENDATION_MAX_SPEED,
                 )
+            point_count = len(recommendation.get("points") or [])
+            sample_count = int(recommendation.get("captured_sample_count", 0) or 0)
+            if sample_count and self._base_profile is not None:
+                self.curve_status.setText(
+                    f"Final estimate · {sample_count:,} captured movement samples · "
+                    f"{point_count} measured-speed recommendation positions. The imported curve "
+                    f"keeps its {len(self.chart.points)} editable points."
+                )
+            elif sample_count:
+                self.curve_status.setText(
+                    f"Final curve · {sample_count:,} captured movement samples · "
+                    f"{len(self.chart.points)} adaptive control points. The graph is ready to edit or export."
+                )
+            else:
+                self.curve_status.setText(f"Recommendation curve · {len(self.chart.points)} control points.")
         except CurveFormatError as exc:
             self._profile = None
             self.hint.setText(f"Could not build a curve from this run: {exc}")
@@ -1665,7 +1764,7 @@ class CalibrationPage(QWidget):
             # No curve yet: treat the chart values as the curve's output-speed shape.
             try:
                 self._profile = recommendation_profile(
-                    {"points": list(zip(xs, points)), "sensitivity_multiplier": 1.0},
+                    {"points": list(zip(xs, points, strict=False)), "sensitivity_multiplier": 1.0},
                     max_speed=RECOMMENDATION_MAX_SPEED,
                 )
                 self._chart_scale = RECOMMENDATION_MAX_SPEED
@@ -1687,6 +1786,7 @@ class CalibrationPage(QWidget):
         self._chart_baseline = list(points)
         self._chart_baseline_xs = list(xs)
         self.hint.setText(self._edit_hint(structural, len(points)))
+        self.curve_status.setText(f"Manually edited curve · {len(points)} control points.")
         self.profile_changed.emit({"points": points})
 
     def _import_curve(self):
@@ -1706,6 +1806,7 @@ class CalibrationPage(QWidget):
         self.base_profile_changed.emit(deepcopy(profile))
         xs, ys = _curve_points(chart_points(profile))
         self._set_chart(ys, xs=xs, scale=max((p.speed for p in profile.horizontal), default=1.0) or 1.0)
+        self.curve_status.setText(f"Imported curve · {len(profile.horizontal)} control points.")
         self.hint.setText(
             f"Imported {Path(path).name}. Run calibration to adjust it, or drag points to edit it."
         )
@@ -1717,6 +1818,9 @@ class CalibrationPage(QWidget):
         self._profile = deepcopy(current)
         prev_pts, cur_pts = normalized_overlay(previous, current)
         self._set_overlay(cur_pts, prev_pts, _shared_speed(previous, current))
+        self.curve_status.setText(
+            f"Adjusted curve preview · {len(current.horizontal)} control points."
+        )
         self.hint.setText(f"{note} Export curve to save it.")
 
     def _save(self):

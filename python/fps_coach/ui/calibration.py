@@ -24,6 +24,9 @@ class CalibrationCanvas(QWidget):
 
     progress_changed = Signal(int, int)
     completed = Signal(dict, dict)
+    recommendation_updated = Signal(dict, dict)
+    session_started = Signal()
+    session_cancelled = Signal()
     hint_changed = Signal(str)
 
     def __init__(self, analyzer: Any, parent: QWidget | None = None) -> None:
@@ -78,6 +81,7 @@ class CalibrationCanvas(QWidget):
         self._choose_target()
         self._begin_trial()
         self._sample_timer.start()
+        self.session_started.emit()
         self.progress_changed.emit(0, self._total_trials)
         self.hint_changed.emit("Move naturally and click the mint target. Do not try to be artificially perfect.")
         self.update()
@@ -87,7 +91,8 @@ class CalibrationCanvas(QWidget):
         self._sample_timer.stop()
         self._analyzer.reset()
         self._trail.clear()
-        self.hint_changed.emit("Calibration reset.")
+        self.session_cancelled.emit()
+        self.hint_changed.emit("Calibration cancelled; the previous curve was restored.")
         self.update()
 
     def _cursor_global(self) -> QPointF:
@@ -176,16 +181,20 @@ class CalibrationCanvas(QWidget):
 
         self._completed_trials += 1
         self.progress_changed.emit(self._completed_trials, self._total_trials)
+        summary = dict(self._analyzer.summary())
+        recommendation = dict(self._analyzer.recommend())
         if self._completed_trials >= self._total_trials:
             self._active = False
             self._sample_timer.stop()
-            summary = dict(self._analyzer.summary())
-            recommendation = dict(self._analyzer.recommend())
             self.hint_changed.emit("Calibration complete. Review the recommendation before changing settings.")
             self.completed.emit(summary, recommendation)
             self.update()
             return
 
+        # Refresh the graph after each captured target, rather than waiting for a
+        # preset curve at the very end of the task. The preview is data-only and
+        # is not treated as a finished/exportable recommendation until completion.
+        self.recommendation_updated.emit(summary, recommendation)
         self._choose_target()
         self._begin_trial()
         self.hint_changed.emit(f"Good. {self._total_trials - self._completed_trials} targets remaining.")
@@ -206,7 +215,7 @@ class CalibrationCanvas(QWidget):
         if len(self._trail) > 1:
             painter.setPen(QPen(QColor(215, 242, 73, 90), 2))
             points = list(self._trail)
-            for first, second in zip(points, points[1:]):
+            for first, second in zip(points, points[1:], strict=False):
                 painter.drawLine(first, second)
 
         if self._active:

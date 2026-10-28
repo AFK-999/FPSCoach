@@ -26,6 +26,19 @@ void add_overshoot_trial(MovementAnalyzer& analyzer, const double time_offset) {
     assert(analyzer.end_trial(100.0, 0.0, time_offset + 0.06));
 }
 
+void add_variable_speed_trial(MovementAnalyzer& analyzer,
+                              const int segments,
+                              const double time_offset) {
+    analyzer.begin_trial(0.0, 0.0, 100.0, 0.0, time_offset);
+    for (int i = 1; i <= segments; ++i) {
+        const double fraction = static_cast<double>(i) / static_cast<double>(segments + 1);
+        analyzer.add_sample(100.0 * fraction * fraction, 0.0,
+                            time_offset + static_cast<double>(i) * 0.01);
+    }
+    assert(analyzer.end_trial(100.0, 0.0,
+                              time_offset + static_cast<double>(segments + 1) * 0.01));
+}
+
 } // namespace
 
 int main() {
@@ -52,6 +65,23 @@ int main() {
     for (std::size_t i = 1; i < overshoot_curve.points.size(); ++i) {
         assert(overshoot_curve.points[i].first > overshoot_curve.points[i - 1].first);
         assert(overshoot_curve.points[i].second >= overshoot_curve.points[i - 1].second);
+    }
+
+    MovementAnalyzer sparse;
+    MovementAnalyzer dense;
+    add_variable_speed_trial(sparse, 2, 1.0);
+    add_variable_speed_trial(dense, 24, 1.0);
+    const auto sparse_curve = sparse.recommend();
+    const auto dense_curve = dense.recommend();
+    assert(sparse_curve.captured_sample_count == 3);
+    assert(dense_curve.captured_sample_count == 25);
+    assert(sparse_curve.points.size() < dense_curve.points.size());
+    assert(dense_curve.points.size() <= 32);
+    assert(sparse.recommend().points.front().first == 0.0);
+    assert(dense_curve.points.back().second == 1.0);
+    for (std::size_t i = 1; i < dense_curve.points.size(); ++i) {
+        assert(dense_curve.points[i].first > dense_curve.points[i - 1].first);
+        assert(dense_curve.points[i].second >= dense_curve.points[i - 1].second);
     }
 
     // A 1 kHz, 12-second trial must retain samples past the old 8192-point cap.

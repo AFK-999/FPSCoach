@@ -392,6 +392,19 @@ class CurveChart(QWidget):
         self._editable = editable
         self.setMouseTracking(editable)
 
+    def set_editable(self, editable: bool) -> None:
+        """Toggle pointer editing while keeping the current curve visible."""
+        self._editable = bool(editable)
+        self.setMouseTracking(self._editable)
+        if not self._editable:
+            self._drag_index = None
+            self._drag_base = None
+            self._drag_x_base = None
+            self._drag_handles = None
+            self._hover_index = None
+            self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
+        self.update()
+
     @property
     def points(self):
         return self._points

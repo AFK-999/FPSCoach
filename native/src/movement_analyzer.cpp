@@ -1,9 +1,7 @@
 #include "fpscoach/movement_analyzer.hpp"
 
 #include <algorithm>
-#include <array>
 #include <cmath>
-#include <numeric>
 
 namespace fpscoach {
 namespace {
@@ -19,6 +17,26 @@ double distance(const double x0, const double y0, const double x1, const double 
     return std::hypot(x1 - x0, y1 - y0);
 }
 
+std::size_t adaptive_point_count(const std::size_t sample_count) {
+    constexpr std::size_t kMinimumPoints = 2;
+    constexpr std::size_t kMaximumPoints = 32;
+    const auto requested = static_cast<std::size_t>(
+                               std::ceil(std::log2(static_cast<double>(sample_count) + 1.0))) +
+                           1;
+    return std::clamp(requested, kMinimumPoints, kMaximumPoints);
+}
+
+double speed_quantile(const std::vector<double>& sorted_speeds, const double fraction) {
+    if (sorted_speeds.empty()) {
+        return 0.0;
+    }
+    const double position = fraction * static_cast<double>(sorted_speeds.size() - 1);
+    const auto lower = static_cast<std::size_t>(std::floor(position));
+    const auto upper = static_cast<std::size_t>(std::ceil(position));
+    const double weight = position - static_cast<double>(lower);
+    return sorted_speeds[lower] * (1.0 - weight) + sorted_speeds[upper] * weight;
+}
+
 } // namespace
 
 void MovementAnalyzer::reset() {
@@ -26,6 +44,8 @@ void MovementAnalyzer::reset() {
     active_ = false;
     current_ = {};
     completed_.clear();
+    captured_speeds_px_s_.clear();
+    captured_sample_count_ = 0;
 }
 
 void MovementAnalyzer::begin_trial(const double start_x,
@@ -97,6 +117,19 @@ bool MovementAnalyzer::end_trial(const double x,
     }
 
     completed_.push_back(calculate_metrics(current_));
+    for (std::size_t i = 1; i < current_.samples.size(); ++i) {
+        const auto& before = current_.samples[i - 1];
+        const auto& after = current_.samples[i];
+        const double elapsed = after.t - before.t;
+        if (elapsed <= 0.0) {
+            continue;
+        }
+        const double speed = distance(before.x, before.y, after.x, after.y) / elapsed;
+        if (std::isfinite(speed) && speed > 0.0) {
+            captured_speeds_px_s_.push_back(speed);
+        }
+    }
+    captured_sample_count_ += current_.samples.size() - 1;
     current_ = {};
     return true;
 }
@@ -229,19 +262,38 @@ CurveRecommendation MovementAnalyzer::recommend() const {
                                           0.82,
                                           1.12);
     recommendation.sensitivity_multiplier = sensitivity;
+    recommendation.captured_sample_count = captured_sample_count_;
 
-    constexpr std::array<double, 7> inputs{0.0, 0.08, 0.20, 0.40, 0.62, 0.82, 1.0};
-    double previous_y = 0.0;
-    for (const double x : inputs) {
-        double y = x == 0.0 ? 0.0 : std::pow(x, gamma);
-        // Apply a small low-speed damping term only when repeated lateral
-        // oscillation was measured. The term fades out at high speed.
-        y *= 1.0 - 0.12 * aggregate.tremor_score * (1.0 - x);
-        y = std::clamp(y, previous_y, 1.0);
-        recommendation.points.emplace_back(x, y);
-        previous_y = y;
+    auto measured_speeds = captured_speeds_px_s_;
+    std::sort(measured_speeds.begin(), measured_speeds.end());
+    if (!measured_speeds.empty()) {
+        // The count grows with captured samples (capped at 32 for readability), while
+        // x positions come from empirical speed quantiles. The graph therefore reflects
+        // this user's movement rather than a fixed seven-anchor template.
+        const auto point_count = adaptive_point_count(measured_speeds.size());
+        const double speed_scale = measured_speeds.back();
+        recommendation.points.emplace_back(0.0, 0.0);
+        double previous_x = 0.0;
+        for (std::size_t index = 1; index + 1 < point_count; ++index) {
+            const double fraction = static_cast<double>(index) /
+                                    static_cast<double>(point_count - 1);
+            const double x = std::clamp(speed_quantile(measured_speeds, fraction) / speed_scale,
+                                        0.0,
+                                        1.0);
+            // Repeated speeds add no horizontal detail; omit duplicate control points.
+            if (x <= previous_x + 1e-9 || x >= 1.0 - 1e-9) {
+                continue;
+            }
+            double y = std::pow(x, gamma);
+            // Apply a small low-speed damping term only when repeated lateral
+            // oscillation was measured. The term fades out at high speed.
+            y *= 1.0 - 0.12 * aggregate.tremor_score * (1.0 - x);
+            y = std::clamp(y, recommendation.points.back().second, 1.0);
+            recommendation.points.emplace_back(x, y);
+            previous_x = x;
+        }
+        recommendation.points.emplace_back(1.0, 1.0);
     }
-    recommendation.points.back().second = 1.0;
 
     double variance = 0.0;
     for (const auto& trial : completed_) {

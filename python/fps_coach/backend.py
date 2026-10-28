@@ -52,6 +52,8 @@ class _FallbackAnalyzer:
     def reset(self) -> None:
         self._trial: dict[str, Any] | None = None
         self._metrics: list[dict[str, float]] = []
+        self._speed_samples: list[float] = []
+        self._captured_sample_count = 0
 
     def begin_trial(
         self, start_x: float, start_y: float, target_x: float, target_y: float, timestamp: float
@@ -96,11 +98,11 @@ class _FallbackAnalyzer:
 
         ux, uy = (target.x - start.x) / direct, (target.y - start.y) / direct
         path = sum(
-            math.hypot(b.x - a.x, b.y - a.y) for a, b in zip(samples, samples[1:])
+            math.hypot(b.x - a.x, b.y - a.y) for a, b in zip(samples, samples[1:], strict=False)
         )
         projections = [((s.x - start.x) * ux + (s.y - start.y) * uy) / direct for s in samples]
         perpendicular = [abs((s.x - start.x) * -uy + (s.y - start.y) * ux) for s in samples]
-        backward = sum(b < a - 0.006 for a, b in zip(projections, projections[1:]))
+        backward = sum(b < a - 0.006 for a, b in zip(projections, projections[1:], strict=False))
         duration = samples[-1].t - samples[0].t
         self._metrics.append(
             {
@@ -114,6 +116,14 @@ class _FallbackAnalyzer:
                 "mean_speed_px_s": path / duration,
             }
         )
+        for first, second in zip(samples, samples[1:], strict=False):
+            elapsed = second.t - first.t
+            if elapsed <= 0.0:
+                continue
+            speed = math.hypot(second.x - first.x, second.y - first.y) / elapsed
+            if math.isfinite(speed) and speed > 0.0:
+                self._speed_samples.append(speed)
+        self._captured_sample_count += len(samples) - 1
         return True
 
     def summary(self) -> dict[str, float | int]:
@@ -140,9 +150,34 @@ class _FallbackAnalyzer:
         corrections = float(summary["correction_score"])
         tremor = float(summary["tremor_score"])
         gamma = max(0.72, min(1.5, 1 + 0.55 * over + 0.30 * tremor + 0.20 * corrections - 0.35 * under))
-        inputs = (0.0, 0.08, 0.2, 0.4, 0.62, 0.82, 1.0)
-        points = [(x, (x**gamma) * (1 - 0.12 * tremor * (1 - x))) for x in inputs]
-        points[-1] = (1.0, 1.0)
+        speeds = sorted(speed for speed in self._speed_samples if math.isfinite(speed) and speed > 0.0)
+        points: list[tuple[float, float]] = []
+        if speeds:
+            # Choose a readable number of control points from the amount of captured
+            # movement data, then place them at empirical speed quantiles rather than
+            # reusing a fixed list of seven normalized anchors.
+            point_count = min(32, max(2, math.ceil(math.log2(len(speeds) + 1)) + 1))
+
+            def quantile(fraction: float) -> float:
+                position = fraction * (len(speeds) - 1)
+                lower = math.floor(position)
+                upper = math.ceil(position)
+                weight = position - lower
+                return speeds[lower] * (1.0 - weight) + speeds[upper] * weight
+
+            speed_scale = speeds[-1]
+            points.append((0.0, 0.0))
+            previous_x = 0.0
+            for index in range(1, point_count - 1):
+                x = min(1.0, max(0.0, quantile(index / (point_count - 1)) / speed_scale))
+                # Repeated speeds contain no extra horizontal detail; skip stacked dots.
+                if x <= previous_x + 1e-9 or x >= 1.0 - 1e-9:
+                    continue
+                y = (x**gamma) * (1.0 - 0.12 * tremor * (1.0 - x))
+                y = max(points[-1][1], min(1.0, y))
+                points.append((x, y))
+                previous_x = x
+            points.append((1.0, 1.0))
         sensitivity = max(0.82, min(1.12, 1 - 0.12 * over - 0.05 * corrections + 0.10 * under))
         count = int(summary["trial_count"])
         if over > 0.18 or corrections > 0.28:
@@ -158,6 +193,7 @@ class _FallbackAnalyzer:
             reasons.append("Complete at least 8-12 trials for a stable recommendation.")
         return {
             "points": points,
+            "captured_sample_count": self._captured_sample_count,
             "sensitivity_multiplier": sensitivity,
             "confidence": min(1.0, count / 12.0) * 0.75,
             "title": title,

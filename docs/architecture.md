@@ -129,7 +129,7 @@ Both actions change the profile that **Export** writes, not just the pixels on t
 removed control point is mirrored into the matching horizontal and vertical curve points. Moving a
 dot updates its speed and/or gain in the profile. Each drag is one Undo step; adding and deleting are
 each one step too, and Undo/Redo restore both the curve geometry and the underlying profile. The
-read-only curve previews in AI Coach and Recommendation are unaffected.
+AI Coach and Recommendation charts remain read-only; rev90 adds live/data-driven source curves and visual AI proposal overlays in the Coach panel.
 
 `CurveChart.curve_geometry_changed` carries both y values and normalized x positions, while
 `curve_structure_changed` identifies a manual insertion or deletion. `CalibrationPage` applies those
@@ -170,9 +170,19 @@ Read aloud, **Stop speaking** and the reply text size live in the AI Coach tab's
 
 There is no post-synthesis gain stage: the previous loud-mode attempt (rev84) was withdrawn at the user's request, so speech goes straight to pyttsx3/SAPI5 or System.Speech at the stored percentage.
 
+## Data-derived calibration curves and AI Coach previews (rev90)
+
+The analyzer retains each accepted trial's non-stationary cursor-speed samples in memory. After each completed target, both the native analyzer and Python fallback recompute a provisional recommendation from the collected speeds and the measured path/overshoot/underreach/correction/tremor metrics. The Calibration graph is empty before there is captured movement; it updates during the 12-target task and restores its pre-session curve if the user cancels.
+
+Control-point count grows with the amount of speed data using `ceil(log2(sample_count + 1)) + 1`, clamped to 2–32 for readability. Point `x` positions are empirical quantiles of observed cursor speed, normalized to the fastest captured segment; repeated speeds that would stack identical dots are deduplicated. The measured movement metrics shape the monotonic output curve, which ends at `(1, 1)`. This replaces the previous fixed seven-anchor curve. The graph is temporarily read-only while the live estimate changes; the final recommendation becomes the editable/exportable curve.
+
+The AI Coach's adjacent **Curve tuning** panel displays the full calibrated or imported curve. Calibration recommendations and recognized AI curve directives are drawn as before/after overlays (solid proposed curve, dashed prior curve); AI proposals do not switch pages or change the Calibration curve until the user clicks **Send to calibration**. Chat messages use opposing user/right and coach/left bubbles. Text inserted into bubbles is HTML-escaped, and old bubbles are redrawn when the theme changes. An AI recommendation directive is requested by the system prompt so supported sensitivity/preset recommendations can be previewed visually.
+
+Raw cursor samples remain local. Text-coaching requests may include the numeric calibration summary and up to 32 horizontal speed/gain points from the active profile, but do not include the raw cursor samples. See `docs/PRIVACY.md`.
+
 ## Movement model
 
-Calibration gives the native analyzer timestamped pointer positions plus each known target. Per trial it extracts:
+Calibration gives the native analyzer timestamped desktop cursor positions plus each known target. Per trial it extracts:
 
 - direct/path distance ratio (path efficiency),
 - maximum forward projection beyond the target (overshoot),
@@ -181,7 +191,7 @@ Calibration gives the native analyzer timestamped pointer positions plus each kn
 - perpendicular RMS movement and reversals (small oscillation score),
 - endpoint error, duration, and mean speed.
 
-The recommendation model is deliberately small and explainable. Aggregate features adjust a bounded power curve, a low-speed damping term, and a conservative sensitivity multiplier. Curve points are forced to remain monotonic and to finish at `(1, 1)`. Confidence combines completed-trial count and trial consistency.
+The recommendation model is deliberately small and explainable. Aggregate features adjust a bounded power curve, a low-speed damping term, and a conservative sensitivity multiplier. Control-point positions are selected from the empirical speed distribution of the captured cursor samples, and their count scales with the sample count (up to 32). Curve points are forced to remain monotonic and to finish at `(1, 1)`. Confidence combines completed-trial count and trial consistency.
 
 This is a starting recommendation, not a trained medical assessment or an automatic control system.
 
@@ -193,7 +203,7 @@ This is a starting recommendation, not a trained medical assessment or an automa
 
 `ai_chat.py` uses standard-library HTTP on a background `QThread`. Local mode calls Ollama's `/api/chat` endpoint and defaults to `qwen3:1.7b`; `phi4-mini` is another suggested tag. Online mode calls a user-supplied OpenAI-compatible `/v1/chat/completions` endpoint. Provider URL, model, and temperature can be stored in `QSettings`; API keys remain in memory only.
 
-Only conversation text and a compact numeric calibration summary are included in model requests. Frames and raw movement samples are not included. The system prompt keeps the assistant inside coaching, comfort, and manual curve interpretation boundaries.
+Text-coaching requests contain the conversation, compact numeric calibration summary, and up to 32 horizontal speed/gain points from the active calibrated or imported curve. Raw movement samples and screen frames are not included in text mode. Live vision is separately opt-in and attaches downscaled preview frames only while Watch live is on. The system prompt keeps the assistant inside coaching, comfort, and manual curve interpretation boundaries and asks for a supported adjustment tag when proposing a curve change; the UI previews that proposal without applying it.
 
 ## Scope and security boundary
 

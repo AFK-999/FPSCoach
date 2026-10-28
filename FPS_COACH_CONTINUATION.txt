@@ -1,7 +1,7 @@
 ================================================================================
 FPS COACH — CONTINUATION / HANDOFF DOCUMENT
 Copy-paste this whole file into a new agent chat to resume with zero context loss.
-Last updated: 2026-10-28 (rev 89)  (update after EVERY response)
+Last updated: 2026-10-28 (rev 90)  (update after EVERY response)
 
 *** IMPORTANT: Work on the real repository at /home/user/FPSCoach
 *** (https://github.com/AFK-999/FPSCoach.git), branch rev72-screen-recorder-tool.
@@ -188,6 +188,35 @@ Last updated: 2026-10-28 (rev 89)  (update after EVERY response)
                 skipped). Focused rev89 tests exit cleanly (46 passed). Native C++ movement test compiled
                 with g++ and passed; `ruff` passes on both new calibration test files.
 
+  2026-10-28 (rev90)  CALIBRATION: CURVES FROM CAPTURED MOVEMENT + VISUAL AI CURVE PREVIEWS.
+              - Native and Python fallback analyzers now retain accepted-trial cursor-speed samples,
+                derive curve x-positions from measured speed quantiles, and scale control-point count by
+                sample count (`ceil(log2(n + 1)) + 1`, 2–32 points; duplicate x-values omitted). The
+                graph starts empty and refreshes after each accepted target; completion is one Undo step,
+                cancel restores the pre-session curve, and user edits are locked during the live estimate.
+              - AI Coach's adjacent Curve tuning chart shows the complete calibrated/imported curve and
+                visual before/after overlays for calibration suggestions and supported AI directives. It
+                preserves every source point; an explicit Send to calibration button is required. User
+                bubbles align right, coach bubbles left, HTML is escaped, and transcript colors are
+                re-rendered when the theme changes. Parser-only [ADJUST: ...] tags are hidden from the
+                visible reply and read-aloud output.
+              - Privacy copy now describes cursor sampling accurately (no screen frames; raw timestamped
+                samples are transient/local; aggregate speed samples stay local; text AI requests may
+                include summary and up to 32 active horizontal curve points). README, architecture, and
+                docs/PRIVACY.md updated; privacy policy duplicate content removed.
+              - Tests added/updated: `test_calibration_live_curve.py`, `test_ai_coach_curve_preview.py`,
+                fallback/native recommendations, sample-rate tests, coach focus/bubble tests.
+              - VERIFICATION: focused suite 127 passed (pytest tool reported exit -1 after summary);
+                full suite 671 passed, 5 skipped (tool again reported exit -1 after summary; Qt teardown
+                has a known nonzero exit on this environment, previously reproduced on pristine rev88);
+                direct g++ native movement-analyzer test passed. Ruff on touched Python files reports only
+                the 11 pre-existing import/annotation/zip warnings; new tests pass Ruff. Screenshots:
+                `deliverables/screenshots/ai-coach-curve-preview-rev90.png` and
+                `deliverables/screenshots/calibration-live-data-curve-rev90.png`.
+              - Release artifacts: `deliverables/FPSCoach-rev90.zip` and
+                `deliverables/FPSCoach-rev90.patch`. The ZIP includes the updated repository, the
+                ordered patch series, a combined upstream diff, screenshots, and application instructions.
+
 ================================================================================
 
 --------------------------------------------------------------------------------
@@ -224,16 +253,15 @@ shooter players.
 --------------------------------------------------------------------------------
 3. CURRENT TASK (what we are building now)
 --------------------------------------------------------------------------------
-No feature request is currently unfinished. The latest request, rev89, is complete:
-users can drag calibration graph dots, right-click to add/delete them, and Undo/Redo restores
-both graph geometry and the exported profile. Calibration also offers 125/250/500/1,000 Hz
-target sampling (1,000 Hz default), with a precise 1 ms timer, independent redraw throttling,
-and larger analyzer sample limits for higher-polling mice. OS/Qt scheduling can reduce the
-achieved cadence; this is stated in the UI.
+The active request, rev90, is complete. Calibration now builds adaptive sensitivity curves from
+accepted desktop-cursor movement samples, updates the graph after each completed target, and chooses
+the point count/positions from the captured speed distribution. AI Coach displays complete curve
+proposals visually in its adjacent tuning panel; proposals require an explicit send action. Chat
+bubbles are on opposite sides, with theme-aware rendering. Rev89's draggable dots, right-click add/
+delete, Undo/Redo, 125/250/500/1,000 Hz target sampling, and honest cadence wording remain intact.
 
-The older Lite/Full installer, environment self-repair, and AI preconfiguration plan
-in section 4 is historical context, not the active request. Continue from rev89 when
-the user provides the next change.
+The older Lite/Full installer, environment self-repair, and AI preconfiguration plan in section 4 is
+historical context, not the active request. Continue from rev90 when the user provides the next change.
 
 --------------------------------------------------------------------------------
 4. ORIGINAL IMPLEMENTATION PLAN (historical; not the active request)
@@ -312,26 +340,46 @@ the user provides the next change.
     /home/user/FPSCoach   (working clone of https://github.com/AFK-999/FPSCoach.git)
     Working branch     = rev72-screen-recorder-tool. No remote is configured in this workspace;
                          revisions are committed locally and delivered as replayable patches.
-    REV89 STATUS: rev88 plus editable Calibration sensitivity-curve points and a persistent 1,000 Hz
-    cursor-sampling target for the calibration task (choices: 125, 250, 500, 1,000 Hz; default 1,000).
+    REV90 STATUS: Rev89 plus adaptive curves derived from live captured cursor movement, full-point
+    AI curve previews, and opposite-side chat bubbles.
+    Requested: "generate sensitivity curve based on real-time analysis of the captured user input ...
+    adapt the graph dot count ... AI Coach ... display ... adjustments/recommendations ... as visuals ...
+    keep user and coach messages opposite sides."
+      - Accepted target movement speeds are retained locally. Native and fallback analyzers derive x
+        positions from empirical speed quantiles; requested control-point count is
+        ceil(log2(speed_sample_count + 1)) + 1, clamped 2–32, with duplicate x positions removed.
+      - Calibration graph starts empty and refreshes after each target. It is read-only while provisional;
+        completion becomes one Undo step, cancel restores the old curve, and final points are editable/exportable.
+      - AI Coach displays full calibrated/imported curves and before/after previews for supported AI curve
+        recommendations in the adjacent panel. The proposal is not sent to Calibration until clicked.
+        It does not apply anything to the game. User bubble right; Coach left; HTML is escaped and theme
+        changes re-render stored transcript. Parser-only adjustment tags are omitted from visible/spoken text.
+      - Privacy, README, and architecture docs updated; `docs/PRIVACY.md` was de-duplicated and now
+        distinguishes transient cursor samples from locally retained speed metrics and AI context.
+      - Focused suite: 127 passed, tool exit -1 after summary. Full suite: 671 passed, 5 skipped, tool
+        exit -1 after summary (known Qt teardown issue also reproduced against untouched rev88).
+        Direct g++ native analyzer test passed. Ruff: new tests clean; touched Python has 11 pre-existing
+        import/annotation/zip warnings.
+      - Screenshots: `deliverables/screenshots/ai-coach-curve-preview-rev90.png` and
+        `deliverables/screenshots/calibration-live-data-curve-rev90.png`.
+      - Release files: `deliverables/FPSCoach-rev90.patch` (incremental from rev89) and
+        `deliverables/FPSCoach-rev90.zip` (updated repository and full ordered patch series).
+
+    REV89 STATUS (previous release): Rev88 plus editable Calibration sensitivity-curve points and a
+    persistent 1,000 Hz cursor-sampling target (choices: 125, 250, 500, 1,000 Hz; default 1,000).
     Requested: "Modify the graph in the application's calibration tab to allow users to drag and move
     existing dots. Also, implement a right-click context menu that includes options to manually add and
     delete dots on the graph."
-      - Curves up to 64 points show every point; larger curves show up to 64 key bends (sampled evenly if
-        there are more). Drag gain vertically; drag interior dots horizontally to change speed
-        (neighbor-clamped; endpoints stay anchored).
-      - Right-click menu: Add point here (in plot, maximum 200) and Delete point (on a dot; minimum 2).
-      - Edits update both the chart and the exportable horizontal/vertical curve profile; each edit can
-        be undone/redone. Other read-only charts are unchanged.
-      - Sample target persists as calibration/sample_hz; 1,000 Hz uses a 1 ms precise timer, redraws are
-        throttled to ~60 Hz, and UI copy cautions that Windows/Qt scheduling can reduce the achieved rate.
-        Native and fallback trial caps are 65,536 samples.
-      - tests/test_calibration_chart_edit.py (37); tests/test_calibration_sample_rate.py (9).
-        docs/architecture.md + README updated.
-    VERIFICATION: full pytest output 658 passed, 5 skipped, then exit 139 from PySide6/Qt teardown;
-    this also reproduces on untouched rev88 (612 passed, 5 skipped). Focused rev89 tests exit cleanly
-    (46 passed); native C++ movement test compiled with g++ and passed.
-    Screenshot: deliverables/screenshots/calibration-graph-point-menu.png.
+      - Curves up to 64 points show every point; larger curves show up to 64 key bends. Drag gain vertically;
+        drag interior dots horizontally to change speed (neighbor-clamped; endpoints stay anchored).
+      - Right-click: Add point here (in plot, maximum 200), Delete point (on a dot; minimum 2). Edits update
+        the exportable horizontal/vertical profile and are undoable/redone.
+      - Sample target persists as calibration/sample_hz; 1,000 Hz uses a 1 ms precise timer, redraws
+        throttled around 60 Hz; UI cautions that Windows/Qt scheduling can reduce achieved rate. Native and
+        fallback trial caps are 65,536 samples.
+      - Previous verification: full pytest output 658 passed, 5 skipped then exit 139 from Qt teardown
+        (also reproduced on untouched rev88); 46 focused tests exit cleanly; native test passed.
+        Screenshot: deliverables/screenshots/calibration-graph-point-menu.png.
 
     REV88 STATUS: rev87 plus a chevron on every combo box (so a dropdown reads as a dropdown).
     Requested: "add a visual indicator, such as a dropdown arrow icon, to the far right of the text box in

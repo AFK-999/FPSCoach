@@ -29,7 +29,9 @@ their own DPI and in-game sensitivity. You may then convert between cm/360 degre
 game's in-game sensitivity, and suggest a specific in-game number (for example "try 0.42 in
 VALORANT") using those figures, saying it is the user's to apply. Keep such changes small and
 reversible, explain the trade-off, and never claim to read, measure, or change the game itself.
-In-game mode is session-only and off by default; never ask the user to keep it on while playing."""
+In-game mode is session-only and off by default; never ask the user to keep it on while playing.
+
+When you recommend a concrete sensitivity-curve change, include one short machine-readable tag at the end, such as [ADJUST: sensitivity +5%], [ADJUST: precision], or [ADJUST: tracking]. The app uses it to draw a before/after preview in the adjacent curve-tuning panel. The preview is not applied automatically: say it is a proposal and let the user choose whether to send it to Calibration."""
 
 
 VISION_SYSTEM_PROMPT = """A still frame from the user's own capture preview is

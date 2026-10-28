@@ -15,14 +15,16 @@ A lightweight, local-first foundation for an FPS movement/sensitivity coach. It 
 - **Display-change recovery** for `DXGI_ERROR_ACCESS_LOST`.
 - **In-app 12-target calibration** with a selectable 125, 250, 500, or 1,000 Hz cursor-sampling
   target (1,000 Hz by default) during an explicit session. The precise timer targets 1 ms at 1,000 Hz;
-  OS/Qt scheduling can reduce the achieved rate. Its sensitivity curve has draggable dots, and
-  right-click adds/deletes points; changes are undoable and included in exports.
-- **Native movement model** that measures path efficiency, overshoot, underreach, corrections, oscillation, endpoint error, speed, and duration.
-- **Conservative custom curve recommendation** with monotonic points, sensitivity multiplier, confidence, and plain-language reasons.
+  OS/Qt scheduling can reduce the achieved rate. The curve updates after each completed target from
+  captured cursor-speed samples: its control-point positions and dot count adapt to the collected data
+  instead of using seven fixed anchors. The graph has draggable dots, right-click add/delete, Undo/Redo,
+  and explicit export; it starts empty until movement data exists.
+- **Native movement model** that measures path efficiency, overshoot, underreach, corrections, oscillation, endpoint error, speed, and duration; the Python fallback uses the same data-derived recommendation approach.
+- **Conservative custom curve recommendation** with data-derived, monotonic points, sensitivity multiplier, confidence, and plain-language reasons.
 - **Custom Curve compatibility** for importing/exporting modern `.cc4` JSON profiles and legacy `.ccurve` text profiles, selected explicitly in the UI.
 - **In-Game Mode (Settings → Advanced)** — off at every launch. Turn it on for a session, pick your game, and enter your DPI and in-game sensitivity; Vantage converts that to cm/360°, shows what its recommendation means in that game's units, and can ask the coach for a specific value. It never reads or changes the game.
 - **Live vision (AI Coach)** — off at every launch. Turn it on and the coach watches the live capture preview: it samples the preview into short clips (4 frames half a second apart by default), measures what moved between them, and comments on the movement and the setup. **Look now** takes a clip on demand. It is instructed never to analyse targets, enemies, or aim. Needs a vision model (for example `gemma3:4b`); the card says so before you start.
-- **Optional AI coach** using local Ollama models (defaults to `qwen3:1.7b`, with `phi4-mini` as an option) or a user-configured OpenAI-compatible online API. Settings → AI coach lists the models your provider actually offers, so a model can be re-picked from a dropdown instead of retyped.
+- **Optional AI coach** using local Ollama models (defaults to `qwen3:1.7b`, with `phi4-mini` as an option) or a user-configured OpenAI-compatible online API. Settings → AI coach lists the models your provider actually offers, so a model can be re-picked from a dropdown instead of retyped. User messages sit on the right and coach replies on the left; curve recommendations and AI refinements appear as before/after graphs in the adjacent tuning panel and are sent to Calibration only when you choose.
 - **Portable Python reference analyzer** so UI/model work can be previewed without the Windows extension.
 
 ## Layout
@@ -118,8 +120,8 @@ The Capture tab works in three tiers, and each one says which is in use:
 
 1. Open **Beginner guide** and retain a copy of your current mouse/game profile.
 2. In **Capture**, select the output that shows your borderless-windowed game and press **Start** — the preview above updates live. Start with **Center 640×360** and 30 or 60 FPS on integrated graphics. The **Recording** card below it can record the primary display for your own review: untick **Keep the recording** to discard it at Stop, or leave it ticked to save it to the folder you choose.
-3. In **Calibration**, click all 12 targets using your normal grip and sensitivity.
-4. Review **Recommendation**. The `x` coordinate is normalized input speed and `y` is normalized output speed.
+3. In **Calibration**, click all 12 targets using your normal grip and sensitivity. The live graph refreshes after each target, with control points placed from the captured cursor-speed distribution.
+4. Review **Recommendation**. The `x` coordinate is normalized desktop cursor speed observed during calibration, and `y` is normalized recommended output speed; the number of points reflects the collected movement data.
 5. In **Recommendation**, select **Custom Curve 4 (.cc4)** or **Custom Curve 3 / legacy (.ccurve)**, then import or export explicitly. Export creates a profile file; it never applies one.
 6. Optionally open **AI chat** to discuss the result with a local or online model.
 7. Test over several sessions. Revert if comfort or consistency declines.
@@ -173,7 +175,7 @@ ollama pull phi4-mini
 
 Keep **Provider: Local Ollama**, use `http://127.0.0.1:11434`, and select the matching model tag. Prompts stay on the configured local server.
 
-For an online or self-hosted OpenAI-compatible service, select **Online / OpenAI-compatible API**, enter the base URL, model, and API key. The key is held in memory and is not stored in `QSettings`. Online mode sends the conversation and current calibration summary to the configured provider; screen frames are never included.
+For an online or self-hosted OpenAI-compatible service, select **Online / OpenAI-compatible API**, enter the base URL, model, and API key. The key is held in memory and is not stored in `QSettings`. Text mode sends the conversation, numeric calibration summary, and up to 32 horizontal speed/gain points from the active curve to the configured provider; raw cursor samples and screen frames are not included. Live vision is a separate opt-in feature that sends preview frames only while watching is on.
 
 ## Curve file compatibility
 
