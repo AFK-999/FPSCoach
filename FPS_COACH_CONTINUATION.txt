@@ -1,15 +1,13 @@
 ================================================================================
 FPS COACH — CONTINUATION / HANDOFF DOCUMENT
 Copy-paste this whole file into a new agent chat to resume with zero context loss.
-Last updated: 2026-10-28 (rev 88)  (update after EVERY response)
+Last updated: 2026-10-28 (rev 89)  (update after EVERY response)
 
-*** IMPORTANT (rev4): The REAL repo was provided and differs a lot from the
-*** earlier scaffold. Work on the REAL repo at /home/user/workspace/FPSCoach
-*** (cloned from https://github.com/AFK-999/FPSCoach.git). The scaffold under
-*** /home/user/workspace/{src,config,installer,scripts} is NOT the project.
-*** Real layout: python/fps_coach/ (ai_chat.py uses STDLIB urllib, not requests),
-*** native/ C++ core + CMakeLists.txt, batch files at repo root, scripts/*.ps1.
-*** There is NO config/ai_profile.toml, NO installer/ folder, NO build.bat yet.
+*** IMPORTANT: Work on the real repository at /home/user/FPSCoach
+*** (https://github.com/AFK-999/FPSCoach.git), branch rev72-screen-recorder-tool.
+*** Older scaffold paths and plans below are historical; do not substitute them
+*** for the files in this working tree. Current layout includes python/fps_coach/,
+*** native/ C++ core + CMakeLists.txt, batch files at repo root, and scripts/*.ps1.
   2026-10-23 (rev77)  FIX: NATIVE C++ CORE IS OPTIONAL (LNK2001 ON WINDOWS).
               - CMakeLists.txt: FPSCOACH_SKIP_NATIVE guard (no targets built, compiler-free install),
                 project(... LANGUAGES NONE) + enable_language(CXX) in the build branch, plain if()/else()
@@ -157,6 +155,39 @@ Last updated: 2026-10-28 (rev 88)  (update after EVERY response)
               - VERIFICATION: pytest 615 passed, 2 skipped. Screenshots: combo-arrow-model.png,
                 combo-arrow-provider.png, settings-model-list.png, settings-model-dropdown.png.
 
+  2026-10-28 (rev89)  CALIBRATION: EDITABLE GRAPH + 1,000 HZ SAMPLING TARGET.
+              - User: "Modify the graph in the application's calibration tab to allow users to drag and
+                move existing dots. Also, implement a right-click context menu that includes options to
+                manually add and delete dots on the graph."
+              - `widgets.CurveChart`: every point is shown as a draggable dot on curves up to 64 points;
+                longer curves show up to 64 key bends, sampled evenly if there are more. Drag vertically
+                to change gain; interior dots can also move horizontally to change speed, clamped between
+                neighbors. Endpoints remain
+                at their original speed positions. Zero-gain dots use an additive drag path, not a ratio
+                that would leave them stuck at zero. The cursor and hover state make dots discoverable.
+              - Right-click uses a theme-aware context menu with **Add point here** (inside plot, up to
+                200 points) and **Delete point** (on a dot only; minimum two points).
+              - `curve_geometry_changed` carries y + x data. CalibrationPage mirrors point additions and
+                deletions into the matching horizontal/vertical exported profile, updates speed positions,
+                and records complete Undo/Redo snapshots. Read-only preview charts are untouched.
+              - Calibration sample selector: 125, 250, 500, and 1,000 Hz (default 1,000), saved as
+                `calibration/sample_hz`. At 1,000 Hz the precise Qt timer interval is 1 ms; redraws are
+                throttled separately to about 60 Hz. This is a target cadence, not a promised achieved rate;
+                the tooltip says OS/Qt scheduling or load can reduce it. Mouse-move events are also recorded.
+              - Native and Python fallback analyzer trial caps are 65,536 samples; native and fallback tests
+                exercise 12-second 1,000 Hz trials beyond the old 8,192-sample limit.
+              - `tests/test_calibration_chart_edit.py` (37): short/long point visibility, non-bend drag,
+                vertical and horizontal movement, endpoint limits, zero-gain editing, add/delete/menu
+                availability, exportable profile structure, and Undo. `tests/test_calibration_sample_rate.py`
+                (9): supported rates, precise intervals, persistence, session retuning, repaint throttling,
+                fallback retention, and strict sample-cap endpoint handling.
+              - README and docs/architecture.md updated; screenshot:
+                `/home/user/deliverables/screenshots/calibration-graph-point-menu.png`.
+              - VERIFICATION: full pytest output 658 passed, 5 skipped; pytest exits 139 from a PySide6/Qt
+                shutdown segfault after the summary, also reproduced on untouched rev88 (612 passed, 5
+                skipped). Focused rev89 tests exit cleanly (46 passed). Native C++ movement test compiled
+                with g++ and passed; `ruff` passes on both new calibration test files.
+
 ================================================================================
 
 --------------------------------------------------------------------------------
@@ -193,30 +224,19 @@ shooter players.
 --------------------------------------------------------------------------------
 3. CURRENT TASK (what we are building now)
 --------------------------------------------------------------------------------
-Produce TWO distinct build packages, plus backend hardening and AI preconfig.
+No feature request is currently unfinished. The latest request, rev89, is complete:
+users can drag calibration graph dots, right-click to add/delete them, and Undo/Redo restores
+both graph geometry and the exported profile. Calibration also offers 125/250/500/1,000 Hz
+target sampling (1,000 Hz default), with a precise 1 ms timer, independent redraw throttling,
+and larger analyzer sample limits for higher-polling mice. OS/Qt scheduling can reduce the
+achieved cadence; this is stated in the UI.
 
-  TASK A — Two build packages:
-    A1. "Lite" / foundation build:
-        - Ships WITHOUT any AI models or Ollama runtime.
-        - User installs Ollama themselves and downloads models themselves.
-        - App detects Ollama + models at runtime and guides the user if missing.
-    A2. "Full" build:
-        - Embeds the Ollama runtime AND Qwen 3 1.7B model weights in the installer.
-        - AI is fully functional out of the box, no manual setup.
-
-  TASK B — Environment self-repair (backend):
-        - On startup, backend checks the local environment.
-        - If the project folder was MOVED or RENAMED, auto-repair the install
-          (re-point the editable install / fix path references) before running.
-
-  TASK C — AI chat preconfiguration:
-        - A dedicated configuration section to purposefully import
-          instructions + recommendations into the AI chat interface.
-        - Goal: the assistant is pre-configured (system prompt / persona /
-          domain guidance) to effectively fulfill its FPS-coaching role.
+The older Lite/Full installer, environment self-repair, and AI preconfiguration plan
+in section 4 is historical context, not the active request. Continue from rev89 when
+the user provides the next change.
 
 --------------------------------------------------------------------------------
-4. IMPLEMENTATION PLAN / SPEC (ready for whoever has the real files)
+4. ORIGINAL IMPLEMENTATION PLAN (historical; not the active request)
 --------------------------------------------------------------------------------
 
 4.A  BUILD PACKAGES
@@ -289,9 +309,30 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
 7. WHERE WE LEFT OFF  (read me first)
 --------------------------------------------------------------------------------
   REPO (the only source of truth):
-    /home/user/workspace/FPSCoach   (clone of https://github.com/AFK-999/FPSCoach.git)
-    Remote origin/main = e9e69a2   (the visual REDESIGN; based on 04e6b0f)
-    Working branch     = fix/redesign-backend-wiring (from e9e69a2), NOT pushed.
+    /home/user/FPSCoach   (working clone of https://github.com/AFK-999/FPSCoach.git)
+    Working branch     = rev72-screen-recorder-tool. No remote is configured in this workspace;
+                         revisions are committed locally and delivered as replayable patches.
+    REV89 STATUS: rev88 plus editable Calibration sensitivity-curve points and a persistent 1,000 Hz
+    cursor-sampling target for the calibration task (choices: 125, 250, 500, 1,000 Hz; default 1,000).
+    Requested: "Modify the graph in the application's calibration tab to allow users to drag and move
+    existing dots. Also, implement a right-click context menu that includes options to manually add and
+    delete dots on the graph."
+      - Curves up to 64 points show every point; larger curves show up to 64 key bends (sampled evenly if
+        there are more). Drag gain vertically; drag interior dots horizontally to change speed
+        (neighbor-clamped; endpoints stay anchored).
+      - Right-click menu: Add point here (in plot, maximum 200) and Delete point (on a dot; minimum 2).
+      - Edits update both the chart and the exportable horizontal/vertical curve profile; each edit can
+        be undone/redone. Other read-only charts are unchanged.
+      - Sample target persists as calibration/sample_hz; 1,000 Hz uses a 1 ms precise timer, redraws are
+        throttled to ~60 Hz, and UI copy cautions that Windows/Qt scheduling can reduce the achieved rate.
+        Native and fallback trial caps are 65,536 samples.
+      - tests/test_calibration_chart_edit.py (37); tests/test_calibration_sample_rate.py (9).
+        docs/architecture.md + README updated.
+    VERIFICATION: full pytest output 658 passed, 5 skipped, then exit 139 from PySide6/Qt teardown;
+    this also reproduces on untouched rev88 (612 passed, 5 skipped). Focused rev89 tests exit cleanly
+    (46 passed); native C++ movement test compiled with g++ and passed.
+    Screenshot: deliverables/screenshots/calibration-graph-point-menu.png.
+
     REV88 STATUS: rev87 plus a chevron on every combo box (so a dropdown reads as a dropdown).
     Requested: "add a visual indicator, such as a dropdown arrow icon, to the far right of the text box in
     the models dropdown menu. This will make it clear to users that a dropdown menu is available."

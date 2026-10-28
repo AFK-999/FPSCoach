@@ -13,6 +13,12 @@ from PySide6.QtWidgets import QWidget
 from .styles import STAGE
 
 
+CALIBRATION_SAMPLE_RATES_HZ = (125, 250, 500, 1000)
+DEFAULT_CALIBRATION_SAMPLE_RATE_HZ = 1000
+_TRAIL_SECONDS = 0.72  # 90 points at the former 125 Hz default
+_REPAINT_INTERVAL_SECONDS = 1 / 60  # collect at the selected rate; only paint at display cadence
+
+
 class CalibrationCanvas(QWidget):
     """In-app target task; it observes only this explicit calibration session."""
 
@@ -26,7 +32,11 @@ class CalibrationCanvas(QWidget):
         self._rng = random.Random()
         self._target = QPointF(0, 0)
         self._target_radius = 18.0
-        self._trail: deque[QPointF] = deque(maxlen=90)
+        self._sample_rate_hz = DEFAULT_CALIBRATION_SAMPLE_RATE_HZ
+        self._trail: deque[QPointF] = deque(
+            maxlen=round(DEFAULT_CALIBRATION_SAMPLE_RATE_HZ * _TRAIL_SECONDS)
+        )
+        self._last_repaint_at = 0.0
         self._active = False
         self._completed_trials = 0
         self._total_trials = 12
@@ -36,8 +46,28 @@ class CalibrationCanvas(QWidget):
 
         self._sample_timer = QTimer(self)
         self._sample_timer.setTimerType(Qt.TimerType.PreciseTimer)
-        self._sample_timer.setInterval(8)  # ~125 Hz; duplicates are discarded in C++.
+        self._sample_timer.setInterval(1000 // self._sample_rate_hz)
         self._sample_timer.timeout.connect(self._sample_cursor)
+
+    @property
+    def sample_rate_hz(self) -> int:
+        """The requested cursor sampling rate; OS scheduling can make the achieved rate lower."""
+        return self._sample_rate_hz
+
+    def set_sample_rate(self, hz: int) -> None:
+        """Set a supported target rate and retune the precise timer without stopping a trial."""
+        try:
+            rate = int(hz)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Choose a calibration rate between 125 and 1000 Hz.") from exc
+        if rate not in CALIBRATION_SAMPLE_RATES_HZ:
+            raise ValueError("Choose a calibration rate between 125 and 1000 Hz.")
+        was_active = self._sample_timer.isActive()
+        self._sample_rate_hz = rate
+        self._sample_timer.setInterval(1000 // rate)
+        self._trail = deque(self._trail, maxlen=round(rate * _TRAIL_SECONDS))
+        if was_active:
+            self._sample_timer.start()
 
     def start_session(self, trials: int = 12) -> None:
         self._analyzer.reset()
@@ -94,14 +124,26 @@ class CalibrationCanvas(QWidget):
                 break
         self._target = candidate
 
+    def _append_trail(self, point: QPointF) -> None:
+        """Keep a consistent visual trail duration as the data sample rate changes."""
+        if not self._trail or self._trail[-1] != point:
+            self._trail.append(point)
+
+    def _request_repaint(self) -> None:
+        """Throttle drawing to the screen cadence; sampling continues at 1,000 Hz if selected."""
+        now = time.perf_counter()
+        if now - self._last_repaint_at >= _REPAINT_INTERVAL_SECONDS:
+            self._last_repaint_at = now
+            self.update()
+
     def _sample_cursor(self) -> None:
         if not self._active:
             return
         point = self._cursor_global()
         self._analyzer.add_sample(point.x(), point.y(), time.perf_counter())
         local = self.mapFromGlobal(QPoint(round(point.x()), round(point.y())))
-        self._trail.append(QPointF(local))
-        self.update()
+        self._append_trail(QPointF(local))
+        self._request_repaint()
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         if self._active:
@@ -109,7 +151,8 @@ class CalibrationCanvas(QWidget):
             self._analyzer.add_sample(
                 global_point.x(), global_point.y(), time.perf_counter()
             )
-            self._trail.append(event.position())
+            self._append_trail(event.position())
+            self._request_repaint()
         super().mouseMoveEvent(event)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:

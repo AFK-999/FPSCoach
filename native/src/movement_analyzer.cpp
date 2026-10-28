@@ -9,6 +9,7 @@ namespace fpscoach {
 namespace {
 
 constexpr double kEpsilon = 1e-9;
+constexpr std::size_t kMaxSamplesPerTrial = 65'536;  // > 65 seconds at 1 kHz
 
 double clamp01(const double value) {
     return std::clamp(value, 0.0, 1.0);
@@ -59,8 +60,9 @@ void MovementAnalyzer::add_sample(const double x,
         return;
     }
 
-    // Bound memory if a caller leaves a calibration trial running.
-    if (current_.samples.size() < 8192) {
+    // Bound memory if a caller leaves a calibration trial running, while retaining
+    // more than a minute of samples at the 1 kHz calibration setting.
+    if (current_.samples.size() < kMaxSamplesPerTrial) {
         current_.samples.push_back({x, y, timestamp_seconds});
     }
 }
@@ -75,7 +77,12 @@ bool MovementAnalyzer::end_trial(const double x,
 
     const auto& previous = current_.samples.back();
     if (timestamp_seconds > previous.t && distance(previous.x, previous.y, x, y) >= 0.05) {
-        current_.samples.push_back({x, y, timestamp_seconds});
+        const Sample endpoint{x, y, timestamp_seconds};
+        if (current_.samples.size() < kMaxSamplesPerTrial) {
+            current_.samples.push_back(endpoint);
+        } else {
+            current_.samples.back() = endpoint;
+        }
     }
 
     active_ = false;

@@ -101,6 +101,45 @@ When it is on, `MainWindow._sync_ingame_context()` appends `InGameMode.context_b
 
 No part of this module touches a game: there is no window enumeration, input injection, process access, file access, or capture. `tests/test_ingame_mode.py` asserts that by walking the module's AST (stdlib `dataclasses` only, no `open`, `subprocess`, `ctypes`, or window/input APIs) as well as checking the behaviour.
 
+## Calibration sampling and graph editing (rev89)
+
+The explicit 12-target calibration offers requested cursor-sampling targets of 125, 250, 500, and
+1,000 Hz, persisted at `calibration/sample_hz`; new installs default to 1,000 Hz. A precise Qt timer
+uses a 1 ms interval at 1,000 Hz. This is a target cadence, not a guarantee: Windows/Qt scheduling
+and UI load can lower the achieved rate. Mouse-move events are also recorded, and the canvas redraws
+are throttled separately to about 60 Hz so collection does not force 1,000 paints per second. The
+native and Python fallback analyzers each cap a trial at 65,536 movement samples (over 65 seconds at
+1 kHz), preserving a 12-second high-polling-rate trial without unbounded memory use.
+
+The **Calibration → Sensitivity curve** is editable. Each visible dot can be dragged: short curves
+(64 points or fewer) draw a dot on every point; longer curves show up to 64 key bends, evenly sampling
+them if a very wiggly curve has more. Drag vertically to change gain; drag an interior dot left or
+right to change its normalized speed. The first and last dots stay at their original speed bounds.
+Values between neighbouring bends follow the move smoothly, and a zero-gain dot uses an additive
+adjustment so it is not stuck at zero. Hovering a dot shows the move cursor.
+
+Right-click the plot for a theme-aware menu:
+
+* **Add point here** inserts a point at the pointer's speed and gain. It is disabled outside the plot
+  or once the chart reaches 200 points.
+* **Delete point** removes the dot under the pointer. It is disabled unless the pointer is on a dot,
+  and the chart always keeps at least two points.
+
+Both actions change the profile that **Export** writes, not just the pixels on the chart: a new or
+removed control point is mirrored into the matching horizontal and vertical curve points. Moving a
+dot updates its speed and/or gain in the profile. Each drag is one Undo step; adding and deleting are
+each one step too, and Undo/Redo restore both the curve geometry and the underlying profile. The
+read-only curve previews in AI Coach and Recommendation are unaffected.
+
+`CurveChart.curve_geometry_changed` carries both y values and normalized x positions, while
+`curve_structure_changed` identifies a manual insertion or deletion. `CalibrationPage` applies those
+edits to the exportable profile and keeps its history in sync. `tests/test_calibration_chart_edit.py`
+(37 tests) covers dragging non-bend dots, x/y constraints, zero-gain points, menu availability and
+actions, profile/export changes, and Undo. `tests/test_calibration_sample_rate.py` covers the rate
+choices, precise timer intervals, persisted selection, active-session retuning, repaint throttling,
+Python fallback retention of a 12-second 1 kHz trial, and strict enforcement of the sample cap while
+preserving the click endpoint.
+
 ## Combo boxes always show a chevron (rev88)
 
 `styles.py` restyles `QComboBox::drop-down` so the field ends flush at the right edge, and on the styles this app runs on that also removes Qt's own arrow — so every combo box (Provider, Model, Mode, Theme, the Capture page's display/preset/FPS fields) looked like a plain text box. The editable Model field was the worst case, because it *is* a text box until you click it.

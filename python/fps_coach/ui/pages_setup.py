@@ -5,6 +5,7 @@ logic is carried over unchanged from the previous window.
 """
 from __future__ import annotations
 
+import bisect
 import math
 import random
 from copy import deepcopy
@@ -49,6 +50,7 @@ from fps_coach.dashboard_config import (
 from fps_coach.curve_adjust import adjust_from_recommendation, normalized_overlay
 from fps_coach.curve_io import (
     CurveFormatError,
+    CurvePoint,
     chart_points,
     load_curve,
     recommendation_profile,
@@ -58,7 +60,11 @@ from fps_coach.capture_recording import AnalysisTick, RecordingService, Recordin
 from fps_coach.window_enum import get_window_rect, list_windows
 from .styles import STAGE
 
-from .calibration import CalibrationCanvas
+from .calibration import (
+    CALIBRATION_SAMPLE_RATES_HZ,
+    DEFAULT_CALIBRATION_SAMPLE_RATE_HZ,
+    CalibrationCanvas,
+)
 from .widgets import (
     CurveChart,
     CurveLegend,
@@ -73,7 +79,10 @@ from .widgets import (
     _page_root,
     _settings,
     ComboField,
+    _lerp_factor,
 )
+
+_UNSET = object()  # "argument not given", so a snapshot can record None on purpose
 
 if TYPE_CHECKING:
     from fps_coach.backend import CoreBackend
@@ -1200,6 +1209,7 @@ class CapturePage(QWidget):
 
 # recommendation_profile() builds gains over this top speed; the chart uses the same scale for them.
 RECOMMENDATION_MAX_SPEED = 100.0
+CALIBRATION_SAMPLE_RATE_KEY = "calibration/sample_hz"
 
 
 def _shared_speed(previous, current) -> float:
@@ -1227,11 +1237,25 @@ class CalibrationPage(QWidget):
         self._profile = None         # the curve Export writes (imported, calibrated, or edited)
         self._base_profile = None    # imported curve that calibration adjusts
         self._chart_baseline = None  # chart values before the latest drag
+        self._chart_baseline_xs = None  # their x positions, so an added/removed point can be compared
+        self._pending_chart_structure = None  # ("add"/"delete", point index, x), set before the edit signal
         # Undo/redo history for the curve. Each entry is a full snapshot taken before a change.
         self._undo: list[dict] = []
         self._redo: list[dict] = []
         # Speed the chart's x positions are scaled by (None: the curve's own top speed).
         self._chart_scale: float | None = None
+        self._sample_settings = _settings()
+        try:
+            saved_sample_rate = int(
+                self._sample_settings.value(
+                    CALIBRATION_SAMPLE_RATE_KEY, DEFAULT_CALIBRATION_SAMPLE_RATE_HZ
+                )
+            )
+        except (TypeError, ValueError):
+            saved_sample_rate = DEFAULT_CALIBRATION_SAMPLE_RATE_HZ
+        if saved_sample_rate not in CALIBRATION_SAMPLE_RATES_HZ:
+            saved_sample_rate = DEFAULT_CALIBRATION_SAMPLE_RATE_HZ
+        self._sample_rate_hz = saved_sample_rate
 
         scroll, outer = _content_page(1240)
         _page_root(self, scroll)
@@ -1262,10 +1286,31 @@ class CalibrationPage(QWidget):
         self.progress.setFormat("%v / 12 targets")
         bar.addWidget(self.recalibrate_btn)
         bar.addWidget(self.reset_btn)
+        rate_row = QWidget()
+        rate_lay = QHBoxLayout(rate_row)
+        rate_lay.setContentsMargins(0, 0, 0, 0)
+        rate_lay.setSpacing(6)
+        rate_label = _label("Sample rate", "cardSubtitle")
+        rate_label.setToolTip("Target cursor sampling rate during the explicit calibration task.")
+        self.sample_rate_combo = ComboField()
+        for hz in CALIBRATION_SAMPLE_RATES_HZ:
+            self.sample_rate_combo.addItem(f"{hz:,} Hz", hz)
+        self.sample_rate_combo.setCurrentIndex(self.sample_rate_combo.findData(saved_sample_rate))
+        self.sample_rate_combo.setMinimumWidth(100)
+        self.sample_rate_combo.setMaximumWidth(112)
+        self.sample_rate_combo.setToolTip(
+            "Target timer rate. At 1,000 Hz the timer samples every 1 ms. "
+            "Qt/Windows scheduling or UI load may reduce the achieved rate; mouse-move events "
+            "are recorded as well."
+        )
+        rate_lay.addWidget(rate_label)
+        rate_lay.addWidget(self.sample_rate_combo)
+        bar.addWidget(rate_row)
         bar.addWidget(self.progress, 1)
         task_lay.addLayout(bar)
 
         self.canvas = CalibrationCanvas(backend.analyzer)
+        self.canvas.set_sample_rate(saved_sample_rate)
         self.canvas.setMinimumHeight(380)
         task_lay.addWidget(self.canvas, 1)
 
@@ -1276,7 +1321,8 @@ class CalibrationPage(QWidget):
         # Right: the curve.
         curve_card, curve_lay = _card(
             "Sensitivity curve",
-            "Solid line: current curve. Dashed amber: older curve. Drag points to fine-tune.",
+            "Solid line: current curve. Dashed amber: older curve. Drag a dot to change gain; "
+            "drag an interior dot left or right to change speed. Right-click to add or delete one.",
         )
         self.legend = CurveLegend()
         curve_lay.addWidget(self.legend)
@@ -1315,7 +1361,9 @@ class CalibrationPage(QWidget):
         self.canvas.progress_changed.connect(self._on_progress)
         self.canvas.hint_changed.connect(self.hint.setText)
         self.canvas.completed.connect(self._on_complete)
-        self.chart.curve_adjusted.connect(self._on_curve_adjusted)
+        self.chart.curve_structure_changed.connect(self._on_chart_structure_changed)
+        self.chart.curve_geometry_changed.connect(self._on_curve_adjusted)
+        self.sample_rate_combo.currentIndexChanged.connect(self._on_sample_rate_changed)
         self.save_btn.clicked.connect(self._save)
         self.import_btn.clicked.connect(self._import_curve)
         self.undo_btn.clicked.connect(self.undo)
@@ -1343,6 +1391,15 @@ class CalibrationPage(QWidget):
         self.progress.setRange(0, max(1, total))
         self.progress.setValue(completed)
 
+    def _on_sample_rate_changed(self, index: int) -> None:
+        """Apply and persist the selected precise-timer sampling target."""
+        rate = self.sample_rate_combo.itemData(index)
+        if rate not in CALIBRATION_SAMPLE_RATES_HZ:
+            return
+        self._sample_rate_hz = int(rate)
+        self.canvas.set_sample_rate(self._sample_rate_hz)
+        self._sample_settings.setValue(CALIBRATION_SAMPLE_RATE_KEY, self._sample_rate_hz)
+
     def _set_chart(self, points, previous=None, xs=None, previous_xs=None, scale=None):
         """Show ``points`` at x positions ``xs`` (evenly spaced when None). See CurveChart."""
         self.chart.set_previous(previous, xs=previous_xs)
@@ -1351,6 +1408,7 @@ class CalibrationPage(QWidget):
         self.chart.xs = list(xs) if xs is not None else None
         self._chart_scale = scale
         self._chart_baseline = list(points)
+        self._chart_baseline_xs = self.chart.x_positions()
         self.chart.update()
 
     def _set_overlay(self, current_pts, previous_pts, scale: float) -> None:
@@ -1362,23 +1420,34 @@ class CalibrationPage(QWidget):
     # -- undo / redo ----------------------------------------------------------
     _HISTORY_LIMIT = 50
 
-    def _snapshot(self, points=None) -> dict:
-        """Everything that shows or drives the curve, so it can be put back exactly."""
+    def _snapshot(self, points=None, xs=_UNSET, baseline=_UNSET, baseline_xs=_UNSET) -> dict:
+        """Everything that shows or drives the curve, so it can be put back exactly.
+
+        The optional arguments describe the curve *before* the change. Adding or deleting a point
+        moves both the values and their x positions, so a snapshot taken after the edit would
+        restore the wrong dot count — the caller passes the curve as it was.
+        """
+        snap_xs = self.chart.xs if xs is _UNSET else xs
+        snap_baseline = self._chart_baseline if baseline is _UNSET else baseline
+        snap_baseline_xs = self._chart_baseline_xs if baseline_xs is _UNSET else baseline_xs
         return {
             "points": list(points if points is not None else self.chart.points),
             "previous": list(self.chart.previous_points) if self.chart.previous_points else None,
             "previous_xs": list(self.chart.previous_xs) if self.chart.previous_xs is not None else None,
-            "xs": list(self.chart.xs) if self.chart.xs is not None else None,
+            "xs": list(snap_xs) if snap_xs is not None else None,
             "scale": self._chart_scale,
             "profile": deepcopy(self._profile),
             "base": deepcopy(self._base_profile),
-            "baseline": list(self._chart_baseline) if self._chart_baseline is not None else None,
+            "baseline": list(snap_baseline) if snap_baseline else None,
+            "baseline_xs": list(snap_baseline_xs) if snap_baseline_xs else None,
             "hint": self.hint.text(),
         }
 
-    def _checkpoint(self, points=None) -> None:
+    def _checkpoint(self, points=None, xs=_UNSET, baseline=_UNSET, baseline_xs=_UNSET) -> None:
         """Record the state before a change. Call this before mutating the curve."""
-        self._undo.append(self._snapshot(points))
+        self._undo.append(
+            self._snapshot(points, xs=xs, baseline=baseline, baseline_xs=baseline_xs)
+        )
         del self._undo[:-self._HISTORY_LIMIT]
         self._redo.clear()
         self._update_history_buttons()
@@ -1387,6 +1456,9 @@ class CalibrationPage(QWidget):
         self._profile = deepcopy(snap["profile"])
         self._base_profile = deepcopy(snap["base"])
         self._chart_baseline = list(snap["baseline"]) if snap["baseline"] is not None else None
+        self._chart_baseline_xs = (
+            list(snap["baseline_xs"]) if snap.get("baseline_xs") is not None else None
+        )
         self.chart.previous_points = list(snap["previous"]) if snap["previous"] else None
         self.chart.previous_xs = list(snap["previous_xs"]) if snap.get("previous_xs") is not None else None
         self.legend.set_has_older(bool(self.chart.previous_points))
@@ -1456,14 +1528,139 @@ class CalibrationPage(QWidget):
             self._profile = None
             self.hint.setText(f"Could not build a curve from this run: {exc}")
 
-    def _on_curve_adjusted(self, points):
+    def _on_chart_structure_changed(self, operation: str, index: int, x: float) -> None:
+        """Remember which point the widget is adding/deleting before it emits the new curve."""
+        self._pending_chart_structure = (operation, index, x)
+
+    @staticmethod
+    def _axis_gain_at(points: list[CurvePoint], x: float, scale: float) -> float:
+        """Interpolate an axis's multiplier at chart x, using the chart's speed scale."""
+        if not points:
+            return 1.0
+        scale = scale or max((point.speed for point in points), default=1.0) or 1.0
+        axis_xs = [point.speed / scale for point in points]
+        axis_ys = [point.multiplier for point in points]
+        return _lerp_factor(axis_xs, axis_ys, x)
+
+    @staticmethod
+    def _insert_axis_point(points: list[CurvePoint], x: float, multiplier: float, scale: float) -> list[CurvePoint]:
+        """Insert a point at chart x into an axis, retaining the user's existing point objects."""
+        result = deepcopy(points)
+        speed = max(0.0, x * (scale or max((point.speed for point in result), default=1.0) or 1.0))
+        candidate = CurvePoint(
+            speed=speed,
+            multiplier=max(0.05, min(20.0, multiplier)),
+        )
+        index = bisect.bisect_right([point.speed for point in result], speed)
+        result.insert(index, candidate)
+        return result
+
+    @staticmethod
+    def _remove_axis_point(
+        points: list[CurvePoint], x: float, scale: float, index: int | None = None
+    ) -> list[CurvePoint]:
+        """Remove the corresponding axis control point, but never take an axis below two."""
+        if len(points) <= 2:
+            return points
+        scale = scale or max((point.speed for point in points), default=1.0) or 1.0
+        if index is None or index >= len(points) or abs(points[index].speed / scale - x) > 1e-5:
+            index = min(range(len(points)), key=lambda i: abs(points[i].speed / scale - x))
+        if abs(points[index].speed / scale - x) > 1e-5:
+            return points  # a different-speed vertical curve has no matching point to remove
+        result = list(points)
+        del result[index]
+        return result
+
+    def _edit_profile_structure(
+        self, updated_profile, source_profile, before_xs, before_values,
+        after_xs, after_values, structure,
+    ):
+        """Keep the exported curve's control points in step with graph add/delete operations."""
+        operation, index, x = structure
+        if updated_profile is None or source_profile is None:
+            return updated_profile
+        scale = self._chart_scale or max((point.speed for point in source_profile.horizontal), default=1.0) or 1.0
+        old_value = _lerp_factor(before_xs, before_values, x) if len(before_xs) >= 2 else 0.0
+        new_value = (
+            after_values[index] if operation == "add" and 0 <= index < len(after_values)
+            else _lerp_factor(after_xs, after_values, x)
+        )
+        def added_gain(axis):
+            previous_gain = self._axis_gain_at(axis, x, scale)
+            if old_value > 1e-9:
+                return previous_gain * new_value / old_value
+            chart_gain = max(before_values, default=0.0)
+            axis_gain = max((point.multiplier for point in axis), default=1.0)
+            gain_scale = axis_gain / chart_gain if chart_gain > 1e-9 else 1.0
+            return previous_gain + (new_value - old_value) * gain_scale
+
+        updated = deepcopy(updated_profile)
+        if operation == "add":
+            updated.horizontal = self._insert_axis_point(
+                updated.horizontal, x, added_gain(source_profile.horizontal), scale
+            )
+            updated.vertical = self._insert_axis_point(
+                updated.vertical, x, added_gain(source_profile.vertical), scale
+            )
+        elif operation == "delete":
+            updated.horizontal = self._remove_axis_point(updated.horizontal, x, scale, index)
+            updated.vertical = self._remove_axis_point(updated.vertical, x, scale, index)
+        return updated
+
+    @staticmethod
+    def _move_profile_speeds(profile, before_xs, after_xs, scale):
+        """Move profile control points to the chart's new speed positions, without changing gain."""
+        if profile is None or len(before_xs) != len(after_xs):
+            return profile
+        scale = scale or max((point.speed for point in profile.horizontal), default=1.0) or 1.0
+        updated = deepcopy(profile)
+        for axis_name in ("horizontal", "vertical"):
+            axis = getattr(updated, axis_name)
+            for index, (old_x, new_x) in enumerate(zip(before_xs, after_xs, strict=False)):
+                if index >= len(axis):
+                    continue
+                # Only move a profile point if this chart dot represents it. This leaves a
+                # differently sampled vertical axis alone instead of shifting the wrong point.
+                if abs(axis[index].speed / scale - old_x) <= 1e-5:
+                    axis[index] = replace(axis[index], speed=max(0.0, new_x * scale))
+            axis.sort(key=lambda point: point.speed)
+        return updated
+
+    @staticmethod
+    def _edit_hint(structural: bool, count: int) -> str:
+        """What to say after a chart edit, so the user knows what just happened to their curve."""
+        if structural:
+            return (
+                f"Point count changed: the curve now has {count} points. "
+                "Export curve to save the edited version."
+            )
+        return "Curve edited. Export curve to save the edited version."
+
+    def _on_curve_adjusted(self, points, xs=None):
         points = [float(v) for v in points]
-        baseline = self._chart_baseline or points
-        # The drag has already moved the chart points, so record the pre-drag baseline.
-        # A click that moved nothing is not a change, so it gets no history entry.
-        if baseline != points:
-            self._checkpoint(points=baseline)
-        xs = self.chart.x_positions()
+        xs = list(self.chart.x_positions() if xs is None else xs)
+        before = list(self._chart_baseline or points)  # the curve as it was
+        before_xs = list(self._chart_baseline_xs or [])
+        structure = self._pending_chart_structure
+        self._pending_chart_structure = None
+        structural = structure is not None or len(before) != len(points) or len(before_xs) != len(xs)
+        positions_changed = len(before_xs) == len(xs) and any(
+            abs(old_x - new_x) > 1e-8 for old_x, new_x in zip(before_xs, xs, strict=False)
+        )
+        baseline = before
+        if structural and len(before_xs) == len(before) and before:
+            # A point was added or deleted: compare at the chart's new x positions, so the change
+            # reaches the profile as "this speed region changed", not as a shifted curve.
+            baseline = [_lerp_factor(before_xs, before, x) for x in xs]
+        # A drag that moved nothing is not a change. Structural edits and horizontal motion need
+        # history too, even when the y values are unchanged.
+        if structural or positions_changed or baseline != points:
+            self._checkpoint(
+                points=before,
+                xs=before_xs or None,
+                baseline=before,
+                baseline_xs=before_xs or None,
+            )
         if self._profile is None:
             # No curve yet: treat the chart values as the curve's output-speed shape.
             try:
@@ -1475,9 +1672,21 @@ class CalibrationPage(QWidget):
             except CurveFormatError:
                 pass
         else:
-            self._profile = _apply_chart_edit(self._profile, baseline, points, xs=xs, scale=self._chart_scale)
+            old_profile = self._profile
+            self._profile = _apply_chart_edit(
+                old_profile, baseline, points, xs=xs, scale=self._chart_scale
+            )
+            if structure is not None:
+                self._profile = self._edit_profile_structure(
+                    self._profile, old_profile, before_xs, before, xs, points, structure
+                )
+            elif positions_changed:
+                self._profile = self._move_profile_speeds(
+                    self._profile, before_xs, xs, self._chart_scale
+                )
         self._chart_baseline = list(points)
-        self.hint.setText("Curve edited. Export curve to save the edited version.")
+        self._chart_baseline_xs = list(xs)
+        self.hint.setText(self._edit_hint(structural, len(points)))
         self.profile_changed.emit({"points": points})
 
     def _import_curve(self):

@@ -24,6 +24,8 @@ except ImportError:
 
 from . import python_capture
 
+MAX_ANALYSIS_SAMPLES_PER_TRIAL = 65_536  # preserves a full 1 kHz trial for over a minute
+
 OLD_NATIVE_WINDOW_NOTE = (
     "This build of the native capture module cannot capture single windows. "
     "Showing the screen area behind the window instead, so windows on top of it will appear."
@@ -65,13 +67,25 @@ class _FallbackAnalyzer:
         if not self._trial:
             return
         previous = self._trial["samples"][-1]
-        if timestamp > previous.t and math.hypot(x - previous.x, y - previous.y) >= 0.05:
+        if (
+            timestamp > previous.t
+            and math.hypot(x - previous.x, y - previous.y) >= 0.05
+            and len(self._trial["samples"]) < MAX_ANALYSIS_SAMPLES_PER_TRIAL
+        ):
             self._trial["samples"].append(_Sample(x, y, timestamp))
 
     def end_trial(self, x: float, y: float, timestamp: float) -> bool:
         if not self._trial:
             return False
-        self.add_sample(x, y, timestamp)
+        samples = self._trial["samples"]
+        previous = samples[-1]
+        # Always keep the click endpoint without exceeding the memory bound.
+        if timestamp > previous.t and math.hypot(x - previous.x, y - previous.y) >= 0.05:
+            endpoint = _Sample(x, y, timestamp)
+            if len(samples) < MAX_ANALYSIS_SAMPLES_PER_TRIAL:
+                samples.append(endpoint)
+            else:
+                samples[-1] = endpoint
         trial, self._trial = self._trial, None
         samples: list[_Sample] = trial["samples"]
         start: _Sample = trial["start"]

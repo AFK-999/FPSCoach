@@ -54,6 +54,17 @@ int main() {
         assert(overshoot_curve.points[i].second >= overshoot_curve.points[i - 1].second);
     }
 
+    // A 1 kHz, 12-second trial must retain samples past the old 8192-point cap.
+    MovementAnalyzer high_polling;
+    high_polling.begin_trial(0.0, 0.0, 100.0, 0.0, 1.0);
+    for (int i = 1; i <= 12'000; ++i) {
+        const double x = 100.0 * static_cast<double>(i) / 12'000.0;
+        const double y = (i % 2 == 0) ? 5.0 : -5.0;
+        high_polling.add_sample(x, y, 1.0 + static_cast<double>(i) / 1000.0);
+    }
+    assert(high_polling.end_trial(100.0, 0.0, 13.1));
+    assert(high_polling.summary().mean_speed_px_s > 9'000.0);
+
     std::cout << "movement analyzer tests passed\n";
     return 0;
 }

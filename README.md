@@ -13,7 +13,10 @@ A lightweight, local-first foundation for an FPS movement/sensitivity coach. It 
 - **Latest-frame buffering** so a slow preview drops stale work instead of accumulating latency.
 - **Recording on the Capture tab** — records the primary display in the background and samples the newest frame on a configurable analysis timer. Discard the file when you stop (default) or keep it in a folder you choose.
 - **Display-change recovery** for `DXGI_ERROR_ACCESS_LOST`.
-- **In-app 12-target calibration** with ~125 Hz sampling during an explicit session.
+- **In-app 12-target calibration** with a selectable 125, 250, 500, or 1,000 Hz cursor-sampling
+  target (1,000 Hz by default) during an explicit session. The precise timer targets 1 ms at 1,000 Hz;
+  OS/Qt scheduling can reduce the achieved rate. Its sensitivity curve has draggable dots, and
+  right-click adds/deletes points; changes are undoable and included in exports.
 - **Native movement model** that measures path efficiency, overshoot, underreach, corrections, oscillation, endpoint error, speed, and duration.
 - **Conservative custom curve recommendation** with monotonic points, sensitivity multiplier, confidence, and plain-language reasons.
 - **Custom Curve compatibility** for importing/exporting modern `.cc4` JSON profiles and legacy `.ccurve` text profiles, selected explicitly in the UI.
