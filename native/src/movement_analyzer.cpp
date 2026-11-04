@@ -2,12 +2,15 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace fpscoach {
 namespace {
 
 constexpr double kEpsilon = 1e-9;
 constexpr std::size_t kMaxSamplesPerTrial = 65'536;  // > 65 seconds at 1 kHz
+constexpr double kSpeedReferenceQuantile = 0.95;
+constexpr double kUniformAnchorWeight = 0.80;
 
 double clamp01(const double value) {
     return std::clamp(value, 0.0, 1.0);
@@ -15,15 +18,6 @@ double clamp01(const double value) {
 
 double distance(const double x0, const double y0, const double x1, const double y1) {
     return std::hypot(x1 - x0, y1 - y0);
-}
-
-std::size_t adaptive_point_count(const std::size_t sample_count) {
-    constexpr std::size_t kMinimumPoints = 2;
-    constexpr std::size_t kMaximumPoints = 32;
-    const auto requested = static_cast<std::size_t>(
-                               std::ceil(std::log2(static_cast<double>(sample_count) + 1.0))) +
-                           1;
-    return std::clamp(requested, kMinimumPoints, kMaximumPoints);
 }
 
 double speed_quantile(const std::vector<double>& sorted_speeds, const double fraction) {
@@ -37,15 +31,65 @@ double speed_quantile(const std::vector<double>& sorted_speeds, const double fra
     return sorted_speeds[lower] * (1.0 - weight) + sorted_speeds[upper] * weight;
 }
 
+// Same normalized chart-space tolerance as Python curve_sampling.KEY_TOLERANCE.
+constexpr double kModelGraphTolerance = 0.005;
+constexpr double kBalanceTieEpsilon = 1e-12;
+
+double point_segment_distance(const double px, const double py,
+                              const double x0, const double y0, const double x1, const double y1) {
+    const double dx = x1 - x0, dy = y1 - y0;
+    const double length_sq = dx * dx + dy * dy;
+    if (length_sq == 0.0) return std::hypot(px - x0, py - y0);
+    const double t = std::clamp(((px - x0) * dx + (py - y0) * dy) / length_sq, 0.0, 1.0);
+    return std::hypot(px - (x0 + t * dx), py - (y0 + t * dy));
+}
+
+std::vector<std::size_t> balanced_indices(const std::vector<double>& xs, const std::vector<double>& ys) {
+    // Shortest path over sampled model points. Among equally short paths,
+    // prefer the one with the smaller maximum sampled chart-space error.
+    // This is a visual sampling tolerance, not an analytic error guarantee.
+    const std::size_t n = xs.size();
+    std::vector<std::size_t> counts(n, n + 1), previous(n, n);
+    std::vector<double> errors(n, std::numeric_limits<double>::infinity());
+    counts[0] = 1;
+    errors[0] = 0.0;
+    for (std::size_t end = 1; end < n; ++end) {
+        for (std::size_t start = 0; start < end; ++start) {
+            const auto count = counts[start] + 1;
+            if (count > counts[end]) continue;
+            if (count == counts[end] && errors[start] >= errors[end] - kBalanceTieEpsilon) continue;
+            double worst = errors[start];
+            bool rejected = false;
+            for (std::size_t i = start + 1; i < end; ++i) {
+                worst = std::max(worst, point_segment_distance(xs[i], ys[i], xs[start], ys[start], xs[end], ys[end]));
+                if (worst > kModelGraphTolerance ||
+                    (count == counts[end] && worst >= errors[end] - kBalanceTieEpsilon)) {
+                    rejected = true;
+                    break;
+                }
+            }
+            if (!rejected && worst <= kModelGraphTolerance &&
+                (count < counts[end] || worst < errors[end] - kBalanceTieEpsilon)) {
+                counts[end] = count;
+                errors[end] = worst;
+                previous[end] = start;
+            }
+        }
+    }
+    std::vector<std::size_t> indices{n - 1};
+    while (indices.back() != 0) indices.push_back(previous[indices.back()]);
+    std::reverse(indices.begin(), indices.end());
+    return indices;
+}
+
 } // namespace
 
 void MovementAnalyzer::reset() {
     std::scoped_lock lock(mutex_);
     active_ = false;
     current_ = {};
-    completed_.clear();
-    captured_speeds_px_s_.clear();
-    captured_sample_count_ = 0;
+    recent_trials_.clear();
+    total_trial_count_ = 0;
 }
 
 void MovementAnalyzer::begin_trial(const double start_x,
@@ -87,6 +131,14 @@ void MovementAnalyzer::add_sample(const double x,
     }
 }
 
+void MovementAnalyzer::set_target(const double x, const double y) {
+    std::scoped_lock lock(mutex_);
+    if (active_ && std::isfinite(x) && std::isfinite(y)) {
+        current_.target.x = x;
+        current_.target.y = y;
+    }
+}
+
 bool MovementAnalyzer::end_trial(const double x,
                                  const double y,
                                  const double timestamp_seconds) {
@@ -110,13 +162,17 @@ bool MovementAnalyzer::end_trial(const double x,
                                             current_.start.y,
                                             current_.target.x,
                                             current_.target.y);
-    if (current_.samples.size() < 3 || direct_distance < 8.0 ||
+    // Accept a real single observed segment (start plus one movement). Sparse
+    // paths do not prove that no intermediate corrections occurred.
+    if (current_.samples.size() < 2 || direct_distance < 8.0 ||
         current_.samples.back().t <= current_.samples.front().t) {
         current_ = {};
         return false;
     }
 
-    completed_.push_back(calculate_metrics(current_));
+    WindowTrial accepted{};
+    accepted.metrics = calculate_metrics(current_);
+    accepted.captured_sample_count = current_.samples.size() - 1;
     for (std::size_t i = 1; i < current_.samples.size(); ++i) {
         const auto& before = current_.samples[i - 1];
         const auto& after = current_.samples[i];
@@ -126,10 +182,14 @@ bool MovementAnalyzer::end_trial(const double x,
         }
         const double speed = distance(before.x, before.y, after.x, after.y) / elapsed;
         if (std::isfinite(speed) && speed > 0.0) {
-            captured_speeds_px_s_.push_back(speed);
+            accepted.speeds_px_s.push_back(speed);
         }
     }
-    captured_sample_count_ += current_.samples.size() - 1;
+    recent_trials_.push_back(std::move(accepted));
+    if (recent_trials_.size() > kCalibrationWindowTrials) {
+        recent_trials_.pop_front();
+    }
+    ++total_trial_count_;
     current_ = {};
     return true;
 }
@@ -210,12 +270,14 @@ MovementAnalyzer::TrialMetrics MovementAnalyzer::calculate_metrics(const Trial& 
 
 MovementSummary MovementAnalyzer::summary_unlocked() const {
     MovementSummary result{};
-    result.trial_count = completed_.size();
-    if (completed_.empty()) {
+    result.trial_count = total_trial_count_;
+    result.window_trial_count = recent_trials_.size();
+    if (recent_trials_.empty()) {
         return result;
     }
 
-    for (const auto& trial : completed_) {
+    for (const auto& entry : recent_trials_) {
+        const auto& trial = entry.metrics;
         result.path_efficiency += trial.path_efficiency;
         result.overshoot_score += trial.overshoot;
         result.underreach_score += trial.underreach;
@@ -226,7 +288,7 @@ MovementSummary MovementAnalyzer::summary_unlocked() const {
         result.mean_speed_px_s += trial.mean_speed_px_s;
     }
 
-    const double count = static_cast<double>(completed_.size());
+    const double count = static_cast<double>(recent_trials_.size());
     result.path_efficiency /= count;
     result.overshoot_score /= count;
     result.underreach_score /= count;
@@ -247,6 +309,7 @@ CurveRecommendation MovementAnalyzer::recommend() const {
     std::scoped_lock lock(mutex_);
     const auto aggregate = summary_unlocked();
     CurveRecommendation recommendation{};
+    recommendation.window_trial_count = aggregate.window_trial_count;
 
     const double gamma = std::clamp(1.0 +
                                         0.55 * aggregate.overshoot_score +
@@ -262,50 +325,56 @@ CurveRecommendation MovementAnalyzer::recommend() const {
                                           0.82,
                                           1.12);
     recommendation.sensitivity_multiplier = sensitivity;
-    recommendation.captured_sample_count = captured_sample_count_;
-
-    auto measured_speeds = captured_speeds_px_s_;
+    std::vector<double> measured_speeds;
+    for (const auto& entry : recent_trials_) {
+        recommendation.captured_sample_count += entry.captured_sample_count;
+        measured_speeds.insert(measured_speeds.end(), entry.speeds_px_s.begin(), entry.speeds_px_s.end());
+    }
     std::sort(measured_speeds.begin(), measured_speeds.end());
     if (!measured_speeds.empty()) {
-        // The count grows with captured samples (capped at 32 for readability), while
-        // x positions come from empirical speed quantiles. The graph therefore reflects
-        // this user's movement rather than a fixed seven-anchor template.
-        const auto point_count = adaptive_point_count(measured_speeds.size());
-        const double speed_scale = measured_speeds.back();
-        recommendation.points.emplace_back(0.0, 0.0);
-        double previous_x = 0.0;
-        for (std::size_t index = 1; index + 1 < point_count; ++index) {
-            const double fraction = static_cast<double>(index) /
-                                    static_cast<double>(point_count - 1);
-            const double x = std::clamp(speed_quantile(measured_speeds, fraction) / speed_scale,
-                                        0.0,
-                                        1.0);
-            // Repeated speeds add no horizontal detail; omit duplicate control points.
-            if (x <= previous_x + 1e-9 || x >= 1.0 - 1e-9) {
-                continue;
-            }
-            double y = std::pow(x, gamma);
-            // Apply a small low-speed damping term only when repeated lateral
-            // oscillation was measured. The term fades out at high speed.
-            y *= 1.0 - 0.12 * aggregate.tremor_score * (1.0 - x);
-            y = std::clamp(y, recommendation.points.back().second, 1.0);
-            recommendation.points.emplace_back(x, y);
-            previous_x = x;
+        // Sample the existing model throughout the domain and include
+        // additional speed-distribution candidates. These are model anchors,
+        // not raw cursor samples.
+        const auto reference_index = static_cast<std::size_t>(
+            std::ceil(kSpeedReferenceQuantile * static_cast<double>(measured_speeds.size()))) - 1;
+        const double speed_scale = measured_speeds[reference_index];
+        recommendation.speed_reference_px_s = speed_scale;
+        recommendation.clipped_speed_count = static_cast<std::size_t>(std::count_if(
+            measured_speeds.begin(), measured_speeds.end(),
+            [speed_scale](double speed) { return speed > speed_scale; }));
+        std::vector<double> xs;
+        for (int i = 0; i <= 128; ++i) xs.push_back(static_cast<double>(i) / 128.0);
+        for (int i = 1; i < 32; ++i) {
+            const double fraction = static_cast<double>(i) / 32.0;
+            const double observed_x = std::clamp(speed_quantile(measured_speeds, fraction) / speed_scale, 0.0, 1.0);
+            xs.push_back(kUniformAnchorWeight * fraction + (1.0 - kUniformAnchorWeight) * observed_x);
         }
-        recommendation.points.emplace_back(1.0, 1.0);
+        std::sort(xs.begin(), xs.end());
+        xs.erase(std::unique(xs.begin(), xs.end()), xs.end());
+        std::vector<double> ys;
+        for (const double x : xs) {
+            ys.push_back(std::pow(x, gamma) * (1.0 - 0.12 * aggregate.tremor_score * (1.0 - x)));
+        }
+        for (const auto index : balanced_indices(xs, ys)) {
+            recommendation.points.emplace_back(xs[index], ys[index]);
+        }
     }
 
     double variance = 0.0;
-    for (const auto& trial : completed_) {
-        const double delta = trial.overshoot - aggregate.overshoot_score;
+    for (const auto& entry : recent_trials_) {
+        const double delta = entry.metrics.overshoot - aggregate.overshoot_score;
         variance += delta * delta;
     }
-    if (!completed_.empty()) {
-        variance /= static_cast<double>(completed_.size());
+    if (!recent_trials_.empty()) {
+        variance /= static_cast<double>(recent_trials_.size());
     }
     const double consistency = 1.0 - clamp01(std::sqrt(variance) * 1.7);
-    const double sample_confidence = std::min(1.0, static_cast<double>(completed_.size()) / 12.0);
-    recommendation.confidence = sample_confidence * (0.55 + 0.45 * consistency);
+    const double sample_confidence = std::min(
+        1.0, static_cast<double>(recent_trials_.size()) / static_cast<double>(kCalibrationWindowTrials));
+    const double density = recent_trials_.empty() ? 0.0 : std::min(
+        1.0, static_cast<double>(recommendation.captured_sample_count) /
+             (2.0 * static_cast<double>(recent_trials_.size())));
+    recommendation.confidence = sample_confidence * (0.55 + 0.45 * consistency) * density;
 
     if (aggregate.overshoot_score > 0.18 || aggregate.correction_score > 0.28) {
         recommendation.title = "Add control through the middle of the curve";
@@ -324,8 +393,11 @@ CurveRecommendation MovementAnalyzer::recommend() const {
     if (aggregate.path_efficiency > 0.90) {
         recommendation.reasons.emplace_back("Path efficiency is high, so the recommendation stays close to the current feel.");
     }
-    if (completed_.size() < 8) {
+    if (recent_trials_.size() < kCalibrationWindowTrials) {
         recommendation.reasons.emplace_back("Complete at least 8-12 trials before treating this as a stable recommendation.");
+    }
+    if (!recent_trials_.empty() && density < 1.0) {
+        recommendation.reasons.emplace_back("Sparse movement observations cannot resolve intermediate corrections; repeat with more samples for a clearer estimate.");
     }
 
     return recommendation;

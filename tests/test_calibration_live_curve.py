@@ -51,12 +51,15 @@ def test_live_graph_uses_each_data_derived_point_and_reports_the_sample_count(qa
     page._on_live_recommendation({"trial_count": 4}, _recommendation(points, sample_count=91))
 
     assert page.chart.x_positions() == pytest.approx([x for x, _ in points])
-    assert page.chart.points == pytest.approx([y for _, y in points])
+    from fps_coach.curve_io import recommendation_profile
+    expected = recommendation_profile(_recommendation(points, sample_count=91))
+    assert [v * page.chart.axis_y_max for v in page.chart.points] == pytest.approx(
+        [p.multiplier for p in expected.horizontal])
     assert len(page.chart.dot_indices()) == len(points)
     status = page.curve_status.text()
     assert "4 completed targets" in status
     assert "91 captured movement samples" in status
-    assert "5 data-derived control points" in status
+    assert "5 model control points" in status
 
 
 def test_cancelled_session_restores_the_pre_session_curve(qapp):
@@ -98,3 +101,35 @@ def test_finished_calibration_undo_returns_to_the_original_curve_not_last_live_f
     page.undo()
     assert page.chart.points == original_points
     assert page._profile is None
+
+
+def test_live_curve_and_status_follow_the_recent_trial_window(qapp):
+    from fps_coach.backend import _FallbackAnalyzer
+
+    page = _page(qapp)
+    analyzer = _FallbackAnalyzer()
+    page._on_session_started()
+
+    def trial(over: bool, offset: float):
+        analyzer.begin_trial(0, 0, 100, 0, offset)
+        for i, x in enumerate([25, 80, 125 if over else 90], 1):
+            analyzer.add_sample(x, 0, offset + i * .01)
+        assert analyzer.end_trial(100, 0, offset + .04)
+        summary, recommendation = analyzer.summary(), analyzer.recommend()
+        page._on_live_recommendation(summary, recommendation)
+        return recommendation
+
+    for i in range(8):
+        trial(True, i * 2.0)
+    previous_y = list(page.chart.points)
+    for i in range(8):
+        final = trial(False, 20 + i * 2.0)
+    from fps_coach.curve_io import recommendation_profile
+    expected = recommendation_profile(final)
+    assert [v * page.chart.axis_y_max for v in page.chart.points] == pytest.approx(
+        [p.multiplier for p in expected.horizontal])
+    assert page.chart.points != previous_y
+    assert "16 completed targets" in page.curve_status.text()
+    assert "rolling window 8/8 targets" in page.curve_status.text()
+    assert page.chart._editable is False
+    page._on_session_cancelled()

@@ -202,6 +202,8 @@ def test_sampling_at_1000_hz_does_not_repaint_at_1000_fps(qapp, monkeypatch) -> 
     times = iter((1.0, 1.0, 1.001, 1.001))
     repaints: list[None] = []
     monkeypatch.setattr(canvas, "_cursor_global", lambda: next(cursor_positions))
+    monkeypatch.setattr(canvas, "isVisible", lambda: True)
+    monkeypatch.setattr(canvas, "isActiveWindow", lambda: True)
     monkeypatch.setattr(canvas, "mapFromGlobal", lambda point: point)
     monkeypatch.setattr(canvas, "update", lambda *args: repaints.append(None))
     monkeypatch.setattr(calibration.time, "perf_counter", lambda: next(times))

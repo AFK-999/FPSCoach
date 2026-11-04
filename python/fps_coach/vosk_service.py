@@ -232,7 +232,7 @@ def release_model() -> None:
         _loaded_model = None
 
 
-def recognize_once(phrase_limit: float = 6.0, progress=None) -> tuple[bool, str, str]:
+def recognize_once(phrase_limit: float = 6.0, progress=None, *, on_state=None) -> tuple[bool, str, str]:
     """One-shot offline recognition with Vosk -> (ok, text, message).
 
     Resolves/validates the model path first (configuring it if needed, downloading
@@ -262,6 +262,8 @@ def recognize_once(phrase_limit: float = 6.0, progress=None) -> tuple[bool, str,
         deadline = _time.time() + max(2.0, phrase_limit)
         with sd.RawInputStream(samplerate=SAMPLE_RATE, blocksize=8000, dtype="int16",
                                channels=1, callback=_cb):
+            if on_state:
+                on_state("listening")
             while _time.time() < deadline:
                 try:
                     data = audio_q.get(timeout=0.3)
@@ -271,6 +273,8 @@ def recognize_once(phrase_limit: float = 6.0, progress=None) -> tuple[bool, str,
                     text = json.loads(recognizer.Result()).get("text", "").strip()
                     if text:
                         return (True, text, "")
+        if on_state:
+            on_state("processing")
         text = json.loads(recognizer.FinalResult()).get("text", "").strip()
         if text:
             return (True, text, "")

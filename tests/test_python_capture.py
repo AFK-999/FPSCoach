@@ -341,7 +341,8 @@ def test_backend_prefers_the_native_capture(monkeypatch):
     backend = CoreBackend()
     assert backend.native_available is True
     assert backend.uses_python_capture is False
-    assert backend.core_label == "Native C++ core"
+    assert backend.core_label == "Native capture, Python analyzer"
+    assert backend.uses_python_analyzer
 
 
 # --- the Capture tab -------------------------------------------------------

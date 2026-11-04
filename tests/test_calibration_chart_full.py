@@ -15,7 +15,6 @@ from types import SimpleNamespace
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest  # noqa: E402
-
 from fps_coach.curve_adjust import normalized_overlay  # noqa: E402
 from fps_coach.curve_io import CurvePoint, CurveProfile, chart_points, load_curve, save_curve  # noqa: E402
 
@@ -265,7 +264,7 @@ def test_points_between_handles_move_smoothly_not_in_steps(qapp) -> None:
     base = list(chart.points)
     chart._drag_base = list(base)
     chart._move_handle(h, min(1.0, base[h] * 1.1))
-    factors = [after / before for after, before in zip(chart.points, base)]
+    factors = [after / before for after, before in zip(chart.points, base, strict=False)]
     lo, hi = handles[len(handles) // 2 - 1], handles[len(handles) // 2 + 1]
     for i in range(lo + 1, hi):
         if i != h:
@@ -340,7 +339,8 @@ def test_recommendation_shows_all_seven_points_on_calibration(qapp) -> None:
     page.apply_recommendation({"points": SEVEN_POINTS, "sensitivity_multiplier": 1.0})
     assert len(page.chart.points) == 7
     assert page.chart.x_positions() == pytest.approx([x for x, _ in SEVEN_POINTS])
-    assert page.chart.points == pytest.approx([y for _, y in SEVEN_POINTS])
+    assert [v * page.chart.axis_y_max for v in page.chart.points] == pytest.approx(
+        [p.multiplier for p in page._profile.horizontal])
 
 
 def test_recommendation_shows_all_seven_points_on_the_recommendation_tab(qapp) -> None:

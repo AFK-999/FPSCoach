@@ -78,11 +78,16 @@ class _VoiceListenThread(QThread):
 
     recognized = Signal(str)
     failed = Signal(str)
+    status_changed = Signal(str)
 
     def run(self) -> None:
-        from fps_coach.voice_control import recognize_once
+        try:
+            from fps_coach.voice_control import recognize_once
 
-        result = recognize_once()
+            result = recognize_once(on_state=self.status_changed.emit)
+        except Exception as exc:  # noqa: BLE001 - report unexpected worker errors
+            self.failed.emit(f"Voice input failed: {exc or type(exc).__name__}")
+            return
         if result.ok:
             self.recognized.emit(result.text)
         else:
@@ -252,9 +257,10 @@ class _LiveVisionThread(QThread):
     status_changed = Signal(str)
     window_sent = Signal(list, object)   # ([jpeg, ...], meta) — the clip the model was shown
 
-    def __init__(self, session, parent=None):
+    def __init__(self, session, parent=None, *, once: bool = False):
         super().__init__(parent)
         self._session = session
+        self._once = once
         session._on_reply = lambda text, meta: self.reply_ready.emit(text, meta)
         session._on_error = lambda message: self.request_failed.emit(message)
         session._on_status = lambda message: self.status_changed.emit(message)
@@ -262,7 +268,7 @@ class _LiveVisionThread(QThread):
 
     def run(self) -> None:
         try:
-            self._session.run()
+            self._session.run(once=self._once)
         except Exception as exc:  # noqa: BLE001 - never let a worker crash the app
             self.request_failed.emit(f"Live vision stopped unexpectedly: {exc}")
 

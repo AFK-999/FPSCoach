@@ -820,7 +820,7 @@ def test_page_says_frames_stay_local_for_a_vision_model_on_ollama(qapp, saved):
     page.live_enable.setChecked(True)
     try:
         page.set_capture_source(FakeBackend())
-        assert "stay on this machine" in page.live_note.text()
+        assert "loopback service may forward" in page.live_note.text()
         # A vision model that is not trained on timestamped frames gets a nudge.
         assert "qwen3-vl:8b is the better fit" in page.live_note.text()
     finally:
@@ -837,7 +837,7 @@ def test_page_does_not_nudge_a_qwen_vl_user(qapp, saved):
     try:
         page.set_capture_source(FakeBackend())
         note = page.live_note.text()
-        assert "stay on this machine" in note
+        assert "loopback service may forward" in note
         assert "better fit" not in note, "nothing to improve on the recommended model"
     finally:
         page.shutdown()
@@ -901,3 +901,74 @@ def test_watching_posts_a_reply_and_fills_the_filmstrip(qapp, saved, monkeypatch
         page.live_toggle.setChecked(False)
         page.shutdown()
     assert page.live_toggle.isChecked() is False
+
+
+def test_one_shot_sends_exactly_once_even_if_screen_keeps_changing():
+    chat = FakeChat()
+    metas = []
+    session = LiveVisionSession(frame_provider=MovingScreen(), chat=chat,
+                                settings=VisionSettings(**FAST, frames_per_request=3),
+                                on_reply=lambda text, meta: metas.append(meta))
+    thread = threading.Thread(target=lambda: session.run(once=True), daemon=True)
+    thread.start()
+    thread.join(4)
+    assert not thread.is_alive()
+    assert len(chat.calls) == 1 and len(chat.calls[0]["images"]) == 3
+    assert metas[0]["asked"] == "now"
+
+
+def test_one_shot_does_not_retry_failures_or_wait_for_capture():
+    chat = FakeChat(error=RuntimeError("provider failed"))
+    errors = []
+    session = LiveVisionSession(frame_provider=MovingScreen(), chat=chat,
+                                settings=VisionSettings(**FAST, frames_per_request=1),
+                                on_error=errors.append)
+    session.run(once=True)
+    assert len(chat.calls) == 1 and errors == ["provider failed"]
+    empty = FakeChat()
+    session = LiveVisionSession(frame_provider=lambda: None, chat=empty,
+                                settings=VisionSettings(**FAST, frames_per_request=1))
+    thread = threading.Thread(target=lambda: session.run(once=True), daemon=True)
+    thread.start()
+    thread.join(2)
+    assert not thread.is_alive() and not empty.calls
+
+
+def test_look_now_does_not_enable_continuous_watching(qapp, saved, monkeypatch):
+    from fps_coach.ui import pages_coach
+
+    saved.setValue("ai/model", "gemma3:4b")
+    saved.setValue("ai/live_frames", 2)
+    saved.setValue("ai/live_sample", .1)
+    page = pages_coach.AIChatPage()
+    chat = FakeChat(["The scene is bright."])
+    monkeypatch.setattr(pages_coach, "AIChatClient", lambda settings: chat)
+    page.set_capture_source(FakeBackend())
+    page.live_enable.setChecked(True)
+    try:
+        page._ask_live_now()
+        assert page.live_toggle.isChecked() is False
+        assert wait_for_qt(lambda: page._live_thread is None, timeout=5)
+        assert len(chat.calls) == 1
+        assert "scene is bright" in page.transcript.toPlainText()
+        assert page.live_toggle.isEnabled() and page.live_now.isEnabled()
+        assert page.live_toggle.isChecked() is False
+        time.sleep(.25)
+        qapp.processEvents()
+        assert len(chat.calls) == 1
+    finally:
+        page.shutdown()
+
+
+def test_vision_notice_does_not_claim_remote_ollama_is_local(qapp, saved):
+    from fps_coach.ui.pages_coach import AIChatPage
+
+    saved.setValue("ai/model", "gemma3:4b")
+    saved.setValue("ai/base_url", "https://remote.example")
+    page = AIChatPage()
+    try:
+        page.set_capture_source(FakeBackend())
+        assert "remote endpoint receives" in page.live_note.text()
+        assert "stay on this machine" not in page.live_note.text()
+    finally:
+        page.shutdown()

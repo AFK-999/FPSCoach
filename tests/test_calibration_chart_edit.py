@@ -169,7 +169,7 @@ def test_a_zero_gain_dot_can_be_dragged_upwards(chart) -> None:
     chart.points = [0.0, 0.5, 1.0]
     _drag(chart, 0, 0.2)
     assert chart.points[0] == pytest.approx(0.2, abs=0.01)
-    assert chart.points[1] > 0.5  # smooth additive change to the interval, not a stuck zero
+    assert chart.points[1] == pytest.approx(0.5)  # a CC4-style drag moves only the selected control point
     assert chart.points[2] == pytest.approx(1.0)
 
 
@@ -464,7 +464,9 @@ def test_adding_a_point_changes_the_curve_the_page_would_export(monkeypatch, tmp
     page.chart.add_point(_at(page.chart, 0.45, 1.0))  # a big lift between two points
     after = [p.multiplier for p in page._profile.horizontal]
     assert after != before
-    assert max(after) > max(before)
+    inserted = min(page._profile.horizontal, key=lambda p: abs(p.speed / 1000 - 0.45))
+    assert inserted.multiplier == pytest.approx(page.chart.axis_y_max)
+    assert inserted.multiplier > before[1]  # a high-gain point was inserted between neighbors
 
 
 def test_export_contains_a_manually_added_control_point(monkeypatch, tmp_path, qapp) -> None:

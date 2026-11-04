@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import math
 import statistics
+from collections import deque
 from dataclasses import dataclass
 from typing import Any
 
@@ -23,8 +24,13 @@ except ImportError:
     _native = None
 
 from . import python_capture
+from .curve_sampling import balanced_indices
 
 MAX_ANALYSIS_SAMPLES_PER_TRIAL = 65_536  # preserves a full 1 kHz trial for over a minute
+CALIBRATION_WINDOW_TRIALS = 8  # last accepted trials; mirrored in the native analyzer
+CURVE_DISTRIBUTION_VERSION = 4
+CURVE_SPEED_REFERENCE_QUANTILE = 0.95
+CURVE_UNIFORM_ANCHOR_WEIGHT = 0.80
 
 OLD_NATIVE_WINDOW_NOTE = (
     "This build of the native capture module cannot capture single windows. "
@@ -51,9 +57,10 @@ class _FallbackAnalyzer:
 
     def reset(self) -> None:
         self._trial: dict[str, Any] | None = None
-        self._metrics: list[dict[str, float]] = []
-        self._speed_samples: list[float] = []
-        self._captured_sample_count = 0
+        self._recent_trials: deque[tuple[dict[str, float], list[float], int]] = deque(
+            maxlen=CALIBRATION_WINDOW_TRIALS
+        )
+        self._total_trial_count = 0
 
     def begin_trial(
         self, start_x: float, start_y: float, target_x: float, target_y: float, timestamp: float
@@ -76,6 +83,12 @@ class _FallbackAnalyzer:
         ):
             self._trial["samples"].append(_Sample(x, y, timestamp))
 
+    def set_target(self, x: float, y: float) -> None:
+        """Use the actual target center at click time for moving-target metrics."""
+        if self._trial and math.isfinite(x) and math.isfinite(y):
+            old = self._trial["target"]
+            self._trial["target"] = _Sample(x, y, old.t)
+
     def end_trial(self, x: float, y: float, timestamp: float) -> bool:
         if not self._trial:
             return False
@@ -93,7 +106,10 @@ class _FallbackAnalyzer:
         start: _Sample = trial["start"]
         target: _Sample = trial["target"]
         direct = math.hypot(target.x - start.x, target.y - start.y)
-        if len(samples) < 3 or direct < 8 or samples[-1].t <= samples[0].t:
+        # A single delivered movement packet is a real observed segment. It
+        # can carry a fast/coalesced target movement, but cannot reveal any
+        # intermediate corrections; consumers must treat sparse paths as such.
+        if len(samples) < 2 or direct < 8 or samples[-1].t <= samples[0].t:
             return False
 
         ux, uy = (target.x - start.x) / direct, (target.y - start.y) / direct
@@ -104,26 +120,26 @@ class _FallbackAnalyzer:
         perpendicular = [abs((s.x - start.x) * -uy + (s.y - start.y) * ux) for s in samples]
         backward = sum(b < a - 0.006 for a, b in zip(projections, projections[1:], strict=False))
         duration = samples[-1].t - samples[0].t
-        self._metrics.append(
-            {
-                "path_efficiency": min(1.0, direct / max(path, direct)),
-                "overshoot_score": min(1.0, max(0.0, max(projections) - 1.0) * 3.0),
-                "underreach_score": min(1.0, max(0.0, 1.0 - projections[-1]) * 2.5),
-                "correction_score": min(1.0, backward / 6.0),
-                "tremor_score": min(1.0, statistics.fmean(perpendicular) / max(direct * 0.08, 1.0)),
-                "mean_endpoint_error_px": math.hypot(samples[-1].x - target.x, samples[-1].y - target.y),
-                "mean_duration_ms": duration * 1000.0,
-                "mean_speed_px_s": path / duration,
-            }
-        )
+        metrics = {
+            "path_efficiency": min(1.0, direct / max(path, direct)),
+            "overshoot_score": min(1.0, max(0.0, max(projections) - 1.0) * 3.0),
+            "underreach_score": min(1.0, max(0.0, 1.0 - projections[-1]) * 2.5),
+            "correction_score": min(1.0, backward / 6.0),
+            "tremor_score": min(1.0, statistics.fmean(perpendicular) / max(direct * 0.08, 1.0)),
+            "mean_endpoint_error_px": math.hypot(samples[-1].x - target.x, samples[-1].y - target.y),
+            "mean_duration_ms": duration * 1000.0,
+            "mean_speed_px_s": path / duration,
+        }
+        speed_samples: list[float] = []
         for first, second in zip(samples, samples[1:], strict=False):
             elapsed = second.t - first.t
             if elapsed <= 0.0:
                 continue
             speed = math.hypot(second.x - first.x, second.y - first.y) / elapsed
             if math.isfinite(speed) and speed > 0.0:
-                self._speed_samples.append(speed)
-        self._captured_sample_count += len(samples) - 1
+                speed_samples.append(speed)
+        self._recent_trials.append((metrics, speed_samples, len(samples) - 1))
+        self._total_trial_count += 1
         return True
 
     def summary(self) -> dict[str, float | int]:
@@ -137,9 +153,18 @@ class _FallbackAnalyzer:
             "mean_duration_ms",
             "mean_speed_px_s",
         )
-        result: dict[str, float | int] = {"trial_count": len(self._metrics)}
+        result: dict[str, float | int] = {
+            "trial_count": self._total_trial_count,
+            "window_trial_count": len(self._recent_trials),
+            "window_capacity": CALIBRATION_WINDOW_TRIALS,
+            "curve_distribution_version": CURVE_DISTRIBUTION_VERSION,
+        }
         result.update(
-            {key: statistics.fmean(item[key] for item in self._metrics) if self._metrics else 0.0 for key in keys}
+            {
+                key: statistics.fmean(entry[0][key] for entry in self._recent_trials)
+                if self._recent_trials else 0.0
+                for key in keys
+            }
         )
         return result
 
@@ -150,14 +175,14 @@ class _FallbackAnalyzer:
         corrections = float(summary["correction_score"])
         tremor = float(summary["tremor_score"])
         gamma = max(0.72, min(1.5, 1 + 0.55 * over + 0.30 * tremor + 0.20 * corrections - 0.35 * under))
-        speeds = sorted(speed for speed in self._speed_samples if math.isfinite(speed) and speed > 0.0)
+        speeds = sorted(speed for _, samples, _ in self._recent_trials for speed in samples)
         points: list[tuple[float, float]] = []
+        speed_reference = 0.0
+        clipped_speed_count = 0
         if speeds:
-            # Choose a readable number of control points from the amount of captured
-            # movement data, then place them at empirical speed quantiles rather than
-            # reusing a fixed list of seven normalized anchors.
-            point_count = min(32, max(2, math.ceil(math.log2(len(speeds) + 1)) + 1))
-
+            # Sample the continuous heuristic across the domain, then keep the
+            # smallest candidate-point set that preserves visible sampled bends.
+            # These are model anchors, not the raw cursor samples.
             def quantile(fraction: float) -> float:
                 position = fraction * (len(speeds) - 1)
                 lower = math.floor(position)
@@ -165,21 +190,20 @@ class _FallbackAnalyzer:
                 weight = position - lower
                 return speeds[lower] * (1.0 - weight) + speeds[upper] * weight
 
-            speed_scale = speeds[-1]
-            points.append((0.0, 0.0))
-            previous_x = 0.0
-            for index in range(1, point_count - 1):
-                x = min(1.0, max(0.0, quantile(index / (point_count - 1)) / speed_scale))
-                # Repeated speeds contain no extra horizontal detail; skip stacked dots.
-                if x <= previous_x + 1e-9 or x >= 1.0 - 1e-9:
-                    continue
-                y = (x**gamma) * (1.0 - 0.12 * tremor * (1.0 - x))
-                y = max(points[-1][1], min(1.0, y))
-                points.append((x, y))
-                previous_x = x
-            points.append((1.0, 1.0))
+            reference_index = math.ceil(CURVE_SPEED_REFERENCE_QUANTILE * len(speeds)) - 1
+            speed_reference = speeds[reference_index]
+            clipped_speed_count = sum(speed > speed_reference for speed in speeds)
+            candidates = {i / 128 for i in range(129)}
+            for i in range(1, 32):
+                fraction = i / 32
+                observed_x = min(1.0, max(0.0, quantile(fraction) / speed_reference))
+                candidates.add(CURVE_UNIFORM_ANCHOR_WEIGHT * fraction
+                               + (1.0 - CURVE_UNIFORM_ANCHOR_WEIGHT) * observed_x)
+            xs = sorted(candidates)
+            ys = [(x**gamma) * (1.0 - 0.12 * tremor * (1.0 - x)) for x in xs]
+            points = [(xs[index], ys[index]) for index in balanced_indices(xs, ys)]
         sensitivity = max(0.82, min(1.12, 1 - 0.12 * over - 0.05 * corrections + 0.10 * under))
-        count = int(summary["trial_count"])
+        count = int(summary["window_trial_count"])
         if over > 0.18 or corrections > 0.28:
             title = "Add control through the middle of the curve"
             reasons = ["Reverse corrections suggest reducing mid-speed response."]
@@ -191,11 +215,20 @@ class _FallbackAnalyzer:
             reasons = ["The paths do not show a strong need for acceleration."]
         if count < 8:
             reasons.append("Complete at least 8-12 trials for a stable recommendation.")
+        captured_count = sum(entry[2] for entry in self._recent_trials)
+        density = min(1.0, captured_count / (2 * count)) if count else 0.0
+        if count and density < 1.0:
+            reasons.append("Sparse movement observations cannot resolve intermediate corrections; repeat with more samples for a clearer estimate.")
         return {
             "points": points,
-            "captured_sample_count": self._captured_sample_count,
+            "curve_distribution_version": CURVE_DISTRIBUTION_VERSION,
+            "captured_sample_count": captured_count,
+            "speed_reference_px_s": speed_reference,
+            "clipped_speed_count": clipped_speed_count,
+            "window_trial_count": count,
+            "window_capacity": CALIBRATION_WINDOW_TRIALS,
             "sensitivity_multiplier": sensitivity,
-            "confidence": min(1.0, count / 12.0) * 0.75,
+            "confidence": min(1.0, count / CALIBRATION_WINDOW_TRIALS) * 0.75 * density,
             "title": title,
             "reasons": reasons,
         }
@@ -206,7 +239,20 @@ class CoreBackend:
 
     def __init__(self, capture_factory=None) -> None:
         self.native_available = _native is not None
-        self.analyzer = _native.MovementAnalyzer() if _native else _FallbackAnalyzer()
+        native_analyzer = _native.MovementAnalyzer() if _native else None
+        # Older installed native extensions may not include the current window and
+        # graph-distribution logic.
+        # Keep their capture support, but never silently use their stale calibration.
+        try:
+            native_summary = dict(native_analyzer.summary()) if native_analyzer else {}
+        except (AttributeError, TypeError, ValueError, RuntimeError):
+            native_summary = {}
+        self.uses_python_analyzer = (
+            native_summary.get("window_capacity") != CALIBRATION_WINDOW_TRIALS
+            or "window_trial_count" not in native_summary
+            or native_summary.get("curve_distribution_version") != CURVE_DISTRIBUTION_VERSION
+        )
+        self.analyzer = _FallbackAnalyzer() if self.uses_python_analyzer else native_analyzer
         if capture_factory is not None:
             # Tests inject a capture double here instead of touching a display.
             self.capture = capture_factory()
@@ -228,7 +274,7 @@ class CoreBackend:
     @property
     def core_label(self) -> str:
         if self.native_available:
-            return "Native C++ core"
+            return "Native capture, Python analyzer" if self.uses_python_analyzer else "Native C++ core"
         if self.capture is not None:
             return "Python capture (mss)"
         return "Python preview mode"

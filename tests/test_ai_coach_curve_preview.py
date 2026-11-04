@@ -68,7 +68,7 @@ def test_calibration_recommendation_appears_as_a_full_curve_in_the_adjacent_pane
     assert len(page.quick_preview.xs) == len(recommendation["points"])
     assert page.quick_preview.previous_points is None
     assert "128 captured movement samples" in page.quick_hint.text()
-    assert "8 data-derived control points" in page.quick_hint.text()
+    assert "8 model control points" in page.quick_hint.text()
     assert page.apply_to_rec.isHidden()
 
 
@@ -95,7 +95,7 @@ def test_ai_refinement_previews_all_points_but_does_not_send_until_clicked(qapp)
     assert note
 
 
-def test_proactive_ai_curve_recommendation_previews_without_sending_to_calibration(qapp):
+def test_proactive_preset_directive_does_not_replace_the_measured_curve(qapp):
     page = _page(qapp)
     page.set_calibration_context(_summary(), _recommendation())
     emitted: list[tuple] = []
@@ -103,8 +103,9 @@ def test_proactive_ai_curve_recommendation_previews_without_sending_to_calibrati
 
     page._proactive_received("Try a small precision change. [ADJUST: precision]")
 
-    assert not page.apply_to_rec.isHidden()
-    assert "AI curve proposal" in page.quick_hint.text()
+    assert page.apply_to_rec.isHidden()
+    assert "no preset curve was generated" in page.quick_hint.text()
+    assert len(page.quick_preview.points) == len(_recommendation()["points"])
     assert "ADJUST" not in page.transcript.toPlainText()
     assert emitted == []
 
@@ -137,19 +138,20 @@ def test_imported_curve_preview_is_not_resampled_to_five_or_seven_points(qapp):
     assert page.quick_preview.previous_points is None
 
 
-def test_user_and_coach_bubbles_use_opposite_alignment_and_escape_html(qapp):
+def test_user_and_coach_bubbles_use_opposite_alignment_and_plain_text(qapp):
+    from PySide6.QtCore import Qt
+
     page = _page(qapp)
     page._append("You", "What about <sensitivity> & control?\nSecond line.")
     page._append("Coach", "I can show a curve proposal.")
-
-    import re
-
-    markup = page.transcript.toHtml().lower()
-    transcript = page.transcript.toPlainText()
-    bubbles = re.findall(r"<table[^>]*>.*?</table>", markup, flags=re.DOTALL)
-    assert len(bubbles) == 2
-    assert 'align="right"' in bubbles[0]  # the user's bubble is right-aligned
-    assert 'align="right"' not in bubbles[1]  # the coach's default alignment is left
-    assert "What about <sensitivity> & control?" in transcript
-    assert "Second line." in transcript
-    assert "I can show a curve proposal." in transcript
+    user_frame, user_label = page.transcript._entries[0]
+    coach_frame, coach_label = page.transcript._entries[1]
+    assert user_frame.parentWidget().property("messageKind") == "user"
+    assert coach_frame.parentWidget().property("messageKind") == "coach"
+    assert user_frame.parentWidget().layout().itemAt(0).spacerItem() is not None
+    assert coach_frame.parentWidget().layout().itemAt(1).spacerItem() is not None
+    assert user_label.textFormat() == Qt.TextFormat.RichText
+    assert "&lt;sensitivity&gt; &amp; control?" in user_label.text()
+    assert "What about <sensitivity> & control?" in page.transcript.toPlainText()
+    assert "Second line." in page.transcript.toPlainText()
+    assert "I can show a curve proposal." in coach_label.text()

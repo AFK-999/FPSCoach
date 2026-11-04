@@ -18,6 +18,7 @@ importable and unit-testable even where no audio stack exists.
 from __future__ import annotations
 
 import importlib.util
+from collections.abc import Callable
 from dataclasses import dataclass
 
 _INSTALL_HINT = (
@@ -47,25 +48,31 @@ def is_available() -> bool:
     return available_backend() is not None
 
 
-def recognize_once(timeout: float = 6.0, phrase_limit: float = 12.0) -> VoiceResult:
+def recognize_once(
+    timeout: float = 6.0, phrase_limit: float = 12.0, *, on_state: Callable[[str], None] | None = None
+) -> VoiceResult:
     """Capture a single spoken phrase and return it as text.
 
-    Never raises - returns ``VoiceResult(ok=False, message=...)`` on any problem
-    (no backend, no microphone, nothing heard, recognition error).
+    Returns ``VoiceResult(ok=False, message=...)`` for expected recognition errors.
+    When provided, ``on_state`` reports when the microphone stream is open
+    ("listening") and, where applicable, when captured audio is being processed
+    after the stream closes ("processing").
     """
     backend = available_backend()
     if backend is None:
         return VoiceResult(False, message=_INSTALL_HINT)
     if backend == "speech_recognition":
-        return _recognize_speechrecognition(timeout, phrase_limit)
+        return _recognize_speechrecognition(timeout, phrase_limit, on_state=on_state)
     # Vosk offline path: validate/configure the model, then recognize one phrase.
     from fps_coach import vosk_service
 
-    ok, text, message = vosk_service.recognize_once(phrase_limit=phrase_limit)
+    ok, text, message = vosk_service.recognize_once(phrase_limit=phrase_limit, on_state=on_state)
     return VoiceResult(ok, text=text, message=message)
 
 
-def _recognize_speechrecognition(timeout: float, phrase_limit: float) -> VoiceResult:
+def _recognize_speechrecognition(
+    timeout: float, phrase_limit: float, *, on_state: Callable[[str], None] | None = None
+) -> VoiceResult:
     try:
         import speech_recognition as sr  # noqa: WPS433
     except Exception:  # pragma: no cover - import guarded by find_spec
@@ -73,10 +80,14 @@ def _recognize_speechrecognition(timeout: float, phrase_limit: float) -> VoiceRe
     recognizer = sr.Recognizer()
     try:
         with sr.Microphone() as source:  # needs PyAudio + a mic
+            if on_state:
+                on_state("listening")
             recognizer.adjust_for_ambient_noise(source, duration=0.3)
             audio = recognizer.listen(source, timeout=timeout, phrase_time_limit=phrase_limit)
     except Exception:
         return VoiceResult(False, message="No microphone was available or nothing was heard.")
+    if on_state:
+        on_state("processing")
     try:
         text = recognizer.recognize_google(audio)  # online; offline needs Vosk/Sphinx
     except Exception:

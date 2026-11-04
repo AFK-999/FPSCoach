@@ -597,17 +597,19 @@ class LiveVisionSession:
         self._wake.set()
 
     # -- the loop ---------------------------------------------------------
-    def run(self) -> None:
-        """Blocking loop; call it from a worker thread."""
+    def run(self, *, once: bool = False) -> None:
+        """Run the watching loop, or send at most one explicitly requested look."""
+        if once:
+            self._force.set()  # no wake needed before the worker begins sampling
         consecutive_errors = 0
         while not self._stop.is_set():
             frames, forced = self._collect_window()
             if self._stop.is_set():
                 break
-            if frames is None:
-                continue  # idle or no capture yet; _collect_window already reported
             if not frames:
-                continue
+                if once:
+                    break  # no capture or encoding failure; do not start a background loop
+                continue  # idle or no capture yet; _collect_window already reported
 
             self._publish_window(frames)
             payload = self._payload(frames)
@@ -638,6 +640,8 @@ class LiveVisionSession:
                 consecutive_errors += 1
                 self._last_sequence = None  # retry the same picture
                 self._fail(str(exc) or exc.__class__.__name__)
+                if once:
+                    break  # one-shot requests must not retry without another explicit action
                 if consecutive_errors >= self._settings.max_consecutive_errors:
                     self._report(
                         f"Stopped after {consecutive_errors} failed requests. Check the AI "
@@ -674,6 +678,8 @@ class LiveVisionSession:
                 }
                 if self._on_reply is not None:
                     self._safe(self._on_reply, text, meta)
+            if once:
+                break
             self._wait(self._settings.min_interval)
 
         self._report("Live vision stopped.")

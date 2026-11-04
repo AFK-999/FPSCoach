@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <deque>
 #include <mutex>
 #include <string>
 #include <utility>
@@ -8,8 +9,14 @@
 
 namespace fpscoach {
 
+inline constexpr std::size_t kCalibrationWindowTrials = 8;
+inline constexpr std::size_t kCurveDistributionVersion = 4;
+
 struct MovementSummary {
-    std::size_t trial_count{};
+    std::size_t trial_count{};  // all accepted trials this session
+    std::size_t window_trial_count{};
+    std::size_t window_capacity{kCalibrationWindowTrials};
+    std::size_t curve_distribution_version{kCurveDistributionVersion};
     double path_efficiency{};
     double overshoot_score{};
     double underreach_score{};
@@ -22,7 +29,11 @@ struct MovementSummary {
 
 struct CurveRecommendation {
     std::vector<std::pair<double, double>> points;
-    std::size_t captured_sample_count{};
+    std::size_t captured_sample_count{};  // samples in the current rolling window
+    double speed_reference_px_s{};
+    std::size_t clipped_speed_count{};
+    std::size_t window_trial_count{};
+    std::size_t window_capacity{kCalibrationWindowTrials};
     double sensitivity_multiplier{1.0};
     double confidence{};
     std::string title;
@@ -42,6 +53,7 @@ public:
                      double target_y,
                      double timestamp_seconds);
     void add_sample(double x, double y, double timestamp_seconds);
+    void set_target(double x, double y);  // actual target position at click time
     bool end_trial(double x, double y, double timestamp_seconds);
 
     [[nodiscard]] MovementSummary summary() const;
@@ -72,15 +84,20 @@ private:
         double mean_speed_px_s{};
     };
 
+    struct WindowTrial {
+        TrialMetrics metrics;
+        std::vector<double> speeds_px_s;
+        std::size_t captured_sample_count{};
+    };
+
     static TrialMetrics calculate_metrics(const Trial& trial);
     MovementSummary summary_unlocked() const;
 
     mutable std::mutex mutex_;
     bool active_{false};
     Trial current_;
-    std::vector<TrialMetrics> completed_;
-    std::vector<double> captured_speeds_px_s_;
-    std::size_t captured_sample_count_{};
+    std::deque<WindowTrial> recent_trials_;
+    std::size_t total_trial_count_{};
 };
 
 } // namespace fpscoach

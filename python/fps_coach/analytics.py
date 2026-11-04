@@ -43,6 +43,8 @@ class SessionResult:
     accuracy: float
     avg_reaction_ms: float
     best_reaction_ms: float
+    # Optional, explicitly enabled per-session in-app aggregate; no paths.
+    aim_telemetry: dict | None = None
 
     @classmethod
     def create(cls, scenario: str, reaction_times_ms: list[float], hits: int, misses: int) -> SessionResult:
@@ -114,18 +116,19 @@ class AnalyticsStore:
             "best_reaction_ms": round(min(bests), 1) if bests else 0.0,
         }
 
-    def clear(self) -> None:
-        """Delete every stored session and write the empty store to disk."""
+    def clear(self) -> bool:
+        """Clear in-memory sessions; report whether the on-disk store was cleared."""
         self.sessions = []
-        self.save()
+        return self.save()
 
-    def save(self) -> None:
+    def save(self) -> bool:
         if not self.path:
-            return
+            return True  # memory-only store
         try:
             self.path.write_text(
                 json.dumps([asdict(s) for s in self.sessions], indent=2),
                 encoding="utf-8",
             )
         except OSError:
-            pass
+            return False
+        return True

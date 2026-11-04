@@ -8,10 +8,21 @@ active theme, while "stage" surfaces stay dark on purpose.
 from __future__ import annotations
 
 import bisect
+import math
 from dataclasses import replace
 
-from PySide6.QtCore import QPointF, QRectF, QSettings, QSize, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QCursor, QFontMetrics, QLinearGradient, QPainter, QPainterPath, QPen
+from PySide6.QtCore import QEvent, QPointF, QRectF, QSettings, QSize, Qt, Signal
+from PySide6.QtGui import (
+    QBrush,
+    QColor,
+    QCursor,
+    QFont,
+    QFontMetrics,
+    QLinearGradient,
+    QPainter,
+    QPainterPath,
+    QPen,
+)
 from PySide6.QtWidgets import (
     QAbstractButton,
     QComboBox,
@@ -23,16 +34,17 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSlider,
+    QToolTip,
     QVBoxLayout,
     QWidget,
 )
 
-from fps_coach.curve_sampling import KEY_TOLERANCE, key_indices
 from fps_coach.crosshair import CrosshairConfig
+from fps_coach.curve_sampling import KEY_TOLERANCE, key_indices
+from fps_coach.curve_spline import cc3_spline, interpolating_segments, weighted_spline
 
 from .icons import icon, pixmap
 from .styles import STAGE, active_palette
-
 
 _ROLE_KEYS = {"text": "text", "text2": "text2", "accent": "accent", "ink": "accent_ink",
               "good": "good", "warn": "warn", "amber": "amber"}
@@ -360,37 +372,68 @@ def _positions(values, xs) -> list[float]:
 class CurveChart(QWidget):
     """Sensitivity curve with an optional previous curve and draggable handles.
 
-    The line runs through every point of the curve, at each point's own x position (``xs``, 0..1:
-    speed over the curve's top speed), so nothing is resampled and any length or shape is shown.
-    Every visible dot on the curve can be dragged. Short curves show a dot on every point; long
-    ones show up to 64 key bends (see curve_sampling.key_indices), evenly sampling them if there
-    are more, so the line stays readable. Drag vertically to change gain; drag an interior dot
-    horizontally to change speed (the endpoints stay at their original speed bounds). The values
-    between neighbouring bends follow the moved dot smoothly. A right-click on the plot offers
+    The default CC3-style B-spline is approximate, with controls not necessarily on the line.
+    The Calibration chart instead interpolates every stored horizontal point and draws all dots
+    on that line; neither preview is verified driver output. Coordinates use normalized profile
+    speed and gain. Very long curves retain grouped mouse-drag behavior. Drag vertically to
+    change gain; drag an interior dot
+    horizontally to change speed (the endpoints stay at their original speed bounds). A right-click offers
     adding a point where you clicked and deleting the point under the pointer. Without ``xs`` the
     points are spaced evenly. The chart paints on the surrounding card, so it has no fill of its own.
     """
 
     curve_adjusted = Signal(list)  # compatibility signal: the edited y values
+    point_selected = Signal(int)  # -1 means no selected point
+    weight_edit_requested = Signal(int)
     curve_geometry_changed = Signal(list, list)  # y values and normalized x positions
     # Operation, index in the resulting/old curve, normalized x location.
     curve_structure_changed = Signal(str, int, float)
 
-    def __init__(self, parent=None, editable: bool = True):
+    def __init__(self, parent=None, editable: bool = True, interpolate_points: bool = False):
         super().__init__(parent)
+        self._aligned_cc3 = bool(interpolate_points)
+        self._interpolate_points = bool(interpolate_points)
+        self._graph_style = "cc3"
         self.setMinimumHeight(200)
         self._points = [0.0, 0.3, 0.55, 0.78, 1.0]
         self._xs = None
         self._handles = None  # cached handle_indices(); cleared when the curve is replaced
         self.previous_points = None
         self.previous_xs: list[float] | None = None
+        self.weights: list[float] = [0.5] * len(self._points)
+        self.previous_weights: list[float] = []
         self._drag_index = None
         self._drag_base = None
         self._drag_x_base = None
         self._drag_handles = None
+        self._drag_press = None
         self._hover_index = None
+        self._selected_index = None
         self._editable = editable
+        self.axis_x_max = None
+        self.axis_y_max = None
+        self.axis_x_units = "unavailable"
+        self._view = (0.0, 1.0, 0.0, 1.0)  # normalized x-min/max, y-min/max
+        self._pan_start = None
         self.setMouseTracking(editable)
+        self.setToolTip("Hover a control point to inspect its values. Tick labels are rounded.")
+        self.setAccessibleDescription(
+            "Interpolated point preview, approximate and not verified CC3 driver output." if interpolate_points else
+            "CC3-style unweighted spline preview is approximate, not verified driver output."
+        )
+
+    def set_graph_style(self, style: str) -> None:
+        """Change preview rendering only, without modifying points or weights."""
+        self._graph_style = style if style in {"cc3", "cc4"} else "cc3"
+        self._interpolate_points = self._aligned_cc3 and self._graph_style == "cc3"
+        if self._graph_style == "cc4":
+            desc = "CC4-style weighted spline approximation; control dots may be off the curve, not verified driver output."
+        elif self._interpolate_points:
+            desc = "Interpolated CC3 point preview, approximate and not verified CC3 driver output."
+        else:
+            desc = "CC3-style unweighted spline preview is approximate, not verified driver output."
+        self.setAccessibleDescription(desc)
+        self.update()
 
     def set_editable(self, editable: bool) -> None:
         """Toggle pointer editing while keeping the current curve visible."""
@@ -412,6 +455,8 @@ class CurveChart(QWidget):
     @points.setter
     def points(self, values):
         self._points = values
+        if hasattr(self, "weights") and len(self.weights) != len(values):
+            self.weights = [0.5] * len(values)
         self._handles = None
 
     @property
@@ -426,6 +471,13 @@ class CurveChart(QWidget):
     def set_previous(self, points, xs=None):
         self.previous_points = points
         self.previous_xs = list(xs) if xs is not None else None
+        self.update()
+
+    def set_curve_weights(self, current=None, previous=None):
+        """Set profile weights, defaulting to neutral when unavailable."""
+        self.weights = list(current) if current is not None and len(current) == len(self.points) else [0.5] * len(self.points)
+        self.previous_weights = (list(previous) if previous is not None and self.previous_points
+                                 and len(previous) == len(self.previous_points) else [])
         self.update()
 
     def x_positions(self) -> list[float]:
@@ -449,23 +501,50 @@ class CurveChart(QWidget):
         return 0 < len(self.handle_indices()) <= HANDLE_DOT_LIMIT
 
     def dot_indices(self) -> list[int]:
-        """The points drawn as dots, and therefore the ones that can be grabbed.
-
-        A short curve gets a dot on every point: they are all editable, so hiding some of them
-        would just make the removable points look like they are not there. A long curve keeps
-        its dots at the bends, which is the only set that stays legible at that length.
-        """
-        if len(self._points) <= HANDLE_DOT_LIMIT:
+        """Visible handles; a numerically selected point is always included."""
+        if self._aligned_cc3 or len(self._points) <= HANDLE_DOT_LIMIT:
             return list(range(len(self._points)))
         handles = self.handle_indices()
         if len(handles) <= HANDLE_DOT_LIMIT:
-            return handles
-        # Keep even a very wiggly imported curve editable without painting hundreds of dots.
-        last = len(handles) - 1
-        return [handles[round(i * last / (HANDLE_DOT_LIMIT - 1))] for i in range(HANDLE_DOT_LIMIT)]
+            shown = list(handles)
+        else:
+            last = len(handles) - 1
+            shown = [handles[round(i * last / (HANDLE_DOT_LIMIT - 1))] for i in range(HANDLE_DOT_LIMIT)]
+        selected = self._selected_index
+        if selected is not None and 0 <= selected < len(self._points) and selected not in shown:
+            if len(shown) >= HANDLE_DOT_LIMIT:
+                nearest = min(range(len(shown)), key=lambda i: abs(shown[i] - selected))
+                shown[nearest] = selected
+            else:
+                shown.append(selected)
+        return sorted(set(shown))
+
+    def set_axis_scale(self, x_max, y_max, x_units="normalized") -> None:
+        """Map normalized widget coordinates to actual profile values for both curves."""
+        self.axis_x_max = float(x_max) if x_max is not None and x_max > 0 else None
+        self.axis_y_max = float(y_max) if y_max is not None and y_max > 0 else None
+        self.axis_x_units = x_units
+        self.update()
+
+    @staticmethod
+    def _tick_label(value: float, step: float) -> str:
+        if not math.isfinite(value):
+            return "?"
+        if value == 0:
+            return "0"
+        # Six significant figures preserve common fractional grid values, with
+        # compact scientific notation for very large/small profile values.
+        return f"{value:.6g}"
 
     def _plot_rect(self):
-        return self.rect().adjusted(40, 16, -14, -30)
+        font = QFont(self.font())
+        font.setPointSize(8)
+        metrics = QFontMetrics(font)
+        # Keep geometry stable while panning/zooming even as tick labels gain
+        # digits; reserve room for a compact scientific-notation label.
+        width = metrics.horizontalAdvance("1.23457e+308")
+        left = max(55, min(100, width + 9))
+        return self.rect().adjusted(left, 22, -16, -39)
 
     def paintEvent(self, event):
         pal = active_palette()
@@ -474,57 +553,185 @@ class CurveChart(QWidget):
         rect = self._plot_rect()
         grid = QColor(pal["line"])
         p.setPen(QPen(grid, 1))
-        for i in range(5):
-            y = rect.top() + rect.height() * i / 4
-            p.drawLine(rect.left(), int(y), rect.right(), int(y))
-        for i in range(5):
-            x = rect.left() + rect.width() * i / 4
-            p.drawLine(int(x), rect.top(), int(x), rect.bottom())
-
-        label_color = QColor(pal["text3"])
-        p.setPen(label_color)
+        # Use as many numeric marks as fit, avoiding overlap in compact charts.
         font = p.font()
         font.setPointSize(8)
         p.setFont(font)
-        p.drawText(0, rect.top() + 4, 34, 14, Qt.AlignmentFlag.AlignRight, "high")
-        p.drawText(0, rect.bottom() - 6, 34, 14, Qt.AlignmentFlag.AlignRight, "low")
-        p.drawText(rect.left(), rect.bottom() + 4, 60, 16, Qt.AlignmentFlag.AlignLeft, "slow")
-        p.drawText(rect.right() - 60, rect.bottom() + 4, 60, 16, Qt.AlignmentFlag.AlignRight, "fast")
+        x0, x1 = self._view[:2]
+        largest = max((p.fontMetrics().horizontalAdvance(
+            self._tick_label(self.axis_x_max * (x0 + (x1 - x0) * i / 4), self.axis_x_max / 4))
+            for i in range(5)), default=0) if self.axis_x_max else 0
+        plot_width, plot_height = self._plot_span(rect)
+        divisions = 2 if plot_width / 4 < largest + 20 else 4
+        for i in range(divisions + 1):
+            y = rect.bottom() - plot_height * i / divisions
+            x = rect.left() + plot_width * i / divisions
+            p.drawLine(rect.left(), int(y), rect.right(), int(y))
+            p.drawLine(int(x), rect.top(), int(x), rect.bottom())
 
+        p.setPen(QColor(pal["text2"]))
+        if self.axis_x_max is not None and self.axis_y_max is not None:
+            for i in range(divisions + 1):
+                y = rect.bottom() - plot_height * i / divisions
+                x = rect.left() + plot_width * i / divisions
+                x0, x1, y0, y1 = self._view
+                yl = self._tick_label(self.axis_y_max * (y0 + (y1 - y0) * i / divisions), self.axis_y_max / divisions)
+                xl = self._tick_label(self.axis_x_max * (x0 + (x1 - x0) * i / divisions), self.axis_x_max / divisions)
+                p.drawText(0, int(y) - 7, rect.left() - 6, 14, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, yl)
+                # Place endpoint labels inside the widget and center intermediate labels.
+                label_width = min(self.width(), max(60, largest + 6))
+                left = max(0, min(self.width() - label_width, int(x) - label_width // 2))
+                p.drawText(left, rect.bottom() + 3, label_width, 14, Qt.AlignmentFlag.AlignHCenter, xl)
+        p.drawText(rect.left(), 2, max(0, rect.width()), 15, Qt.AlignmentFlag.AlignLeft, "Sensitivity (×)")
+        if self._graph_style == "cc4":
+            approximation = "CC4 weighted approx." if rect.width() >= 240 else "CC4 approx."
+        else:
+            approximation = ("Interpolated · not CC3" if self._interpolate_points else "CC3-style approx.") if rect.width() >= 240 else "approx."
+        if self._points and rect.width() >= 125:
+            p.drawText(rect.left(), 2, rect.width(), 15, Qt.AlignmentFlag.AlignRight, approximation)
+        axis_title = {"normalized": "Input velocity (normalized)", "profile units": "Input velocity (profile)",
+                      "unavailable": "Input velocity (no curve)"}.get(self.axis_x_units, "Input velocity (profile)")
+        if p.fontMetrics().horizontalAdvance(axis_title) > rect.width():
+            axis_title = {"normalized": "Input vel. (norm.)", "profile units": "Input vel. (profile)",
+                          "unavailable": "Input vel. (no curve)"}.get(self.axis_x_units, "Input velocity")
+        p.drawText(rect.left(), rect.bottom() + 19, max(0, rect.width()), 15,
+                   Qt.AlignmentFlag.AlignHCenter, axis_title)
+
+        p.save()
+        # The selected handle is larger than a regular dot; allow its full
+        # outline beyond the axes while still clipping to the chart widget.
+        p.setClipRect(rect.adjusted(-7, -7, 7, 7))
         if self.previous_points:
             self._draw_curve(
                 p, rect, self.previous_points, QColor(pal["amber"]),
-                dashed=True, xs=_positions(self.previous_points, self.previous_xs),
+                dashed=True, xs=_positions(self.previous_points, self.previous_xs), weights=self.previous_weights,
             )
         dots = self.dot_indices()
         self._draw_curve(
             p, rect, self._points, QColor(pal["accent"]),
             dots=bool(dots), fill=True, xs=self.x_positions(), handles=dots,
-            hovered=self._hover_index,
+            hovered=self._hover_index, weights=self.weights,
         )
+        p.restore()
         p.end()
 
     @staticmethod
-    def _pt(rect, x: float, v: float) -> QPointF:
-        return QPointF(rect.left() + rect.width() * x, rect.bottom() - rect.height() * v)
+    def _plot_span(rect):
+        # QRect.right()/bottom() are inclusive: width/height are one pixel
+        # larger than the distance between the corresponding drawn axes.
+        return max(1, rect.right() - rect.left()), max(1, rect.bottom() - rect.top())
+
+    def _pt(self, rect, x: float, v: float) -> QPointF:
+        x0, x1, y0, y1 = self._view
+        width, height = self._plot_span(rect)
+        return QPointF(rect.left() + width * (x - x0) / (x1 - x0),
+                       rect.bottom() - height * (v - y0) / (y1 - y0))
+
+    def reset_view(self):
+        self._view = (0.0, 1.0, 0.0, 1.0)
+        self.update()
+
+    @staticmethod
+    def _view_bounds(start, width):
+        # The viewport can extend beyond the current data; coordinates remain
+        # nonnegative and navigation does not change the stored curve.
+        width = min(10000.0, max(0.02, width))
+        start = max(0.0, min(1000000.0 - width, start))
+        return start, start + width
+
+    def _navigation_zone(self, pos):
+        rect = self._plot_rect()
+        if rect.contains(pos):
+            return "both"
+        if rect.left() <= pos.x() <= rect.right() and rect.bottom() < pos.y() <= rect.bottom() + 18:
+            return "x"
+        if 0 <= pos.x() < rect.left() and rect.top() <= pos.y() <= rect.bottom():
+            return "y"
+        return None
+
+    def select_point(self, index):
+        index = index if index is not None and 0 <= index < len(self._points) else None
+        if index != self._selected_index:
+            self._selected_index = index
+            self.update()
+
+    def _fit_vertical_zoom(self, bottom, height):
+        """Scale from the lower edge while keeping both plotted curves in view.
+
+        Zoom is distinct from explicit vertical panning: after a pan has moved
+        data outside the frame, the next vertical zoom brings it back into view.
+        Points bound the interpolating and positive-weight spline previews.
+        """
+        values = [v for v in self._points if math.isfinite(v)]
+        if self.previous_points:
+            values.extend(v for v in self.previous_points if math.isfinite(v))
+        if not values:
+            return self._view_bounds(bottom, height)
+        low, high = max(0.0, min(values)), max(0.0, max(values))
+        bottom = min(max(0.0, bottom), low)
+        height = max(height, high - bottom)
+        return self._view_bounds(bottom, height)
+
+    def wheelEvent(self, event):  # noqa: N802 - Qt API
+        pos = event.position().toPoint()
+        zone = self._navigation_zone(pos)
+        # High-resolution touchpads can send pixel deltas without an angle.
+        angle = event.angleDelta().y()
+        pixels = event.pixelDelta().y()
+        delta = angle if angle else pixels
+        if not self._points or zone is None or delta == 0:
+            event.ignore()
+            return
+        rect = self._plot_rect()
+        x0, x1, y0, y1 = self._view
+        width, _height = self._plot_span(rect)
+        fx = min(1.0, max(0.0, (pos.x() - rect.left()) / width))
+        # A 10% step is less abrupt than the previous 20%; fractional angle or
+        # pixel deltas apply a proportional exponential step without snapping.
+        factor = 0.9 ** max(-20.0, min(20.0, delta / 120.0))
+        if zone in ("both", "x"):
+            new_w = min(10000.0, max(0.02, (x1 - x0) * factor))
+            x0, x1 = self._view_bounds(x0 + fx * ((x1 - x0) - new_w), new_w)
+        if zone in ("both", "y"):
+            new_h = min(10000.0, max(0.02, (y1 - y0) * factor))
+            y0, y1 = self._fit_vertical_zoom(y0, new_h)
+        self._view = (x0, x1, y0, y1)
+        self.update()
+        event.accept()
+
+    def _curve_path(self, rect, points, xs, weights=None):
+        """Build the actual line path using the same transform as dot centers."""
+        path = QPainterPath(self._pt(rect, min(0.0, self._view[0]), points[0]))
+        pairs = list(zip(xs, points, strict=True))
+        if self._interpolate_points:
+            path.lineTo(self._pt(rect, *pairs[0]))
+            for segment in interpolating_segments(pairs):
+                if len(segment) == 1:
+                    path.lineTo(self._pt(rect, *segment[0]))
+                else:
+                    path.cubicTo(*(self._pt(rect, *point) for point in segment))
+        else:
+            if self._graph_style == "cc4":
+                samples = weighted_spline(pairs, weights if weights is not None else self.weights)
+            else:
+                samples = cc3_spline(pairs)
+            for x, value in samples:
+                path.lineTo(self._pt(rect, x, value))
+        # End at the last actual control point. Do not extrapolate a flat
+        # upper-speed segment just because the viewport extends farther right.
+        return path
 
     def _draw_curve(self, p, rect, points, color, dots=False, dashed=False, fill=False, xs=None,
-                    handles=(), hovered=None):
+                    handles=(), hovered=None, weights=None):
         n = len(points)
         if n < 2:
             return
         xs = _positions(points, xs)
-        path = QPainterPath()
-        for i, (x, v) in enumerate(zip(xs, points)):
-            pt = self._pt(rect, x, v)
-            if i == 0:
-                path.moveTo(pt)
-            else:
-                path.lineTo(pt)
+        path = self._curve_path(rect, points, xs, weights)
         if fill:
             area = QPainterPath(path)
-            area.lineTo(rect.right(), rect.bottom())
-            area.lineTo(rect.left(), rect.bottom())
+            area.lineTo(self._pt(rect, xs[-1], 0.0).x(), rect.bottom())
+            area.lineTo(self._pt(rect, 0.0, 0.0).x(), rect.bottom())
             area.closeSubpath()
             grad = QLinearGradient(0, rect.top(), 0, rect.bottom())
             top = QColor(color)
@@ -534,6 +741,16 @@ class CurveChart(QWidget):
             grad.setColorAt(0.0, top)
             grad.setColorAt(1.0, bottom)
             p.fillPath(area, QBrush(grad))
+        if dots and not self._interpolate_points and len(points) <= HANDLE_DOT_LIMIT:
+            control = QPainterPath(self._pt(rect, xs[0], points[0]))
+            for x, value in zip(xs[1:], points[1:], strict=True):
+                control.lineTo(self._pt(rect, x, value))
+            guide = QColor(color)
+            guide.setAlpha(100)
+            control_pen = QPen(guide, 1.0, Qt.PenStyle.DashLine)
+            p.setPen(control_pen)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawPath(control)
         pen = QPen(color, 2.0)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
@@ -546,19 +763,44 @@ class CurveChart(QWidget):
             radius = _HANDLE_RADIUS_FEW if len(handles) <= 32 else _HANDLE_RADIUS_MANY
             base = QColor(active_palette()["surface"])
             p.setPen(QPen(color, 1.5))
-            p.setBrush(QBrush(base))
+            p.setBrush(QBrush(color if self._interpolate_points else base))
             for i in handles:
-                if i == hovered:
+                if i == hovered or i == self._selected_index:
                     # The dot under the pointer fills in, so it is obvious what a drag will take.
                     p.setBrush(QBrush(color))
                     p.drawEllipse(self._pt(rect, xs[i], points[i]), radius + 1.5, radius + 1.5)
-                    p.setBrush(QBrush(base))
+                    p.setBrush(QBrush(color if self._interpolate_points else base))
                     continue
                 p.drawEllipse(self._pt(rect, xs[i], points[i]), radius, radius)
+
+    def event(self, event):
+        if event.type() == QEvent.Type.ToolTip and self.axis_x_max and self.axis_y_max:
+            index = self._point_at(event.pos())
+            if self._graph_style == "cc4":
+                description = "CC4-style weighted spline approximation; points may be off the line. Not verified driver output."
+            elif self._interpolate_points:
+                description = "Interpolated through stored points; not verified CC3 driver output."
+            else:
+                description = "CC3-style unweighted spline approximation; points may be off the line."
+            if index is not None:
+                velocity = self.x_positions()[index] * self.axis_x_max
+                sensitivity = self.points[index] * self.axis_y_max
+                weight = f"Weight: {self.weights[index]:.12g}\n" if self._graph_style == "cc4" and index < len(self.weights) else ""
+                text = (f"Control point velocity: {velocity:.12g} ({self.axis_x_units})\n"
+                        f"Control point sensitivity: {sensitivity:.12g}×\n" + weight + description)
+            else:
+                text = ((self.toolTip() + "\n" if self.toolTip() else "") + description +
+                        " CC3 corner flags and driver settings are not simulated. "
+                        "Wheel: zoom with vertical curve fit; drag empty space or axes to pan; middle click: reset.")
+            QToolTip.showText(event.globalPos(), text, self)
+            return True
+        return super().event(event)
 
     def _point_at(self, pos) -> int | None:
         """The nearest draggable dot within GRAB_DISTANCE px of ``pos``, or None."""
         rect = self._plot_rect()
+        if not rect.adjusted(-5, -5, 5, 5).contains(pos):
+            return None
         xs = self.x_positions()
         best, best_distance = None, GRAB_DISTANCE
         for i in self.dot_indices():
@@ -572,29 +814,41 @@ class CurveChart(QWidget):
         return self._point_at(pos)
 
     def value_at(self, pos) -> tuple[float, float] | None:
-        """(x, value) under ``pos`` in 0..1, or None when the pointer is outside the plot."""
+        """Normalized profile coordinates under ``pos`` (possibly >1), or None outside the plot."""
         rect = self._plot_rect()
         # A px of slack: a click on the very edge of the plot lands one pixel outside the rect
         # after rounding, and "the top of the graph" is exactly where a point at 1.0 is drawn.
         if not rect.adjusted(-1, -1, 1, 1).contains(pos) or rect.width() <= 0 or rect.height() <= 0:
             return None
-        x = (pos.x() - rect.left()) / rect.width()
-        value = 1.0 - (pos.y() - rect.top()) / rect.height()
-        return min(1.0, max(0.0, x)), min(1.0, max(0.0, value))
+        width, height = self._plot_span(rect)
+        x = (pos.x() - rect.left()) / width
+        value = 1.0 - (pos.y() - rect.top()) / height
+        x0, x1, y0, y1 = self._view
+        return (max(0.0, x0 + x * (x1 - x0)),
+                max(0.0, y0 + value * (y1 - y0)))
 
     def mousePressEvent(self, event):
-        if not self._editable:
+        if event.button() == Qt.MouseButton.MiddleButton:
+            self.reset_view()
             return
         if event.button() != Qt.MouseButton.LeftButton:
             return
-        self._drag_index = self._point_at(event.position().toPoint())
+        pos = event.position().toPoint()
+        zone = self._navigation_zone(pos)
+        self._drag_index = self._point_at(pos) if self._editable and zone not in ("x", "y") else None
         if self._drag_index is None:
             self._drag_base = None
             self._drag_x_base = None
             self._drag_handles = None
+            if self._points and zone is not None:
+                self._pan_start = (event.position(), self._view, zone)
+                self.setCursor(QCursor(Qt.CursorShape.ClosedHandCursor))
             return
+        self.select_point(self._drag_index)
+        self.point_selected.emit(self._drag_index)
         self._drag_base = list(self._points)
         self._drag_x_base = self.x_positions()
+        self._drag_press = event.position()
         self._drag_handles = list(self.handle_indices())
         shape = (
             Qt.CursorShape.SizeVerCursor
@@ -604,13 +858,27 @@ class CurveChart(QWidget):
         self.setCursor(QCursor(shape))
 
     def mouseMoveEvent(self, event):
+        if self._pan_start is not None:
+            start, (x0, x1, y0, y1), zone = self._pan_start
+            delta = event.position() - start
+            rect = self._plot_rect()
+            width, height = self._plot_span(rect)
+            nx0, nx1 = (self._view_bounds(x0 - delta.x() / width * (x1 - x0), x1 - x0)
+                        if zone in ("both", "x") else (x0, x1))
+            ny0, ny1 = (self._view_bounds(y0 + delta.y() / height * (y1 - y0), y1 - y0)
+                        if zone in ("both", "y") else (y0, y1))
+            self._view = (nx0, nx1, ny0, ny1)
+            self.update()
+            return
         if not self._editable:
             return
         if self._drag_index is None or self._drag_base is None:
             self._update_hover(event.position().toPoint())
             return
         rect = self._plot_rect()
-        v = 1.0 - (event.position().y() - rect.top()) / max(rect.height(), 1)
+        x0, x1, y0, y1 = self._view
+        width, height = self._plot_span(rect)
+        v = y0 + (1.0 - (event.position().y() - rect.top()) / height) * (y1 - y0)
         v = min(max(v, 0.0), 1.0)
         base_xs = self._drag_x_base or self.x_positions()
         index = self._drag_index
@@ -618,9 +886,15 @@ class CurveChart(QWidget):
             # Keep the ends pinned to their original speed bounds; interior points can move on x.
             x = base_xs[index]
         else:
-            x = (event.position().x() - rect.left()) / max(rect.width(), 1)
+            x = x0 + (event.position().x() - rect.left()) / width * (x1 - x0)
             x = min(max(x, base_xs[index - 1]), base_xs[index + 1])
             x = min(max(x, 0.0), 1.0)
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier and self._drag_press is not None:
+            delta = event.position() - self._drag_press
+            if abs(delta.x()) >= abs(delta.y()):
+                v = self._drag_base[index]
+            else:
+                x = base_xs[index]
         self._move_handle(index, v)
         moved_xs = list(base_xs)
         moved_xs[index] = x
@@ -658,6 +932,12 @@ class CurveChart(QWidget):
         base = self._drag_base
         if base is None:
             return
+        # CC3-style editing moves one control point; a very long legacy curve
+        # still uses its displayed handle groups to remain practical to edit.
+        if len(base) <= HANDLE_DOT_LIMIT:
+            self._points[:] = base
+            self._points[index] = min(1.0, max(0.0, value))
+            return
         old = base[index]
         if handles is None:
             handles = self._drag_handles if self._drag_handles is not None else self.handle_indices()
@@ -679,11 +959,16 @@ class CurveChart(QWidget):
             self._points[i] = min(1.0, max(0.0, scaled))
 
     def mouseReleaseEvent(self, event):
+        if self._pan_start is not None:
+            self._pan_start = None
+            self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
+            return
         if self._drag_index is not None:
             self._drag_index = None
             self._drag_base = None
             self._drag_x_base = None
             self._drag_handles = None
+            self._drag_press = None
             self._handles = None
             if self._hover_index is None:
                 self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
@@ -692,6 +977,19 @@ class CurveChart(QWidget):
             self.curve_adjusted.emit(values)
 
     # -- adding and removing points -------------------------------------------
+
+    def _addable_value(self, pos):
+        spot = self.value_at(pos)
+        if spot is None:
+            return None
+        x, value = spot
+        rect = self._plot_rect()
+        width, height = self._plot_span(rect)
+        tolerance_x = 2 * (self._view[1] - self._view[0]) / width
+        tolerance_y = 2 * (self._view[3] - self._view[2]) / height
+        if x > 1.0 + tolerance_x or value > 1.0 + tolerance_y:
+            return None  # use numeric editing to expand the profile's domain
+        return min(1.0, x), min(1.0, value)
 
     def add_point(self, pos) -> int | None:
         """Insert a point at ``pos``. Returns its index, or None when it cannot go there.
@@ -703,7 +1001,7 @@ class CurveChart(QWidget):
         """
         if not self._editable or len(self._points) >= MAX_POINTS:
             return None
-        spot = self.value_at(pos)
+        spot = self._addable_value(pos)
         if spot is None:
             return None
         x, value = spot
@@ -712,14 +1010,19 @@ class CurveChart(QWidget):
         index = bisect.bisect_right(xs, x)
         xs.insert(index, x)
         points.insert(index, value)
+        weights = list(self.weights)
+        weights.insert(index, 0.5)
         self._xs = xs
         self.points = points  # the setter drops the cached handles
+        self.weights = weights
         self._hover_index = index
         self.update()
         self.curve_structure_changed.emit("add", index, x)
         values = list(self._points)
         self.curve_geometry_changed.emit(values, self.x_positions())
         self.curve_adjusted.emit(values)
+        self.select_point(index)
+        self.point_selected.emit(index)
         return index
 
     def remove_point(self, index: int | None = None, pos=None) -> bool:
@@ -740,8 +1043,11 @@ class CurveChart(QWidget):
         points = list(self._points)
         del xs[index]
         del points[index]
+        weights = list(self.weights)
+        del weights[index]
         self._xs = xs if len(xs) == len(points) else None
         self.points = points
+        self.weights = weights
         self._hover_index = None
         self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
         self.update()
@@ -749,6 +1055,8 @@ class CurveChart(QWidget):
         values = list(self._points)
         self.curve_geometry_changed.emit(values, self.x_positions())
         self.curve_adjusted.emit(values)
+        self.select_point(None)
+        self.point_selected.emit(-1)
         return True
 
     def build_menu(self, pos) -> QMenu:
@@ -764,7 +1072,7 @@ class CurveChart(QWidget):
             f"QMenu::separator {{ height: 1px; background: {palette['line']}; margin: 4px 8px; }}"
         )
         index = self._point_at(pos)
-        inside = self.value_at(pos) is not None
+        inside = self._addable_value(pos) is not None
 
         add = menu.addAction("Add point here")
         add.setEnabled(self._editable and bool(inside) and len(self._points) < MAX_POINTS)
@@ -773,7 +1081,11 @@ class CurveChart(QWidget):
         remove = menu.addAction("Delete point")
         remove.setEnabled(self._editable and index is not None and len(self._points) > MIN_POINTS)
         remove.setToolTip("Delete the point under the pointer")
-
+        if self._graph_style == "cc4":
+            edit_weight = menu.addAction("Edit point weight…")
+            edit_weight.setEnabled(self._editable and index is not None)
+            edit_weight.setToolTip("Select this control and edit its weight below the graph")
+            edit_weight.triggered.connect(lambda: self.weight_edit_requested.emit(index) if index is not None else None)
         add.triggered.connect(lambda: self.add_point(pos))
         remove.triggered.connect(lambda: self.remove_point(index, pos=pos))
         return menu
@@ -800,7 +1112,7 @@ def _curve_samples(points, count: int = 5) -> list[float]:
             y = pts[-1][1]
         else:
             y = pts[-1][1]
-            for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
+            for (x0, y0), (x1, y1) in zip(pts, pts[1:], strict=False):
                 if x0 <= x <= x1:
                     t = 0.0 if x1 == x0 else (x - x0) / (x1 - x0)
                     y = y0 + t * (y1 - y0)
@@ -829,7 +1141,7 @@ def _lerp_factor(xs: list[float], ys: list[float], x: float) -> float:
         return ys[0]
     if x >= xs[-1]:
         return ys[-1]
-    for (x0, y0), (x1, y1) in zip(zip(xs, ys), zip(xs[1:], ys[1:])):
+    for (x0, y0), (x1, y1) in zip(zip(xs, ys, strict=False), zip(xs[1:], ys[1:], strict=False), strict=False):
         if x0 <= x <= x1:
             return y0 if x1 == x0 else y0 + (x - x0) / (x1 - x0) * (y1 - y0)
     return ys[-1]
@@ -844,7 +1156,7 @@ def _apply_chart_edit(profile, baseline: list[float], edited: list[float], xs=No
     point changes only that point.
     """
     xs = _positions(edited, xs)
-    factors = [(e / b) if b > 1e-6 else 1.0 for e, b in zip(edited, baseline)]
+    factors = [(e / b) if b > 1e-6 else 1.0 for e, b in zip(edited, baseline, strict=False)]
     zero_offsets = [(e - b) if b <= 1e-6 else 0.0 for e, b in zip(edited, baseline, strict=False)]
     chart_gain = max(baseline, default=0.0)
 

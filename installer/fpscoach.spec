@@ -19,10 +19,13 @@ from PyInstaller.utils.hooks import collect_submodules
 
 ROOT = Path(os.getcwd())
 
-# Ship the AI pre-configuration and bundled enemy sprites with the frozen app.
+# Ship the AI pre-configuration and bundled visual assets with the frozen app.
 datas = [
     (str(ROOT / "config" / "ai_profile.toml"), "config"),
     (str(ROOT / "python" / "fps_coach" / "assets" / "enemies"), "fps_coach/assets/enemies"),
+    (str(ROOT / "python" / "fps_coach" / "assets" / "calibration_guide"), "fps_coach/assets/calibration_guide"),
+    (str(ROOT / "python" / "fps_coach" / "assets" / "branding"), "fps_coach/assets/branding"),
+    (str(ROOT / "python" / "fps_coach" / "assets" / "fonts"), "fps_coach/assets/fonts"),
 ]
 
 block_cipher = None
@@ -49,7 +52,7 @@ exe = EXE(
     exclude_binaries=True,
     name="FPSCoach",
     console=False,
-    icon=None,
+    icon=str(ROOT / "python" / "fps_coach" / "assets" / "branding" / "curvecoach.ico"),
 )
 coll = COLLECT(
     exe,

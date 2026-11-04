@@ -124,3 +124,10 @@ def test_listener_and_one_shot_share_one_model(fake_stack) -> None:
     assert heard == ["hello coach"]
     assert ok and text == "hello coach"
     assert len(_FakeModel.constructed) == 1
+
+
+def test_one_shot_reports_when_microphone_stream_is_open(fake_stack) -> None:
+    states = []
+    ok, text, _message = vosk_service.recognize_once(phrase_limit=2.0, on_state=states.append)
+    assert ok and text == "hello coach"
+    assert states == ["listening"]

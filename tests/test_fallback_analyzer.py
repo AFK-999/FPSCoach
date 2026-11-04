@@ -45,7 +45,7 @@ def _add_variable_speed_trial(analyzer: _FallbackAnalyzer, segments: int) -> Non
     assert analyzer.end_trial(100.0, 0.0, 1.0 + (segments + 1) * 0.01)
 
 
-def test_recommendation_points_adapt_to_captured_speed_samples() -> None:
+def test_straight_model_uses_two_points_regardless_of_sample_count() -> None:
     sparse = _FallbackAnalyzer()
     dense = _FallbackAnalyzer()
     _add_variable_speed_trial(sparse, 2)
@@ -58,7 +58,7 @@ def test_recommendation_points_adapt_to_captured_speed_samples() -> None:
 
     assert sparse_recommendation["captured_sample_count"] == 3
     assert dense_recommendation["captured_sample_count"] == 25
-    assert 2 <= len(sparse_points) < len(dense_points) <= 32
+    assert len(sparse_points) == len(dense_points) == 2
     assert sparse_points[0] == (0.0, 0.0)
     assert dense_points[-1] == (1.0, 1.0)
     for points in (sparse_points, dense_points):

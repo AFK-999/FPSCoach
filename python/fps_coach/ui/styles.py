@@ -106,15 +106,18 @@ QToolTip {
 }
 
 /* ---- top navigation ---------------------------------------------------- */
-QFrame#topbar { background: $surface; border-bottom: 1px solid $line; }
-QLabel#brand { font-size: 12px; font-weight: 700; letter-spacing: 2px; color: $text; }
+QFrame#appTitleBar { background: $surface2; border: 1px solid $line; border-radius: 8px; }
+QLabel#windowTitle { color: $text2; font-size: 12px; font-weight: 600; }
+QPushButton#windowControl { padding: 0; border: 0; min-height: 26px; background: transparent; }
+QFrame#topbar { background: $surface; border: 1px solid $line; border-radius: 8px; }
+QLabel#brand { font-family: "Inter", "Segoe UI Variable Text", "Segoe UI", sans-serif; font-size: 12px; font-weight: 700; letter-spacing: 1.6px; color: $text; }
 QScrollArea#navScroll { background: transparent; border: none; }
 QScrollArea#navScroll QScrollBar:horizontal { background: transparent; height: 3px; margin: 0; }
 QScrollArea#navScroll QScrollBar::handle:horizontal { background: $line2; border-radius: 1px; min-width: 40px; }
 QPushButton#navTab {
     background: transparent; color: $text2; border: none;
     border-bottom: 2px solid transparent; border-radius: 0;
-    padding: 0 12px; font-size: 13px; font-weight: 500;
+    padding: 0 10px; font-size: 13px; font-weight: 500;
 }
 QPushButton#navTab:hover { color: $text; }
 QPushButton#navTab:checked { color: $text; border-bottom: 2px solid $accent; font-weight: 600; }
@@ -144,6 +147,10 @@ QFrame#divider { background: $line; border: none; min-height: 1px; max-height: 1
 
 /* ---- type -------------------------------------------------------------- */
 QLabel#eyebrow { color: $accent; font-size: 11px; font-weight: 600; letter-spacing: 1.6px; }
+QLabel#voiceCommandNotice {
+    color: $text; background: $raised; border: 1px solid $line2;
+    border-radius: 8px; padding: 8px 12px; font-weight: 500;
+}
 QLabel#pageTitle { font-size: 26px; font-weight: 600; color: $text; }
 QLabel#pageSubtitle { color: $text2; font-size: 13px; }
 QLabel#cardTitle { font-size: 14px; font-weight: 600; color: $text; }
@@ -189,6 +196,11 @@ QPushButton {
     background: $raised; color: $text; border: 1px solid $line; border-radius: 6px;
     padding: 7px 14px; font-weight: 500; min-height: 18px;
 }
+/* The painted guide launcher owns its border and padding. Keep its fixed
+   height when Qt applies the global QPushButton stylesheet at runtime. */
+QPushButton#guideStart, QPushButton#performanceStart { padding: 0; border: 0; min-height: 42px; }
+QPushButton#performanceDisclosure { padding: 0; border: 0; min-height: 58px; }
+QPushButton#presetTile { padding: 0; border: 0; min-height: 58px; }
 QPushButton:hover { border-color: $text3; }
 QPushButton:pressed { background: $surface2; }
 QPushButton:disabled { color: $text3; background: $surface2; border-color: $line; }
@@ -215,12 +227,37 @@ QPushButton#segment {
 }
 QPushButton#segment:hover { color: $text; }
 QPushButton#segment:checked { background: $raised; color: $text; border-color: $line2; }
+QDialog#calibrationWizard { background: $bg; }
+QFrame#calibrationInputPanel { background: $surface2; border: 1px solid $line2; border-radius: 8px; }
+QFrame#wizardSidebar { background: $surface; border-right: 1px solid $line2; }
+QFrame#wizardSetup { background: $surface2; border: 1px solid $line2; border-radius: 12px; }
+QLabel#wizardBrand { color: $accent; font-size: 17px; font-weight: 800; letter-spacing: 2px; }
+QLabel#wizardNav { color: $text2; padding: 11px 8px; border-radius: 7px; font-size: 12px; }
+QLabel#wizardNav[current="true"] { background: $accent_soft; color: $accent; font-weight: 700; }
+QPushButton#wizardChoice { background: $surface2; border: 1px solid $line2; border-radius: 12px; padding: 0px; }
+QPushButton#wizardChoice:hover { background: $raised; border-color: $text3; }
+QPushButton#wizardChoice:checked { background: $accent_soft; border: 2px solid $accent; }
+QPushButton#wizardChoice:focus { border: 2px solid $accent; }
+QLabel#wizardOptionTitle { color: $text; background: transparent; font-size: 15px; font-weight: 700; }
+QLabel#wizardOptionCaption { color: $accent; background: transparent; font-size: 11px; font-weight: 600; }
+QLabel#wizardOptionBody { color: $text2; background: transparent; font-size: 11px; line-height: 1.3; }
+QLabel#wizardEvidence { color: $text2; background: $surface; border: 1px solid $line; border-radius: 8px; padding: 9px 12px; font-size: 12px; }
+QLabel#wizardError { color: $bad; font-size: 12px; }
 QToolButton#iconButton {
     background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 5px;
 }
 QToolButton#iconButton:hover { background: $raised; border-color: $line; }
 QToolButton#iconButton:checked { background: $accent_soft; border-color: $accent_soft; }
 QToolButton#iconButton:disabled { background: transparent; }
+QToolButton#voiceInputButton {
+    background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 5px;
+}
+QToolButton#voiceInputButton:hover { background: $raised; border-color: $line; }
+QToolButton#voiceInputButton:checked { background: $accent_soft; border-color: $accent; }
+QLabel#voiceInputStatus {
+    background: $surface2; color: $text; border: 1px solid $line2;
+    border-radius: 10px; padding: 6px 11px; font-weight: 600;
+}
 
 /* ---- inputs ------------------------------------------------------------ */
 QLineEdit, QComboBox {
@@ -236,7 +273,7 @@ QComboBox QAbstractItemView {
     background: $surface2; border: 1px solid $line2; padding: 4px; outline: 0;
     selection-background-color: $accent_soft; selection-color: $text;
 }
-QTextEdit#transcript {
+QScrollArea#transcript {
     background: $input; border: 1px solid $line; border-radius: 8px; padding: 12px; color: $text;
 }
 QListWidget#sessionList {

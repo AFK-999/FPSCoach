@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QCursor, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QColorDialog,
@@ -36,21 +36,24 @@ from fps_coach import scenarios as scenario_defs
 from fps_coach.analytics import AnalyticsStore, SessionResult
 from fps_coach.crosshair import PRESETS as CROSSHAIR_PRESETS
 from fps_coach.crosshair import CrosshairConfig, preset_names
+from fps_coach.performance_telemetry import PerformanceTelemetry
 
+from .magnification import ALLOWED_KEYS, BINDINGS, windows_available
+from .preset_tile import PresetTile
 from .styles import STAGE
 from .widgets import (
+    ComboField,
     CrosshairPreview,
-    ValueSlider,
-    _draw_crosshair,
     Segmented,
+    ValueSlider,
     _card,
     _content_page,
+    _draw_crosshair,
     _label,
     _page_header,
     _page_root,
     _settings,
     set_glyph,
-    ComboField,
 )
 
 
@@ -59,6 +62,10 @@ class TrainingCanvas(QWidget):
 
     finished = Signal(str, list, int, int)  # scenario_key, reaction_times_ms, hits, misses
     progress = Signal(int, int)
+    performance_started = Signal()
+    performance_updated = Signal(dict)
+    aim_monitor_updated = Signal(dict)
+    performance_ended = Signal(bool)
 
     KILL_MS = 460  # kill effect length: well under half a second
     SHARDS = 8
@@ -66,6 +73,12 @@ class TrainingCanvas(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self._rng = random.Random()
+        self._performance = PerformanceTelemetry("training")
+        self._aim_monitor_enabled = False
+        self._completed_for_summary = False
+        self._aim_started_partial = False
+        self._aim_last_emit = 0.0
+        self._performance_enabled = False
         self._scenario = None
         self._active = False
         self._visible_target = False
@@ -73,6 +86,11 @@ class TrainingCanvas(QWidget):
         self._radius = 20
         self._vx = self._vy = 0.0
         self._spawn_time = 0.0
+        self._target_generation = 0
+        self._pending_reveal_generation = 0
+        self._reveal_timer = QTimer(self)
+        self._reveal_timer.setSingleShot(True)
+        self._reveal_timer.timeout.connect(self._reveal_delayed_target)
         self._hits = 0
         self._misses = 0
         self._reaction_times: list[float] = []
@@ -100,6 +118,54 @@ class TrainingCanvas(QWidget):
 
         return [pix for pix in target_pixmaps() if not pix.isNull()]
 
+    def set_performance_enabled(self, enabled: bool) -> None:
+        was_collecting = self._performance_enabled or self._aim_monitor_enabled
+        self._performance_enabled = bool(enabled)
+        self._reset_performance_collection(was_collecting)
+
+    def set_aim_monitor_enabled(self, enabled: bool) -> None:
+        # Consent changes start a new observation window, even if the separate
+        # dynamic-curve feature was already collecting ephemeral telemetry.
+        enabled = bool(enabled)
+        if enabled == self._aim_monitor_enabled:
+            return
+        self._aim_monitor_enabled = enabled
+        self._aim_started_partial = bool(enabled and self._active)
+        self._performance.reset()
+        if (self._performance_enabled or enabled) and self._active and self._visible_target:
+            self._begin_performance_target(time.perf_counter())
+
+    def _reset_performance_collection(self, was_collecting: bool) -> None:
+        collecting = self._performance_enabled or self._aim_monitor_enabled
+        if was_collecting == collecting:
+            return
+        self._performance.reset()
+        if collecting and self._active and self._visible_target:
+            self._begin_performance_target(time.perf_counter())
+
+    def _collecting_performance(self) -> bool:
+        return self._performance_enabled or self._aim_monitor_enabled
+
+    def _aim_summary(self) -> dict:
+        summary = self._performance.session_summary()
+        summary["target_radius_px"] = self._radius
+        summary["moving_target"] = bool(self._scenario and self._scenario.moving)
+        summary["target_speed_px_s"] = self._scenario.speed if self._scenario else 0
+        summary["observation_partial"] = self._aim_started_partial
+        return summary
+
+    def _emit_aim_monitor(self, timestamp: float, *, force: bool = False) -> None:
+        if self._aim_monitor_enabled and (force or timestamp - self._aim_last_emit >= .25):
+            self._aim_last_emit = timestamp
+            self.aim_monitor_updated.emit(self._aim_summary())
+
+    def _begin_performance_target(self, timestamp: float) -> None:
+        local = self.mapFromGlobal(QCursor.pos())
+        if self.isVisible() and self.rect().contains(local):
+            self._performance.begin_target(timestamp, local.x(), local.y())
+        else:
+            self._performance.begin_target(timestamp)
+
     def set_animations(self, enabled: bool) -> None:
         self._anim_enabled = bool(enabled)
         if not enabled:
@@ -109,11 +175,15 @@ class TrainingCanvas(QWidget):
 
     def start(self, scenario) -> None:
         self._scenario = scenario
+        self._completed_for_summary = False
+        self._aim_started_partial = False
         self._radius = scenario.target_radius
         self._active = True
         self._hits = 0
         self._misses = 0
         self._reaction_times = []
+        self._performance.reset()
+        self.performance_started.emit()
         self.progress.emit(0, scenario.target_count)
         self._next_target()
         if scenario.moving:
@@ -127,14 +197,20 @@ class TrainingCanvas(QWidget):
         self._active = False
         self._visible_target = False
         self._move_timer.stop()
+        self._reveal_timer.stop()
         if self._hits + self._misses > 0:
             key = self._scenario.key if self._scenario else ""
             self.finished.emit(key, list(self._reaction_times), self._hits, self._misses)
+        self._performance.end_target()
+        self.performance_ended.emit(False)
         self.update()
 
     def _next_target(self) -> None:
         if not self._scenario:
             return
+        self._target_generation += 1
+        generation = self._target_generation
+        self._reveal_timer.stop()
         margin = self._radius + 8
         w = max(margin * 2 + 1, self.width())
         h = max(margin * 2 + 1, self.height())
@@ -152,15 +228,21 @@ class TrainingCanvas(QWidget):
         if delay > 0:
             self._visible_target = False
             self.update()
-            QTimer.singleShot(int(self._rng.uniform(300, delay)), self._reveal_target)
+            self._pending_reveal_generation = generation
+            self._reveal_timer.start(int(self._rng.uniform(300, delay)))
         else:
-            self._reveal_target()
+            self._reveal_target(generation)
 
-    def _reveal_target(self) -> None:
-        if not self._active:
+    def _reveal_delayed_target(self) -> None:
+        self._reveal_target(self._pending_reveal_generation)
+
+    def _reveal_target(self, generation: int | None = None) -> None:
+        if not self._active or (generation is not None and generation != self._target_generation):
             return
         self._visible_target = True
         self._spawn_time = time.perf_counter()
+        if self._collecting_performance():
+            self._begin_performance_target(self._spawn_time)
         self.update()
 
     def _advance(self) -> None:
@@ -179,15 +261,51 @@ class TrainingCanvas(QWidget):
         self._target = QPointF(x, y)
         self.update()
 
+    def _inside(self, point: QPointF) -> bool:
+        return 0 <= point.x() < self.width() and 0 <= point.y() < self.height()
+
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        if self._collecting_performance():
+            self._performance.break_path()
+        super().leaveEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if self._collecting_performance() and self._active and self._visible_target:
+            if self._inside(event.position()):
+                now = time.perf_counter()
+                self._performance.move(event.position().x(), event.position().y(), now)
+                if self._scenario and self._scenario.moving:
+                    self._performance.observe_tracking(event.position().x(), event.position().y(),
+                                                       self._target.x(), self._target.y(), self._radius, now)
+                    self._emit_aim_monitor(now)
+            else:
+                self._performance.break_path()
+        super().mouseMoveEvent(event)
+
     def mousePressEvent(self, event) -> None:  # noqa: ANN001
         if not self._active or event.button() != Qt.MouseButton.LeftButton:
             return super().mousePressEvent(event)
         if not self._visible_target:
             return
+        if not self._inside(event.position()):
+            if self._collecting_performance():
+                self._performance.break_path()
+            return
         dist = math.hypot(event.position().x() - self._target.x(), event.position().y() - self._target.y())
+        now = time.perf_counter()
+        if self._collecting_performance():
+            snapshot = self._performance.click(event.position().x(), event.position().y(),
+                                               self._target.x(), self._target.y(), self._radius, now)
+            if snapshot is not None:
+                self._emit_aim_monitor(now, force=True)
+                snapshot["input_path"] = "desktop"
+                snapshot["target_radius_px"] = self._radius
+                snapshot["scenario"] = self._scenario.key if self._scenario else ""
+                snapshot["moving_target"] = bool(self._scenario and self._scenario.moving)
+                self.performance_updated.emit(snapshot)
         if dist <= self._radius:
             self._hits += 1
-            self._reaction_times.append((time.perf_counter() - self._spawn_time) * 1000.0)
+            self._reaction_times.append((now - self._spawn_time) * 1000.0)
             self._spawn_kill(self._target.x(), self._target.y(), self._radius, self._target_pix)
             done = self._hits >= (self._scenario.target_count if self._scenario else 0)
             self.progress.emit(self._hits, self._scenario.target_count if self._scenario else 0)
@@ -202,8 +320,12 @@ class TrainingCanvas(QWidget):
         self._active = False
         self._visible_target = False
         self._move_timer.stop()
+        self._reveal_timer.stop()
+        self._completed_for_summary = True
         key = self._scenario.key if self._scenario else ""
         self.finished.emit(key, list(self._reaction_times), self._hits, self._misses)
+        self._performance.end_target()
+        self.performance_ended.emit(True)
         self.update()
 
     def _spawn_kill(self, cx: float, cy: float, radius: float, pix: QPixmap | None) -> None:
@@ -527,6 +649,7 @@ class TrainingPage(QWidget):
         side_lay.setContentsMargins(0, 0, 0, 0)
         side_lay.setSpacing(10)
         side_lay.addWidget(self.settings_toggle, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
+        self._dynamic_curve_monitor_layout = side_lay
         side_lay.addWidget(panel, 0, Qt.AlignmentFlag.AlignTop)
         side_lay.addStretch(1)
 
@@ -540,6 +663,7 @@ class TrainingPage(QWidget):
         body.addLayout(left, 1)
         body.addWidget(side, 0, Qt.AlignmentFlag.AlignTop)
         outer.addLayout(body, 1)
+        self._dynamic_curve_layout = outer
 
         self.start_btn.clicked.connect(self._start)
         self.stop_btn.clicked.connect(self._stop)
@@ -611,6 +735,10 @@ class TrainingPage(QWidget):
     def _on_finished(self, key: str, reaction_times: list, hits: int, misses: int) -> None:
         self._set_running(False)
         result = SessionResult.create(key, reaction_times, hits, misses)
+        if self.canvas._aim_monitor_enabled and self.canvas._completed_for_summary:
+            summary = self.canvas._aim_summary()
+            if summary["attempts"]:
+                result.aim_telemetry = summary
         self._store.add(result)
         self.analytics_page.refresh()
         self.result.setText(
@@ -628,13 +756,38 @@ class TrainingPage(QWidget):
         self.analytics_page.setVisible(False)
         self.drill_view.setVisible(True)
 
+class _MagWrapLabel(QLabel):
+    """Keep wrapped magnifier notices tall enough at narrow page widths."""
+
+    def __init__(self, text: str):
+        super().__init__(text)
+        self.setObjectName("cardSubtitle")
+        self.setWordWrap(True)
+
+    def _fit_wrapped_height(self) -> None:
+        if self.width() > 0:
+            height = self.heightForWidth(self.width())
+            if height > 0 and height != self.minimumHeight():
+                self.setMinimumHeight(height)
+                self.updateGeometry()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._fit_wrapped_height()
+
+    def setText(self, text: str) -> None:  # noqa: N802
+        super().setText(text)
+        self._fit_wrapped_height()
+
+
 class CrosshairPage(QWidget):
     """Crosshair designer: presets, live preview, JSON import/export and PNG export.
 
     Stores the original CrosshairConfig schema under "crosshair/config". The
     crosshair is shown in this app and written to files. Activation (off by
     default, stored under "crosshair/overlay_active") also draws it on the primary
-    screen as a click-through overlay. The overlay does not read or attach to any game.
+    screen as a click-through overlay. Optional magnification reads visible desktop
+    pixels but does not attach to a game process.
     """
 
     edited = Signal(dict)
@@ -642,6 +795,9 @@ class CrosshairPage(QWidget):
     config_changed = Signal(object)
     edit_mode_changed = Signal(bool)  # True = edit (drag), False = locked
     position_reset = Signal()
+    magnification_toggled = Signal(bool)
+    magnification_options_changed = Signal(int, float)
+    magnification_binding_changed = Signal()
     SHAPES = ("cross_dot", "cross", "dot", "circle")
 
     def __init__(self, parent=None):
@@ -652,16 +808,19 @@ class CrosshairPage(QWidget):
 
         scroll, outer = _content_page(1240)
         _page_root(self, scroll)
-        outer.addWidget(_page_header(
+        self._crosshair_header = _page_header(
             "Crosshair",
             "Design a crosshair, then export it as a PNG or JSON for your own use.",
             eyebrow="Tools",
-        ))
+        )
+        outer.addWidget(self._crosshair_header)
 
         body = QHBoxLayout()
         body.setSpacing(20)
+        self._crosshair_body = body
 
         preview_card, preview_lay = _card("Preview", "Drawn on a fixed dark stage so contrast is accurate.")
+        self._crosshair_preview_card = preview_card
         self.preview = CrosshairPreview()
         self.preview.setMinimumSize(360, 360)
         self.preview.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -702,9 +861,80 @@ class CrosshairPage(QWidget):
         controls_lay.addWidget(self.position_note)
         self._update_position_text(False)
 
+        # Match Coach's compact icon-over-label preset tiles. This button
+        # discloses settings only; it never starts capture or key monitoring.
+        self.mag_disclosure = PresetTile("scope", "Dynamic\nMagnification")
+        self.mag_disclosure.setAccessibleName("Dynamic Magnification settings")
+        self.mag_disclosure.setAccessibleDescription("Collapsed; activate to expand settings")
+        self.mag_disclosure.setToolTip("Open Dynamic Magnification settings")
+        self.mag_disclosure.setCheckable(True)
+        controls_lay.addWidget(self.mag_disclosure, 0, Qt.AlignmentFlag.AlignLeft)
+        self.mag_panel = QWidget()
+        self.mag_panel.setAccessibleName("Dynamic Magnification controls")
+        mag_lay = QVBoxLayout(self.mag_panel)
+        mag_lay.setContentsMargins(0, 0, 0, 0)
+        mag_lay.setSpacing(8)
+        self.mag_panel.setVisible(False)
+        self.mag_disclosure.toggled.connect(self._set_magnification_panel_expanded)
+        controls_lay.addWidget(self.mag_panel)
+        self.magnification_toggle = QPushButton("Dynamic magnification: Off")
+        self.magnification_toggle.setObjectName("secondary")
+        self.magnification_toggle.setCheckable(True)
+        self.magnification_toggle.setAccessibleName("Toggle dynamic magnification")
+        self.magnification_toggle.toggled.connect(self._on_magnification_toggled)
+        mag_lay.addWidget(self.magnification_toggle)
+        mag_form = QGridLayout()
+        mag_form.setHorizontalSpacing(12)
+        mag_form.setColumnMinimumWidth(0, 112)
+        mag_form.setColumnStretch(1, 1)
+        self.mag_diameter = ValueSlider(80, 600, fmt=lambda value: f"{value} px")
+        self.mag_zoom = ValueSlider(100, 500, fmt=lambda value: f"{value / 100:.2f}×")
+        try:
+            diameter = int(self.s.value("crosshair/magnification_diameter", 240))
+            zoom = int(self.s.value("crosshair/magnification_zoom_pct", 200))
+            binding = int(self.s.value("crosshair/magnification_binding", 0))
+        except (ValueError, TypeError):
+            diameter, zoom, binding = 240, 200, 0
+        self.mag_diameter.setValue(diameter)
+        self.mag_zoom.setValue(zoom)
+        self.mag_diameter.setAccessibleName("Magnification circle diameter in logical pixels")
+        self.mag_zoom.setAccessibleName("Magnification zoom level")
+        mag_form.addWidget(_label("Circle diameter", "formLabel"), 0, 0)
+        mag_form.addWidget(self.mag_diameter, 0, 1)
+        mag_form.addWidget(_label("Zoom", "formLabel"), 1, 0)
+        mag_form.addWidget(self.mag_zoom, 1, 1)
+        self.mag_binding = ComboField()
+        self.mag_binding.setAccessibleName("Magnification toggle key or mouse button")
+        for title, vk in BINDINGS:
+            self.mag_binding.addItem(title, vk)
+        self.mag_binding.setCurrentIndex(self.mag_binding.findData(binding if binding in ALLOWED_KEYS else 0))
+        mag_form.addWidget(_label("Toggle key", "formLabel"), 2, 0)
+        mag_form.addWidget(self.mag_binding, 2, 1)
+        mag_lay.addLayout(mag_form)
+        self.mag_hotkey_arm = QCheckBox("Enable toggle key for this session")
+        self.mag_hotkey_arm.setChecked(False)
+        self.mag_hotkey_arm.setToolTip("Monitors only the selected key while the overlay is on, even when CurveCoach is not focused. The input is not consumed.")
+        mag_lay.addWidget(self.mag_hotkey_arm)
+        self.mag_note = _MagWrapLabel("")
+        mag_lay.addWidget(self.mag_note)
+        self.mag_warning = _MagWrapLabel(
+            "The lens targets 60+ updates per second; actual speed and key response depend on capture, "
+            "rendering and system load. Live capture is local and may include game pixels. Background "
+            "key polling is opt-in; keys still reach other apps and may conflict or miss fast taps. Mouse buttons are physical. "
+            "Protected/fullscreen content may fail; recordings may omit the overlay. If you see recursive "
+            "feedback, turn it off. Check the game and anti-cheat rules before use.")
+        mag_lay.addWidget(self.mag_warning)
+        self.mag_diameter.valueChanged.connect(self._on_mag_options_changed)
+        self.mag_zoom.valueChanged.connect(self._on_mag_options_changed)
+        self.mag_binding.currentIndexChanged.connect(self._on_mag_binding_changed)
+        self.mag_hotkey_arm.toggled.connect(lambda _checked: self.magnification_binding_changed.emit())
+        self._update_mag_availability()
+
         form = QGridLayout()
         form.setHorizontalSpacing(12)
         form.setVerticalSpacing(10)
+        form.setColumnMinimumWidth(0, 112)
+        form.setColumnStretch(1, 1)
 
         form.addWidget(_label("Preset", "formLabel"), 0, 0)
         self.preset = ComboField()
@@ -835,7 +1065,11 @@ class CrosshairPage(QWidget):
     def _on_activation_toggled(self, checked: bool) -> None:
         self.s.setValue("crosshair/overlay_active", bool(checked))
         self._update_activation_text(bool(checked))
+        if not checked and self.magnification_toggle.isChecked():
+            self.magnification_toggle.setChecked(False)
+        self._update_mag_availability()
         self.activation_changed.emit(bool(checked))
+        self.magnification_binding_changed.emit()
 
     def _update_position_text(self, editing: bool) -> None:
         self.edit_position.setText("Lock position" if editing else "Edit position\u2026")
@@ -849,7 +1083,57 @@ class CrosshairPage(QWidget):
 
     def _on_edit_toggled(self, checked: bool) -> None:
         self._update_position_text(bool(checked))
+        if checked and self.magnification_toggle.isChecked():
+            self.magnification_toggle.setChecked(False)
+        self._update_mag_availability()
         self.edit_mode_changed.emit(bool(checked))
+        self.magnification_binding_changed.emit()
+
+    def _set_magnification_panel_expanded(self, expanded: bool) -> None:
+        self.mag_panel.setVisible(expanded)
+        self.mag_disclosure.setToolTip(
+            "Close Dynamic Magnification settings" if expanded else "Open Dynamic Magnification settings")
+        self.mag_disclosure.setAccessibleDescription(
+            "Expanded; activate to collapse settings" if expanded else "Collapsed; activate to expand settings")
+
+    def _update_mag_availability(self) -> None:
+        supported = windows_available()
+        ready = supported and self.activation.isChecked() and not self.edit_position.isChecked()
+        self.magnification_toggle.setEnabled(ready)
+        self.mag_binding.setEnabled(supported)
+        self.mag_hotkey_arm.setEnabled(ready and bool(self.mag_binding.currentData()))
+        if not supported:
+            note = "Requires Windows 10 version 2004 or newer; unavailable on this system."
+        elif self.edit_position.isChecked():
+            note = "Lock the crosshair position to use magnification."
+        elif not self.activation.isChecked():
+            note = "Turn on the crosshair overlay first. Magnification and key monitoring start off each launch."
+        elif self.magnification_toggle.isChecked():
+            note = "Live primary-screen pixels are enlarged locally. Some games or capture paths may be black or stale."
+        else:
+            note = "Off. Enable only where permitted. An armed key is monitored in the background and still reaches other apps."
+        self.mag_note.setText(note)
+
+    def _on_magnification_toggled(self, enabled: bool) -> None:
+        self.magnification_toggle.setText("Dynamic magnification: On" if enabled else "Dynamic magnification: Off")
+        self._update_mag_availability()
+        self.magnification_toggled.emit(enabled)
+
+    def _on_mag_options_changed(self, _value: int) -> None:
+        self.s.setValue("crosshair/magnification_diameter", self.mag_diameter.value())
+        self.s.setValue("crosshair/magnification_zoom_pct", self.mag_zoom.value())
+        self.magnification_options_changed.emit(self.mag_diameter.value(), self.mag_zoom.value() / 100.0)
+
+    def _on_mag_binding_changed(self, _index: int) -> None:
+        self.s.setValue("crosshair/magnification_binding", int(self.mag_binding.currentData() or 0))
+        self._update_mag_availability()
+        self.magnification_binding_changed.emit()
+
+    def set_magnification_error(self, message: str) -> None:
+        self.mag_disclosure.setChecked(True)
+        if self.magnification_toggle.isChecked():
+            self.magnification_toggle.setChecked(False)
+        self.mag_note.setText(message)
 
     def _on_reset_position(self) -> None:
         self.position_reset.emit()
@@ -913,4 +1197,4 @@ class CrosshairPage(QWidget):
         try:
             self.import_json(path)
         except (OSError, ValueError, TypeError) as exc:
-            QMessageBox.warning(self, "Vantage", f"Could not import crosshair: {exc}")
+            QMessageBox.warning(self, "CurveCoach", f"Could not import crosshair: {exc}")
