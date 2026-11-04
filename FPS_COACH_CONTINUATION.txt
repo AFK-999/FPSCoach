@@ -1,15 +1,1457 @@
 ================================================================================
 FPS COACH — CONTINUATION / HANDOFF DOCUMENT
 Copy-paste this whole file into a new agent chat to resume with zero context loss.
-Last updated: 2026-10-23 (rev 73)  (update after EVERY response)
+Last updated: 2026-11-01 (rev 149)  (update after EVERY response)
 
-*** IMPORTANT (rev4): The REAL repo was provided and differs a lot from the
-*** earlier scaffold. Work on the REAL repo at /home/user/workspace/FPSCoach
-*** (cloned from https://github.com/AFK-999/FPSCoach.git). The scaffold under
-*** /home/user/workspace/{src,config,installer,scripts} is NOT the project.
-*** Real layout: python/fps_coach/ (ai_chat.py uses STDLIB urllib, not requests),
-*** native/ C++ core + CMakeLists.txt, batch files at repo root, scripts/*.ps1.
-*** There is NO config/ai_profile.toml, NO installer/ folder, NO build.bat yet.
+  2026-11-01 (rev149)  RESPONSIVE DYNAMIC MAGNIFICATION TARGETS.
+              - Target capture now uses a 16 ms precise Qt timer (62.5 Hz);
+                activation captures the first frame immediately, and the lens
+                clipping path is reused until geometry changes.
+              - Explicitly armed key polling establishes its initial state on
+                arming, then requests a 5 ms precise timer. A key held on arm
+                must be released before triggering; input is never consumed.
+              - Same Qt GUI thread still performs capture, painting and polling.
+                Actual frame rate and response depend on platform, load, desktop
+                capture and compositor; 60 FPS and instant response are not
+                guaranteed. Higher cadence may increase CPU/GPU use. Windows,
+                game, protected-content and anti-cheat behavior require testing.
+              - Regression runs: 1,182 passed, 5 skipped across 107 files
+                including five environment-affected files rerun after installing
+                pytest-qt and OpenCV and using pytest 8; 14 Qt processes exited
+                abnormally after passing summaries, no remaining test failures.
+                Focused magnifier suite passed 55 tests with a post-summary Qt
+                teardown crash. Scoped Ruff and Linux wheel build passed.
+
+  2026-11-01 (rev148)  NUMBERED CROSSHAIR APPLICATION GUIDE.
+              - Reformatted Crosshair help to match the existing numbered guide
+                cards: section 06 followed by subsections 06.1 to 06.5.
+              - Kept all existing explanatory text, cautions and the Open
+                Crosshair action; the Calibration Guide remains unchanged.
+              - Verified light/dark badge structure and a minimum-size window;
+                no changes to overlay, capture, or magnifier behavior. Isolated
+                suite: 1,177 passed, 5 skipped across 106 files; 12 Qt processes
+                exited after passing summaries at teardown, with no other
+                failures. Scoped Ruff and Linux wheel passed.
+
+  2026-11-01 (rev147)  CROSSHAIR GUIDANCE MOVED TO APPLICATION GUIDE.
+              - Removed the Crosshair section and all page reparenting from
+                the Calibration Guide. Five skippable questions now lead
+                directly to review; guide voice navigation cannot finish it.
+              - Main Guide has a dedicated structured Crosshair feature guide
+                explaining design, overlay/position, import/export, Dynamic
+                Magnification and game-rule cautions. Open Crosshair navigates
+                to the existing page without activating any features.
+              - Updated privacy and architecture docs and regression coverage.
+                Isolated suite: 1,175 passed, 5 skipped across 105 files;
+                13 Qt processes exited after passing summaries during teardown,
+                no other failures. Scoped Ruff, compile and Linux wheel passed.
+                Windows overlay/magnification require real-device verification.
+                Historic rev146 entry below is superseded.
+
+  2026-10-30 (rev146)  SIXTH CALIBRATION GUIDE SECTION: CROSSHAIR.
+              - Kept all five skippable questions and the final review. Added
+                Crosshair as the sixth section using the actual application
+                page and its live overlay, magnification, presets and settings;
+                no disconnected second model or automatic activation.
+              - Temporarily reparent the existing page into the guide and
+                restore it to its main-stack index on Back, Next, Skip,
+                Accept, Reject, close and main-window shutdown. Fit it into
+                the guide with a smaller preview and scroll; restore its normal
+                layout afterwards. Standalone guide displays a safe fallback.
+              - Crosshair edits take effect immediately; preferences persist,
+                while edit mode, magnification and key arm are session-only.
+                Cancel only discards guide answers, as disclosed. Voice next/skip supports
+                the new section but cannot finish review. Game rules may
+                restrict overlay and magnification.
+              - Isolated suite: 1,178 passed / 5 skipped across 104 files;
+                14 Qt processes exited after their pass summaries during
+                teardown, zero other failures. Seven focused crosshair-guide
+                tests, scoped Ruff, compile and Linux CPython wheel passed.
+                Windows overlay/magnifier and real game rules were not tested.
+
+  2026-10-30 (rev145)  PRIVACY POLICY + FAIR-PLAY REVIEW.
+              - Audited source and current official Riot, Epic, FACEIT,
+                BattlEye and EA policies. No app-side game-memory reading,
+                injection, aim/recoil automation or game setting modification
+                was found in the inspected source; window enumeration does use
+                limited process-query rights at startup/refresh. No publisher
+                approval or ban-free result is claimed. Crosshair activation
+                persists; magnification and live vision are higher concern in
+                matches. Close CurveCoach before protected play and obtain
+                operator permission for intended use. See docs/FAIR_PLAY_REVIEW.md.
+              - Updated in-app and docs privacy to reflect saved preferences,
+                persistent preview, scratch files after failures, remote/loopback
+                forwarding, provider retention, last-clip filmstrip, AI prompts
+                not enforcing model behavior, and actual window enumeration.
+                Source archive intentionally retains old calibration history,
+                backups and patches: inspect/sanitize before public sharing.
+              - Fixed Look now starting continuous Live vision: it now makes at
+                most one image-bearing inference call when not already watching;
+                no automatic retry, request already in flight cannot be recalled.
+                Replaced misleading local-server notice. History clear reports
+                disk write failures instead of falsely claiming saved data cleared.
+              - Split suite: 1,171 passed / 5 skipped across 103 test files;
+                12 Qt processes exited after pass summaries during teardown,
+                zero other failures. New privacy and vision tests, scoped Ruff,
+                compile and Linux wheel passed. Windows, anti-cheat clients,
+                actual publisher approval and actual Ollama were not tested.
+
+  2026-10-30 (rev144)  ADAPTIVE CALIBRATION + PERSONALIZED WARM-UP.
+              - User chose opt-in moving targets, not spawn pacing. A local
+                deterministic controller tracks the last eight visible-target
+                clicks and adjusts radius and moving speed gradually after
+                at least three observations; it remains off by default.
+                Timer pauses off-task; settings stay locked during the run.
+              - Native and Python analyzers now accept the actual target center
+                at click time. Path metrics project against the final center,
+                not the full target trajectory; do not compare directly to
+                static runs. A stale native module disables adaptive mode.
+              - AI Coach explicitly requests a local-model daily warm-up using
+                grouped saved Training misses, never raw paths; validated known
+                drills/durations are displayed, not started automatically.
+                Missing misses/model is reported; no heuristic AI fallback.
+              - Both input paths hold arena geometry stable during active runs.
+                Per-attempt optional telemetry carries the target radius and
+                adaptive speed at click time. The guide and dynamic-curve prompts
+                label adaptive scores correctly. Warm-up rejects stale history,
+                invalid output and remote model metadata; cloud must be disabled
+                in Ollama for offline operation.
+              - Split suite: 1,163 passed / 5 skipped across 102 files; 16 Qt
+                processes exited after pass summaries during teardown, no other
+                failures. Nine focused tests and native C++ analyzer test passed;
+                scoped Ruff, compile and Linux wheel passed; dark offscreen UI
+                inspected. Actual Windows hardware and real Ollama not tested.
+
+  2026-10-30 (rev143)  OPT-IN AIM TELEMETRY + PLAYSTYLE AI.
+              - AI Coach has a session-only off-at-launch switch for saving
+                per-completed-Training-drill aggregate click precision and
+                moving-target pointer-event tracking summaries in the existing
+                training history. No raw pointer paths are saved. Mid-drill
+                enablement is marked partial; incomplete drills keep only old
+                basic analytics. Tracking is event-weighted, not time-on-target.
+              - analyze_aim_telemetry computes observed values and differences
+                from the user's existing accuracy/click-time goals. Choose a
+                playstyle and explicitly Analyze sessions to send sanitized
+                summaries from up to 30 sessions to checked loopback Ollama.
+                recommend_sensitivity_profile validates local AI anchors and
+                previews relative gains; no heuristic fallback, automatic input
+                changes or optimality claim. Confirmation sends to Calibration.
+              - Requests invalidate on changed history, playstyle, goals or
+                calibration; clear training history stops monitoring and removes
+                summaries. In-flight local requests cannot be recalled. Disable
+                Ollama cloud to avoid possible service-side forwarding.
+              - Split suite: 1,154 passed / 5 skipped across 101 files; 15 Qt
+                teardown segfaults after pass summaries, no other failures.
+                Eight new tests include actual UI signal flow, persisted summary,
+                stale result rejection and mocked local-model validation. Scoped
+                Ruff, Python compile and Linux wheel build passed. No real Ollama
+                model or Windows hardware was tested in this environment.
+
+  2026-10-30 (rev142)  CURVE ZOOM AND TRUE ENDPOINTS.
+              - User chose zoom both axes while retaining full vertical curve
+                fit. Scroll scales smoothly in 10% notch steps and accepts
+                fractional/touchpad deltas; x stays pointer-anchored, y keeps
+                the lower edge stable and fits both current and previous data.
+                Explicit pan still works; next vertical zoom refits cropped data.
+              - Shared CC3/CC4 line previews now stop at their own final
+                controls and the fill ends there too; panning/zooming beyond
+                the domain no longer adds a synthetic flat upper-speed tail.
+                CC3 aligned dots, CC4 weights, metadata, export and explicit
+                numeric edits stay intact; this is not driver-math verification.
+              - Split suite: 1,146 passed / 5 skipped across 100 files; 13 Qt
+                teardown segfaults after pass summaries and no other failures.
+                Focused graph regressions (46 assertions/tests), scoped Ruff,
+                Python compile, Linux wheel and offscreen graph inspection passed.
+
+  2026-10-30 (rev141)  MAGNIFICATION SCOPE BUTTON.
+              - Replaced the full-width Dynamic Magnification disclosure bar
+                with a compact scope-icon tile labeled Dynamic Magnification.
+                It shares the exact PresetTile renderer, sizing, font and gold
+                button surface used by the AI Coach preset controls.
+              - User chose disclosure behavior: clicking opens/closes the
+                existing inline on/off, diameter, zoom, binding and session-arm
+                settings, without toggling capture or changing the binding.
+                It remains keyboard-accessible and error messages still open it.
+                The armed key toggles the effect even with the panel closed.
+                Capture privacy, safety, off-at-launch and overlay behavior are
+                unchanged. Mocked Windows/key tests are not Windows validation.
+              - Final split suite: 1,138 passed / 5 skipped across 99 files;
+                14 Qt teardown segfaults after pass summaries, no other failures.
+                Scoped Ruff, Python compile, Linux wheel build and dark/light
+                offscreen tile/layout inspection passed.
+
+  2026-10-30 (rev140)  RAW CALIBRATION TARGET RETRY + POINT SETTINGS.
+              - Native and Python analyzers now accept one real observed segment
+                (a raw movement packet or observed endpoint), so coalesced input
+                can complete all targets without inventing intermediate samples.
+                Sparse traces cannot resolve unseen corrections; confidence is
+                heuristically reduced and UI/recommendation warns. Segment speed
+                includes time from target appearance to the observed movement.
+              - A rejected-hit deadlock restarted the same target at the hit point,
+                leaving direct distance nearly zero and causing repeated rejection.
+                An unusable trial instead starts a new reachable target; the 12
+                accepted targets and eight-target rolling window remain unchanged.
+                Target generation respects arena bounds with a farthest fallback.
+              - The Sensitivity curve now has a collapsed-by-default settings icon
+                containing point, velocity, sensitivity, CC4 weight, Apply and
+                error controls. Right-click weight editing and validation expand
+                it; the panel is locked during active calibration. Existing drag,
+                undo, export, graph style and CC3 alignment behavior remain.
+              - Injected native-packet tests exercise all 12 targets, single-packet
+                completion, unusable-trial retry, releases and rolling window.
+                They do not validate real Windows raw input, DPI or hardware;
+                foreground, single-device, clipping and lost-focus policies remain.
+              - Final split suite: 1,135 passed / 5 skipped across 98 files;
+                14 Qt teardown segfaults after pass summaries, no other failures.
+                Eight new injected tests passed their assertions. Native C++
+                analyzer tests, scoped Ruff, compile and Linux wheel passed.
+                Expanded/collapsed Sensitivity UI was inspected offscreen.
+
+  2026-10-30 (rev139)  MAGNIFIER ERROR 8 AND SETTINGS BAR.
+              - Windows error 8 can occur when applying display affinity to a
+                layered Qt overlay. On that error only, retry on the same HWND
+                with WS_EX_LAYERED temporarily cleared, restore every style bit,
+                repaint and verify affinity before capture. Fail visibly if any
+                stage fails. Other errors do not alter the native style.
+              - The overlay stores the verified HWND and stops before grabbing
+                again if the native window is replaced. The center remains fixed,
+                even during lens resize; locked overlay stays click-through.
+              - A collapsed-by-default inline Dynamic Magnification bar reveals
+                its controls without toggling capture or key monitoring. Errors
+                expand it. Crosshair and magnifier grids share column alignment;
+                responsive wrapped notices prevent clipping at narrower widths.
+              - Injected Win32/Qt tests cover retry/restore/verification failures,
+                unchanged HWND, lens spawn/center, hidden errors, responsive text
+                and aligned controls. Actual Windows compositor, layered rendering,
+                DPI, protected games and anti-cheat remain untested; API success
+                cannot guarantee every capture path excludes the overlay.
+              - Split tests plus rerun: 1,127 passed / 5 skipped over 97 files;
+                the first run had 15 recording-test failures with mss missing;
+                after installing mss, all 20 recording tests passed. Twelve Qt
+                test processes segfaulted during teardown after pass summaries.
+                Final 11 new tests and prior overlay tests passed their assertions;
+                some again crashed at teardown. Scoped Ruff, compile, Linux wheel,
+                and light/dark narrow/expanded offscreen layout checks passed.
+
+  2026-10-30 (rev138)  OPT-IN DESKTOP DYNAMIC MAGNIFICATION.
+              - User explicitly chose desktop pixels and a background toggle,
+                superseding earlier no-game-frame/background-input statements
+                for this feature. Crosshair offers an adjustable circular lens
+                and a separately armed, non-consuming single keyboard/physical
+                mouse-key poll. Magnification and arming start off each launch.
+              - Windows 10 2004+; overlay capture exclusion must be set and
+                verified before capture, but API acceptance is not a guarantee
+                for every capture path. Screenshots/recordings may omit overlay.
+                Capture stops on disable, hide or edit; no frame file/upload.
+                Check game/anti-cheat rules; protected/fullscreen content may
+                fail. Actual Windows, DPI and game compatibility remain untested.
+              - 16 injected magnifier tests cover edge/fractional/high-DPI capture,
+                circle clipping, verified exclusion and failures, polling and
+                preferences/lifecycle. Final split suite: 1,116 passed / 5 skipped
+                across 96 files; 13 Qt teardown segfaults after pass summaries,
+                no other failures. Scoped Ruff, compile and Linux wheel passed.
+                Crosshair UI was inspected offscreen. Actual Windows compositor,
+                fullscreen, anti-cheat, click-through and high-DPI need testing.
+
+  2026-10-30 (rev137)  SWITCHABLE GRAPH EDITING STYLES.
+              - User chose to retain Calibration's aligned CC3 points rather
+                than display off-curve unweighted B-spline handles. Calibration
+                graph-style selector persists CC3/CC4 choice and synchronizes
+                Recommendation, Training and Coach previews; selecting a style
+                never changes curve data, history, AI proposals or confirmation.
+              - CC4 renders a rational weighted B-spline approximation with each
+                curve's own weights; dots may be off the line, and the UI says
+                approximate. Knots, weight mapping, slopes, corner flags and
+                actual CC4 driver behavior are not verified. Stored zero weight
+                uses a small 1e-4 preview floor; two points do not show a weight
+                effect. No guaranteed flick/micro-aim outcome is claimed.
+              - CC4 Calibration point editor adds a finite 0–1 weight field;
+                right-click can select and focus the field. Atomic Apply/Enter
+                preserves metadata, supports undo/redo and links only identical
+                vertical data. Low/high speeds relate to micro/flick adjustments;
+                independent vertical data stays untouched. Active calibration
+                locks the selector and edits; proposal charts stay read-only.
+              - Export defaults to .cc4 in CC4 mode, .ccurve in CC3 mode. A
+                confirmation prevents accidental loss of weights/CC4 settings on
+                CC3 export and warns when CC3 legacy settings may not transfer to
+                CC4. Switching style alone preserves all settings and weights.
+              - Split suite reported 1,100 passed / 5 skipped across 95 files;
+                85 processes exited cleanly, ten crashed during Qt teardown
+                after reporting passes. The new 12-test style/weight suite passed
+                clean. Dark/light/narrow UI was inspected; changed files passed
+                Ruff/diff-check and a Linux wheel built. No real Windows/CC3/CC4
+                runtime or installer validation was performed.
+
+  2026-10-30 (rev136)  CALIBRATION PLOT ALIGNMENT.
+              - The Calibration preview interpolates through every stored
+                horizontal profile point, displays every dot, and uses the
+                identical transform for line endpoints and dot centers. It is
+                shape-preserving cubic Hermite, with vertical lines for repeated
+                speed values. Generated model anchors are not raw mouse samples.
+                Large curves retain grouped mouse-drag behavior; the selector
+                provides access where dots overlap.
+              - Fixed QRect inclusive-edge off-by-one inconsistencies among
+                grid/ticks, line, dots, dragging and mouse coordinate mapping.
+                Overlay normalization now uses exactly the same shared maxima
+                as chart axes, correcting distorted zero-speed/tiny-gain cases.
+              - Calibration is labeled "Interpolated · not CC3": its line is
+                NOT a verified CC3/CC4 driver curve. Other previews still show
+                CC3-style approximate B-splines, so shapes may differ even with
+                identical saved points. No profile data is changed by plotting;
+                export warnings explicitly ask the user to review the result.
+              - Split suite reported 1,087 passed / 5 skipped across 94 files;
+                87 clean exits and seven segfaults after passing during Qt
+                teardown. Nine alignment tests passed clean after the final
+                mouse-drag regression was added. Focused axes/overlay tests,
+                Ruff on changed files, diff-check and isolated Linux wheel build
+                passed. Real Windows/CC3 driver and installer were not tested.
+
+  2026-10-30 (rev135)  AXIS NAVIGATION AND NUMERICAL CURVE EDITING.
+              - Shared graph: wheel zoom on plot or an individual axis strip;
+                drag blank plot or an axis strip to pan, middle-click to reset.
+                Viewport can exceed current data; nonnegative bounded view and
+                clipped, approximate flat tails do not mutate the profile.
+              - Calibration has a point selector and exact velocity/gain fields.
+                A plot click synchronizes the selection; every stored point is
+                selectable, including on large grouped-handle curves. Apply or
+                Enter validates finite, ordered nonnegative input. New speed is
+                limited to 1e9, gain to 20; larger imported values can be kept or
+                reduced. Errors are inline; undo/redo and explicit export work.
+                Equal vertical data follows the edit; independent vertical data,
+                weights, corner flags, CC3 tail and unrelated points are preserved.
+                The numeric editor and dragging lock during active calibration;
+                proposal/monitor graphs remain read-only and confirmation-gated.
+              - Float serialization preserves the stored value without exponent
+                notation (not a guarantee of CC3/CC4 application precision).
+                Common overlay scales remain correct, including expanded maxima.
+                CC3 graph shape remains approximate; generated 0–100 velocity is
+                normalized, not measured counts/ms. Windows/CC3 runtime untested.
+              - Split regression suite reported 1,079 passed / 5 skipped across
+                93 files; 85 processes exited cleanly, eight segfaulted after
+                their passing summaries during Qt teardown. Follow-up 54 focused
+                tests passed clean after final selection/navigation refinements;
+                domain/history reruns passed then crashed at teardown. Changed
+                files passed Ruff and diff-check; an isolated Linux wheel built.
+
+  2026-10-30 (rev134)  CC3 GRAPH REFERENCE (SUPERSEDES rev133).
+              - User corrected reference to Custom Curve 3. All sensitivity
+                previews use unweighted, open clamped B-splines, dashed control
+                polygons and approximate flat end extensions. Control points
+                need not lie on the line. This is a labeled approximation, not
+                validated CC3 driver math; corner flags/settings are preserved
+                but not evaluated. No CC4 per-point weight UI remains.
+              - CC4 profile weights remain preserved but don't influence CC3
+                previews. `.ccurve` is the default export, `.cc4` remains an
+                option with a warning that its rendering differs. CC3 files
+                with optional extra settings rows retain those rows on export.
+                CC4-to-CC3 loses CC4-only settings and warns. Normalized speed
+                is not measured counts/ms; review scale in Custom Curve.
+              - A public CC3-era screenshot and profile were used only for a
+                qualitative visual check; an actual Windows CC3 installation,
+                exact interpolation and frozen installer are unverified.
+              - Split suite: 1,071 passed / 5 skipped across 92 files;
+                83 clean, eight post-pass Qt segfaults and one post-pass Qt
+                timeout; retry of the timed-out file passed then segfaulted.
+
+  2026-10-30 (rev133)  CC4-INSPIRED GRAPH PRINCIPLES (SUPERSEDED BY rev134).
+              - User chose Custom Curve 4 as the reference. Shared sensitivity
+                charts now draw weighted, rational clamped B-spline previews;
+                the implementation is an approximation, not verified CC4
+                interpolation/driver behavior. Dots are control points rather
+                than necessarily points on the line. Current and previous curves
+                carry their own stored weights on every chart.
+              - Right-click a Calibration point to edit weight; weights roundtrip
+                through CC4 and support undo/redo. Typical point drags change just
+                the chosen point; Ctrl restricts the drag axis. Wheel zooms, blank
+                space drag pans, middle-click resets. Long curves retain grouped
+                handles. No live driver meters, full CC4 slope/vertical editing,
+                exact normalization, or verified CC4 behavior is claimed.
+              - Stored generated velocities remain normalized, not raw counts/ms;
+                exports require review/scaling in Custom Curve. A split suite
+                reported 1,061 passed / 5 skipped across 91 files (82 clean,
+                nine post-pass Qt teardown crashes); four later focused tests
+                were added. Final focused run: 61 passed, followed by Qt teardown
+                crash; the new 9-test file was also rerun separately.
+                Native Windows, actual CC4 comparisons and frozen installer
+                remain unverified.
+
+  2026-10-30 (rev132)  NUMERICAL VELOCITY / SENSITIVITY AXES.
+              - Added labeled numeric input-velocity and sensitivity-multiplier
+                axes to all shared charts, including square dynamic monitors.
+                Tick labels use up to six significant digits; hovering a visible
+                point reports up to twelve. Before/after overlays share scales.
+              - Generated recommendations are converted to exported gain profiles
+                before drawing rather than mistaking output speed for sensitivity.
+                Imported profiles use stored profile velocity units; generated x is
+                normalized, not counts/ms or physical speed. Recommendation shows
+                an adjusted imported profile when relevant. Chart edits reconcile
+                with clamped profile values; undo/cancel restore axis metadata.
+              - The 0.005 model anchor tolerance applies to the pre-conversion
+                output-speed model, not the gain graph. Lines are linear; other
+                apps' smoothing/normalization may differ. (Linear drawing was
+                replaced by an approximate weighted spline in rev133.) Split full suite before
+                the final tooltip wording adjustment: 1,056 passed / 5 skipped;
+                82 clean exits and eight post-pass Qt teardown crashes. Afterwards
+                the changed domain tests passed (16, then teardown crash). Native
+                Windows behavior and the frozen installer remain unverified.
+
+  2026-10-30 (rev131)  RECOMMENDATION ACTION PLACEMENT + BOT CONTROL.
+              - Anchored Generate recommendation at the bottom of the left
+                recommendation summary, including the “Add control through the
+                middle of the curve” result. The page can scroll in short windows.
+              - Replaced the wide labeled dynamic-curve launcher with a 42×42
+                icon-only gold/graphite bot button, retaining the accessible name,
+                tooltip, keyboard behavior, reversible flip and shared engine.
+              - Dark/light screenshots and 10 new placement, behavior and pixel
+                tests pass. Split full suite: 1,048 passed / 5 skipped; 79
+                processes exited cleanly, ten crashed at Qt teardown after passing.
+                Ruff, diff check and isolated Linux wheel build passed. Windows
+                native behavior and the frozen installer remain unverified.
+
+  2026-10-30 (rev130)  THEMED GUIDE CHROME + RECOMMENDATION FLIP.
+              - The Dashboard Start guide follows the current theme and has a
+                rounded 14px window region, inset rounded title bar, draggable and
+                resizable frameless shell, and compact right-aligned close control.
+                Close rejects uncommitted answers; existing guide workflows remain.
+              - Removed the dynamic performance panel from AI Coach; Recommendation
+                has a Dashboard Start-styled bot button and a reversible 380ms
+                Suggested curve / Dynamic Performance Curve card flip. Animation is
+                omitted in Performance mode or when animations are off. Switching
+                does not enable analysis or apply proposals; Training shares the
+                engine, square graph, goals and explicit confirmation as before.
+              - Tested guide themes and close, flip midpoint/reverse and motion
+                preference, shared controls, square plots and preview-only behavior.
+                Full split suite before the last pointer-handler correction: 1,037
+                passed / 5 skipped, 78 clean exits and ten post-pass Qt teardown
+                crashes. Afterwards, 102 guide/navigation tests passed cleanly,
+                including 9 new rev130 tests. Ruff and Linux wheel build passed.
+                Native Windows window masks and frozen installer need verification.
+
+  2026-10-30 (rev129)  ROUNDED NAVIGATION FRAME.
+              - Gave the navigation bar an 8px rounded, theme-adaptive border to
+                match the title strip and inset it with 3px separation below.
+              - Retained all tab and utility actions, minimum-width visibility,
+                active-tab underline, scroll behavior, shortcuts and full-screen.
+                Tabs/viewport are inset 3px vertically to keep their underline
+                within the frame. Dark/light screenshots and 30 focused tests pass.
+              - Split full suite: 1,029 passed / 5 skipped; 78 processes exited
+                cleanly, nine crashed at Qt teardown after passing. Ruff, diff check
+                and isolated Linux wheel build passed. Native Windows chrome and
+                frozen installer still require verification on Windows.
+
+  2026-10-30 (rev128)  ROUNDED TITLE STRIP, STARTUP FLOW, INTER WORDMARK.
+              - Rounded the inset title strip with matching theme-aware 8px corners
+                and a 3px separation from navigation; retained right-hand controls,
+                drag/resize/full-screen behavior and the existing outer window mask.
+              - Added a one-shot, 2.6s decorative flowing multicolour ribbon startup
+                animation, triggered by app entry after show, fading in/out, input
+                transparent and not delaying UI. Obeys ui/animations and Performance
+                mode, never replays on hide/restore, and stops on disable/close/hide.
+                Simulated raw-capture test confirms no arena resize or interruption.
+              - Bundled Inter variable font with its SIL OFL license, registered for
+                navigation wordmark with safe system fallback; included in PyInstaller.
+                Dark/light screenshots checked, and 11 new tests passed exit 0.
+                Split full suite: 1,024 passed / 5 skipped; 78 processes exited
+                cleanly, eight crashed at Qt teardown after passing. Ruff, diff check
+                and isolated Linux wheel build passed; wheel includes font and license.
+                Verify actual window corners, controls and frozen build on Windows.
+
+  2026-10-30 (rev127)  ROUNDED WINDOW, RIGHT CONTROLS, REFINED ICON.
+              - Added 14px rounded window-region masks, recomputed on show, resize,
+                and window-state changes. Windowed and maximized are rounded, while
+                full screen clears the mask; restoration reapplies it. Kept 6px edge
+                resizing, click/keyboard access, window-menu and raw safety behavior.
+                The offscreen Qt plugin does not render masks: QRegion state was tested,
+                but actual corner rendering still needs real Windows verification.
+              - Relocated compact minimize / full-screen / close controls to the right
+                and retained actions, focus, labels and colors. Refined bot-and-curve
+                mark with shading, smoother curve and more expressive face; regenerated
+                the vector SVG and multi-resolution Windows ICO, keeping app icon wiring.
+              - Dark/light control layout and vector logo inspected; 14 focused tests
+                passed exit 0 (including legacy chrome). Full split suite reported
+                1,013 passed and 5 skipped in 85 summaries, with 75 clean exits and
+                ten Qt teardown crashes after passing (nine -11, one -7). Ruff,
+                diff-check and Linux wheel passed. No real Windows/device/Ollama or
+                window-manager mask/snap testing and no push.
+
+  2026-10-30 (rev126)  CURVECOACH THEME-AWARE CHROME AND NEW LOGO.
+              - User chose full visible-interface rename from Vantage to CurveCoach;
+                existing QSettings app/organization identity, file paths and executable
+                identifiers are unchanged so user preferences/data remain compatible.
+                Volume guidance notes the mixer may still show FPSCoach.
+              - New original bot-over-curve vector logo in app navigation and window
+                icon, plus SVG and multi-resolution ICO assets; PyInstaller bundles
+                them and sets the executable icon. No external asset dependency.
+              - Palette-aware custom Qt title strip with accessible, compact red/yellow/
+                green close/minimize/full-screen controls, F11, Alt+Space menu, Alt+F4,
+                drag/double-click, edge resizing, and prior-state fullscreen restoration.
+                Native system move/resize is requested when available; pointer fallback
+                exists. Existing raw-capture pause on geometry changes remains in effect.
+                Native OS snap layouts/features cannot be promised for frameless windows;
+                real Windows behavior remains unverified. System theme changes update UI.
+              - New 10 tests passed exit 0 including geometry fallback, accessible
+                controls, theme switching, raw safety pause, menu and SVG/icon presence.
+                Related UI/raw/Coach tests passed separately (7, 17 and 10). Dark/light
+                UI and logo screenshots inspected. Full suite split by file reported
+                1008 passed, 5 skipped across 84 files; 74 clean exits, ten -11 Qt
+                teardown crashes after passing. This run predated the last raw-safety
+                test and a few final menu/branding edits; 96 related checks and all ten
+                new tests passed afterwards. The earlier combined focused run hung after
+                52 tests and was stopped, while its split files passed. Ruff/diff-check
+                and Linux wheel passed, including bundled SVG/ICO. Real Windows/device/
+                Ollama testing, native snap support and Windows build were not verified;
+                no push.
+
+  2026-10-29 (rev125)  ICON-ONLY COACH DISCLOSURE AND CALIBRATION ICON SWAP.
+              - Removed all drawn text and ancillary marks from the compact Coach
+                performance button, leaving the centered bot icon and its gold surface.
+                Its eyes change color when analysis is on; the accessible name, tooltip,
+                keyboard operation and expanded/analysis descriptions remain. The title
+                Dynamic Performance Curve is now inside the panel revealed on activation.
+                Expanding/collapsing still never enables or disables collection.
+              - Swapped only Calibration button glyphs: Import down-arrow, Export
+                up-arrow; labels, open/save file dialogs and curve operations unchanged.
+                Added theme/size/keyboard, pixel icon-only and real file roundtrip tests.
+                10 new tests and 22 related tests passed (separately, exit 0). Dark and
+                light screenshots of Coach collapsed/expanded and Calibration checked.
+                Full suite split by file: 999 passed, 5 skipped in 83 summaries; 73
+                clean exits, ten Qt teardown crashes (-11) after passing. Ruff,
+                diff-check and Linux wheel passed. No real Windows/device/Ollama
+                verification or push.
+
+  2026-10-29 (rev124)  LARGER COACH BUTTON LABELS (DISCLOSURE TEXT MOVED IN REV125).
+              - Slightly enlarged all three Coach controls together from 140x42 to
+                150x58 and their two-line text from 7pt to 8.5pt. Increased icon
+                detail to use the extra room. They retain their Start-style shared
+                gold/graphite painter, shape and colors, distinct icons and behavior;
+                Dashboard Start itself remains 140x42 and was not changed.
+              - New font-metric checks confirm complete labels fit in both themes.
+                Prior disclosure, square chart, preset confirmation and Dashboard
+                regressions pass (41 focused tests exit 0; 2 new label-metric tests
+                exit 0). Dark/light screenshots inspected. Full suite split by file:
+                989 passed and 5 skipped in 82 summaries; 71 clean exits and 11 Qt
+                teardown crashes (-11) after passing. Ruff, diff-check and Linux wheel
+                passed. No real Windows/device/Ollama verification or push.
+
+  2026-10-29 (rev123)  MATCH COACH CONTROLS TO DASHBOARD START (SIZE ENLARGED IN REV124).
+              - All three Coach controls now use Dashboard Start's exact 140x42
+                widget size, 4px inset, shape, gold/graphite gradients, border,
+                glint, focus, hover and disabled treatments. Extracted a common
+                Start surface painter and size constant rather than approximating it;
+                Dashboard Start itself is pixel-identical to rev122 in dark/light,
+                both enabled and disabled. Bot, speed and target icons remain above
+                their labels; disclosure state and preview-confirm flows are intact.
+              - Focused 41 passed exit 0. Regressions compare surface pixels with
+                Dashboard Start in both themes and enabled/disabled states and test
+                disclosure, keyboard, square graph and manual preset functionality.
+                Dark/light screenshots inspected; Linux wheel, Ruff and diff-check
+                passed. Full suite split by file: 987 passed and 5 skipped in 81
+                summaries; 72 clean exits and nine -11 Qt teardown crashes after
+                passing. No real Windows/device/Ollama verification or push.
+
+  2026-10-29 (rev122)  MATCHING COMPACT AI COACH CONTROLS (SIZE RESTYLED IN REV123).
+              - Repainted the dynamic disclosure and both preset tiles to matching
+                128x68 compact buttons, sharing a sizing constant, icon-above-label
+                styling, focus and hover cues. The bot disclosure is left aligned rather
+                than full-width and retains visible on/off and expansion indicators.
+                Its content panel, shared engine, square chart, preview-confirm flow,
+                preset algorithms, accessibility and other suggestions are unchanged.
+              - Focused 31 passed exit 0. Dark/light collapsed/expanded screenshots
+                inspected; six geometry/accessibility tests cover both themes and three
+                window sizes. Full split suite: 983 passed, 5 skipped in 80
+                summaries, with 70 clean exits, nine Qt teardown crashes (-11), and
+                one process that timed out after printing 16 passed. That file reran
+                16 passed then crashed at Qt teardown (139). Linux wheel, Ruff and
+                diff-check passed. No real Windows/device/Ollama verification or push.
+
+  2026-10-29 (rev121)  COACH-ONLY PERFORMANCE DISCLOSURE AND MANUAL PRESETS.
+              - Removed Calibration dynamic panel, chart and rev116 view switcher; its
+                sensitivity graph remains editable subject to existing capture locks and
+                Calibration continues to feed the shared optional dynamic engine.
+                Coach's collapsed bot-head box is Dynamic Performance Curve with Enable AI
+                Local Analysis; Training retains its panel and live monitor. All dynamic
+                plot areas are square; disclosure only controls visibility. AI suggestions
+                remain local-model-only, previewed, and require explicit confirmation.
+              - Two accessible custom-painted compact icon-over-text tiles in Coach Curve
+                tuning provide existing fast-flick and precision preset previews. Disabled
+                until a measured/imported base exists, and never automatically applied;
+                Send to calibration confirms. Removed duplicate suggestion chips only.
+              - Offscreen full suite split by file: 977 passed, 5 skipped in 79 reported
+                summaries; 69 processes exited 0 and ten exited -11 at Qt teardown after
+                passing. Focused final 22 passed exit 0; earlier 27 and 28 passed exit 0,
+                another 28 passed then Qt teardown 139. The initial combined run hung and
+                was stopped; its split groups completed. Ruff/diff-check and Linux wheel
+                passed. Dark/light screenshots and 900x700 widget checks performed. No
+                real Windows input, Ollama model, device or game testing; no push.
+
+  2026-10-29 (rev120)  REMOVE REVIEW SETUP POV INDICATOR.
+              - At user request, removed the rev118 POV wedge, rays, transition animation,
+                legend and accessibility/tool-tip wording. Review source is byte-identical
+                to rev117, restoring the previous display with gold grip/teal movement
+                highlights, shoulder proxy note, fallback, animation and accessibility intact.
+                Removed obsolete rev118 wedge tests; added regression tests checking no
+                motion-dependent visual rays, matching both themes/art modes and compact
+                sizing, plus wizard back/edit, highlight and label behavior. Rev119 Coach
+                performance disclosure, telemetry, dynamic previews and confirmation remain.
+              - 87 focused tests passed exit 0. Full suite: 969 passed, 5 skipped across
+                20 groups after re-running group 4 (55 passed exit 0). The initial group 4
+                had 15 recorder failures because fresh environment lacked optional `mss`;
+                installed it and reran successfully. Seven other groups exited -11 at Qt
+                teardown after reporting passing summaries; twelve original groups exited 0.
+                Ruff/diff-check and Linux wheel passed. Dark/light and image/fallback review
+                previews inspected. No real Windows/Ollama/hardware tests and no push.
+
+  2026-10-29 (rev119)  COACH PERFORMANCE BOX + CALIBRATION TELEMETRY AUDIT.
+              - Added a collapsed-by-default, keyboard-operable, painted metallic-gold
+                Dynamic performance curve disclosure at top of AI Coach, with bot head,
+                ON/OFF state, accessible expanded description, and a full panel sharing
+                the same engine/goals/preview/retry/confirmation as Calibration and Training.
+                Collapse does not switch analysis on or off. Dark/light inspected; no motion.
+              - Investigated data flow from in-app desktop events / fake Win32 raw packets
+                through click records, local model payload, measured calibration baseline,
+                async preview and explicit confirmation. Fixed desktop re-entry origins to
+                use the event coordinates; reject out-of-arena clicks. Pause discards current
+                target path; calibration resumes/restarts it. Training breaks paths on exit,
+                timestamps mid-target enablement from enable time, seeds the in-arena cursor
+                when available, and cancels stale delayed reveal timers by generation. Small
+                movements are retained; negative-radius/out-of-order clicks are rejected.
+              - Records include observed path length and movement-event count; no coordinates
+                transmitted. For an unmodified, generated calibration base AND matching input
+                path, send the run's 95th-percentile in-app speed reference and approximate
+                mean path-speed fractions. This is NOT a physical or game-speed mapping;
+                no inferred cross-domain mapping for imported/edited/neutral bases or training.
+                Clear old proposal on base/session reset, insufficient data or model error.
+                Local AI remains required, async, bounded and preview-only until confirmation;
+                feature is opt-in/off at launch. Existing analyzer behavior remains intact.
+              - Full suite split into 20 groups: 1001 passed, 5 skipped in summaries; eight
+                groups exited -11 at known Qt teardown after passing, twelve exited 0. One
+                minor training outside-click guard was finalized while early groups were
+                running; 53 focused training/new tests passed afterwards. Earlier 179 focused
+                passed and final retest of related engine/selector was 81 passed, all exit 0.
+                Ruff/diff-check and Linux wheel passed. Simulated event/transport/model tests
+                cannot establish real Windows, device, Ollama or actual game behavior. No push.
+
+  2026-10-29 (rev118)  DYNAMIC OPEN POV WEDGE IN REVIEW SETUP (REMOVED IN REV120).
+              - Violet two-ray open triangle extends forward behind the hand. Wrist is
+                narrower/less forward; Fingers, Arm and Shoulder / Hybrid use wider and
+                farther-forward schematic shapes. No wedge for unknown/skipped motion.
+                The drawing is illustrative, not a measured in-game FOV, physical flick
+                range, anatomy or empirical performance claim. Labels, tooltip and screen
+                reader descriptions explain it; prior gold/teal highlights remain independent.
+              - Changing a visible known motion morphs the wedge when animations are enabled;
+                disabled/Performance mode and hidden changes go straight to the static target.
+                Hiding cancels a morph; unknown immediately clears it. Both bundled art and
+                fallback modes work. Back/edit refreshes the review; no calibration data or
+                sensitivity curve changes. Inspected full and compact sizes in both themes.
+              - Focused 119 passed exit 0; final new tests 42 passed exit 0. Full suite in
+                13 groups: all 986 tests passed and 5 skipped when group 7 is split into two.
+                The original combined group 7 twice had one Qt timing failure in raw trailing
+                repaint; its two smaller reruns passed 68 and 42, and raw tests alone passed 17.
+                Five other groups exited -11 at Qt teardown after passing summaries; seven
+                original groups exited 0. Ruff, diff-check and Linux wheel succeeded. No real
+                Windows/Ollama/hardware tests; no push. Release ZIP contains full repo and patches.
+
+  2026-10-29 (rev117)  VIVID HAND-CONTOURED REVIEW HIGHLIGHTS.
+              - Review Setup gold grip and teal flick highlights are more saturated with stronger
+                translucent fill, outline and animated glow. Replaced rounded rectangles/circles
+                with distinct curved thumb and finger silhouettes, joint-clipped tips/upper
+                fingers, and shaped palm/heel/wrist/forearm masks fitted to the fixed hand image.
+                The fallback vector hand uses matching curved masks. Adjoining same-color masks
+                are merged before painting to avoid glowing circles at finger/palm joints;
+                overlapping finger grip/motion retains gold edges with a narrower teal interior.
+                Cached masks and combined paths avoid recomputing geometry during animation.
+              - Selection labels and mappings remain self-reported, not tracked or measured;
+                same generic hand for every grip, shoulder absent and forearm only a proxy.
+                Animations still obey UI settings and visibility; static highlights remain when
+                disabled or in Performance mode. No curve, telemetry or settings behavior changed.
+              - 77 focused review tests passed exit 0, including contour shapes, vivid pixel color,
+                overlap, both themes and asset/fallback rendering, animation lifecycle and wizard
+                behavior. Twelve full-suite groups reported 944 passed, 5 skipped; six exited -11
+                at known Qt teardown after their passing summaries, six exited 0. Ruff/diff clean;
+                Linux wheel built and hand asset checked. Multiple scenes were inspected offscreen.
+                No real Windows/Ollama/device test and no push; clean old releases/temp files.
+
+  2026-10-29 (rev116)  CALIBRATION CURVE DISPLAY SELECTOR (REMOVED IN REV121).
+              - Added the standard settings glyph beside the Calibration curve heading. Its
+                keyboard-accessible, nonblocking menu selects Sensitivity curve or Dynamic
+                performance curve. The two actual charts share a QStackedWidget viewport: same
+                size/position at all tested sizes, instead of the old small Calibration monitor.
+                The dynamic view subscribes to the existing performance engine and shows its
+                full before/after preview, disabled/pending/unavailable/current state and legend.
+                Calibration's lower performance panel keeps goals/retry/confirmation without a
+                duplicate tiny graph; Training's existing compact monitor/panel remain intact.
+              - Switching views does not change a profile. Dynamic view is read-only and disables
+                sensitivity import/export/edit/undo/redo (including shortcuts); returning restores
+                them under existing session locks. Confirmation switches to the updated sensitivity
+                view. Popup selector is disabled during active Windows Raw capture to avoid popup
+                deactivation releasing capture; choose view before starting or after finishing or
+                cancelling. Desktop calibration may switch. Voice 'show sensitivity curve' selects
+                the sensitivity view, not merely the Calibration page. No data, inference or
+                confirmation/privacy behavior changed.
+              - 125 focused tests passed exit 0; final selector/dynamic checks 29 passed exit 0.
+                Full suite split reported 933 passed and 5 skipped after one failure (capitalized
+                'Drag' instruction) was fixed and its group rerun; four groups exited 0, eight
+                exited -11 at known Qt teardown after passing summaries. Both graph sizes and
+                positions matched at 900x700, 1200x800 and 1600x1000 in dark/light tests; menu,
+                current and AI preview inspected offscreen. Ruff/diff clean; Linux wheel built.
+                Real Windows raw capture and real Ollama were not tested; no push. Clean up old
+                release files and temporary output after packaging.
+
+  2026-10-29 (rev115)  LOCAL AI PERFORMANCE-METRIC CURVE EXPERIMENTS.
+              - User selected both in-app calibration and training, with editable accuracy and
+                target-to-hit-time goals and measured clicks. An opt-in shared panel below each
+                task (off each launch) shows those goals, metrics, an AI before/after curve and
+                Confirm; compact live graphs appear beside both tasks. Three attempts including a
+                hit are required. Visible-radius hit rate, individual click times, endpoint error,
+                observed pointer/virtual speed and path efficiency use the latest 32 attempts per
+                source, retained separately. Calibration accepts a wider 1.65x radius for its
+                existing movement analyzer than the visible-radius accuracy definition. Times are
+                monotonic app-event time from target shown/trial restart, not hardware timestamp,
+                game crosshair data, pure reaction time or verified physical movement.
+              - Async direct-loopback Ollama request sends numeric goals, per-attempt metrics and
+                sampled base curve; checks installed model/remote metadata and never pulls a model.
+                Cloud can still be forwarded by a local daemon: disable cloud in Ollama and restart.
+                Model returns 3–16 strictly ordered speed/factor anchors, validated ±10%, no presets
+                or heuristic fallback. Baseline points are retained, model anchors added up to 256;
+                neutral 1x baseline is labeled when no calibrated/imported curve exists. One request
+                in flight, snapshots coalesce; newer or changed baseline/config invalidates/blocks
+                confirmation until current. Inference latency is not hard real-time. Nothing applies
+                during calibration; explicit confirmation changes the in-app curve only, export is
+                separate. No game/device/OS setting changes or optimality/uniqueness guarantee.
+              - Tracker observations are ephemeral and collected only while enabled. Off or clearing
+                either training or calibration history clears them; an in-flight request may finish
+                but its result is ignored. Existing saved training analytics remain separate. Privacy
+                docs and UI updated. Full fake Ollama + actual training click integration, bounded
+                model parsing, both canvases, freshness/disable races and UI settings tested.
+              - Focused regression suite: 108 passed exit 0. Full suite split reported 924 passed,
+                5 skipped. Seven subprocess groups printed passing summaries then exited -11 in
+                known Qt teardown; three exited 0. One combined group timed out at 240 s; its three
+                smaller groups all printed passing summaries (two exited 0 and one -11). Ruff/diff
+                clean; Linux wheel built, modules inspected; task/graph layouts visually checked.
+                Real Ollama/model latency, Windows raw input and physical device were not tested.
+                No push. Cleanup old release copies and temporary files after packaging.
+
+  2026-10-29 (rev114)  REVIEW SETUP AREA HIGHLIGHTS.
+              - Removed selection leader lines and point markers. Review now paints gold grip-area
+                and teal flick-motion-area highlights directly on the fingers, hand, wrist or
+                forearm. Palm includes fingers/palm; claw upper fingers/heel; fingertip tips; motion
+                fingers, wrist or forearm as selected. Narrow teal interiors preserve gold when finger
+                highlights overlap. Unknown and skipped selections do not invent highlighted areas.
+                Shoulder / Hybrid marks forearm as a schematic proxy; shoulder is not shown.
+              - Smooth looping glow runs only while visible with animations enabled and UI mode not
+                Performance; static highlights remain otherwise. A text legend, exact labels and
+                accessible description identify both self-reports; the art is the same generic hand
+                for all grips, not tracked posture, actual contact, or measured anatomy. Vector
+                fallback has its own aligned finger, wrist and shaped-forearm region masks.
+              - 66 focused tests passed with exit 0, including all mappings, animation lifecycle,
+                overlapping colors, dark/light themes, fallback, wizard settings and existing review.
+                Eight full-suite groups reported 904 passed and 5 skipped; six exited -11 in known
+                Qt teardown after passing summaries, two exited 0. Ruff and diff checks clean; Linux
+                wheel built with hand art, and dark/light screenshots inspected. No real Windows,
+                device, microphone, Ollama or speaker testing, no push. rev112 raw fixes still need
+                real Windows validation. Do not accumulate old releases or temporary screenshots.
+
+  2026-10-29 (rev113)  DASHBOARD GOLD/ANIMATION FLEX; FUNCTIONAL VOICE ACTIONS.
+              - The Start button keeps its 140 x 42 footprint and dark, legible base but has a
+                slightly richer gold upper gradient and fine futuristic metallic glint. Dashboard's
+                Serious mode checkbox is now labeled Animation flex; Settings speed label matches.
+                Behavior, internal settings key and saved values remain unchanged.
+              - Continuous voice commands now match whole explicit phrases with optional polite wording
+                and optional configured wake word; specific actions take precedence over navigation.
+                They open/close Calibration Input Path, Training and Coach settings; reveal Voice, AI,
+                Interface or Advanced Settings; open the optional guide and use its next/back/explicit
+                skip (skip clears the question); show the curve/Coach tuning, focus chat, request an
+                explanation, and stop speaking. Existing navigation, explicit start/reset/resume,
+                coach-panel and manual-preview actions remain. Review still needs on-screen Finish and
+                calibration locks and existing curve confirmation remain enforced.
+              - Commands only execute with the app/guide focused. Other modal dialogs block commands;
+                queued events after disable are ignored. One-shot chat mic and most commands while TTS
+                is speaking are suppressed (stop speaking remains), but echo prevention is not perfect.
+                Voice questions/explanation send text with normal context to the configured AI provider,
+                preserving unsent drafts and refusing to interrupt a busy request. Unmatched wake-word
+                phrases and explicit ask phrases remain chat requests; commands require no wake word.
+                Settings gives examples/listener status; a temporary overlay reports outcomes without
+                reflowing the raw arena. Vosk commands listen locally while enabled, potentially even
+                while app is unfocused; setup may auto-install packages/download a model. One-shot chat
+                mic can instead send captured audio to Google if SpeechRecognition is installed. README,
+                architecture and Privacy page/policy now disclose these distinctions and misrecognition.
+              - Targeted voice/parser integration tests: 24 passed cleanly. Broader focused run printed
+                127 passed then exited 139 during Qt teardown. Eight full-suite subprocess groups
+                reported 888 passed, 5 skipped; five exited -11 during Qt teardown and three exited 0.
+                Ruff/diff clean; dark Dashboard inspected; Linux wheel built and checked. No real
+                microphone/Vosk, AI provider, TTS, Windows input or Windows installer test; raw Win32
+                delivery from rev112 remains unverified on actual hardware. No push. After packaging,
+                remove old release copies and temporary files to remain below workspace limits.
+
+  2026-10-29 (rev112)  RAW INPUT DELIVERY AND STABLE CALIBRATION GRAPH.
+              - Raw mouse registration now targets the calibration arena's native HWND; that widget's
+                nativeEvent receives foreground WM_INPUT, including events delivered through Qt window
+                dispatch, without a process-global filter or background input. HWND, foreground and
+                capture checks remain, clicks are not double-counted, previous registration is restored
+                only if still owned. Every 150 ms, changed registration or changed arena screen center
+                safely releases capture. If no movement arrives within 5 seconds, an idle-safe warning
+                explains Esc then Reset and Desktop pointer; it clears on actual relative movement.
+              - Raw arena size is fixed during the run (restored after completion, reset or failed
+                start), because changing hints/status could otherwise resize it and cause its safety
+                filter to pause capture. A trailing repaint ensures the last burst movement becomes
+                visible even if throttled. Raw counts still feed the 1:1 bounded virtual cursor; no
+                fabricated input, background capture, hardware DPI measurement or silent fallback.
+              - The graph column sizes independently of task/settings growth and follows viewport
+                height. Calibration reserves scrollbar width, preventing expansion from stretching or
+                shifting the graph. Window resize remains responsive; settings remain locked in a run.
+              - Targeted raw/layout/sample-rate tests: 44 passed cleanly. Larger focused run printed
+                182 passed then exited 139 at Qt teardown. Four split suite groups reported 871 passed,
+                5 skipped; each exited -11 in known Qt teardown. A Linux wheel was built and dark
+                open/closed graph layouts inspected. Native Win32 messages were simulated; no real
+                Windows hardware, installer, Ollama or speaker was tested, so actual Windows behavior
+                still requires verification. No push. Clean temporary release files after packaging.
+
+  2026-10-29 (rev111)  SLIGHTLY TALLER DASHBOARD START BUTTON.
+              - In the styled application the global QPushButton stylesheet overrode the previous
+                fixed-height minimum, so rev110 actually rendered 34px high despite a 48px request.
+                A dedicated guide-start style now respects a fixed 140 x 42 footprint in both themes:
+                the visible button is 8px taller, with width, muted colors, icon and behavior intact.
+                Existing keyboard access, optional pulse and guide navigation remain unchanged.
+              - Focused offscreen tests: 119 passed cleanly, including real styled geometry and title
+                alignment under both themes. Four full-suite groups reported 859 passed and 5 skipped,
+                but each exited -11 at Qt teardown (known from earlier releases). Dark/light Dashboard
+                renderings inspected. No real Windows input, hardware DPI telemetry, Ollama or speaker
+                test; no push. Temporary release artifacts should be cleaned to stay under workspace
+                snapshot limits; retain the latest ZIP, patches, repository and user uploads.
+
+  2026-10-29 (rev110)  SLIGHTLY LARGER, MUTED DASHBOARD START BUTTON.
+              - The guide Start button beside Dashboard is 140 x 48 rather than 128 x 44, with a
+                24px rather than 22px book icon. Its gold accents, icon opacity and animated pulse
+                are less bright; the label remains high-contrast. Guide navigation, accessibility,
+                fixed-footprint click animation and reduced-motion behavior remain unchanged.
+              - Focused offscreen suite: 124 passed with clean exit. Four full-suite groups reported
+                857 passed and 5 skipped; each exited -11 during Qt teardown, a known issue from
+                earlier releases. Dark/light button screenshots inspected and Linux wheel built and
+                verified. No real Windows input, hardware DPI telemetry, real Ollama or speaker test;
+                no push.
+
+  2026-10-29 (rev109)  FOREARM REVIEW FRAMING; DASHBOARD START GUIDE BUTTON.
+              - The former standalone Dashboard book block is removed. A compact gold-accented Start
+                button with the book icon sits immediately beside Dashboard. It opens the existing
+                optional calibration guide, with keyboard access, a visible text fallback if the asset
+                is missing and the established 260ms painted click pulse. The pulse is skipped when
+                animations are off or Performance mode is active, coalesces repeated clicks and is
+                cancelled if hidden. It changes no capture state or underlying calibration.
+              - Review's top-down scene now frames the full available source art through the wrist
+                and a visible length of forearm with preserved image aspect ratio; the scene is taller.
+                Grip and motion marker anchors follow the reframed image, with an articulated vector
+                fallback. Labels remain the exact self-reports and the diagram explicitly says it is
+                illustrative, not tracked. Shoulder / Hybrid retains its label, but notes that the
+                shoulder is not shown and its marker indicates the arm region, not actual anatomy.
+                The review, local AI, separate preview and confirmation behavior are unchanged.
+              - Focused offscreen tests: 124 passed cleanly. Four split full-suite groups collectively
+                printed 857 passed and 5 skipped; each exited -11 during Qt teardown, as in prior
+                releases. Dark/light Dashboard, review and Shoulder / Hybrid callout inspected; Linux
+                wheel built with required assets. No real Windows hardware, Ollama or speaker test;
+                hardware DPI telemetry remains absent. No push.
+
+  2026-10-29 (rev108)  INLINE CALIBRATION INPUT SETTINGS; SHARED SETTINGS ICON.
+              - The task-adjacent settings toggle now uses the same "settings" glyph, 18px size,
+                iconButton style and checkable behavior as Training and AI Coach. It reveals/collapses
+                a theme-aware Input Path panel inside the existing Calibration task card; no separate
+                QDialog opens. It defaults collapsed and supports keyboard activation.
+              - Retains exactly the existing Windows Raw/virtual cursor and Desktop Pointer/natural
+                pointer modes, platform default, combo signals, 125–1,000 Hz desktop sample target,
+                persistence, warnings and unavailable DPI telemetry disclosure. No input behavior or
+                hardware compensation was invented. The toggle and input controls lock during an
+                active session, keeping the arena geometry stable whether the panel was open or closed;
+                cancellation and completion unlock them, and failed raw start leaves them available.
+              - Focused offscreen tests: 85 passed cleanly. Full suite split across four processes:
+                853 passed, 5 skipped, but each process exited -11 at Qt teardown, as seen in earlier
+                releases. Dark/light inline open and closed screenshots inspected; Linux wheel built
+                and verified. Raw path tested with a fake capture, not on real Windows hardware; hardware
+                DPI telemetry remains unimplemented. No real speaker or Ollama test; no push.
+
+  2026-10-29 (rev107)  RECTANGULAR BOOK TILE; PREVIEW COACH RESPONSE AND SPEECH.
+              - The user clarified: reuse the local AI suggestion already obtained in the guide; do
+                not make another Coach/provider request. Respect the existing speech preference,
+                rather than forcing one-shot audio when spoken replies are off.
+              - Centered text-free book block now matches the actual responsive width, height,
+                surface, border and 10px corners of the other rectangular Dashboard tiles. A small
+                transparent animation margin preserves the rev106 click-only expansion without layout
+                reflow. Tile resize/rebuild and Serious mode synchronize dimensions; no-animation and
+                performance behavior, keyboard support and hide cancellation remain.
+              - Root cause: Preview accepted the wizard and drew a graph, but never appended the
+                existing local model guidance to chat or emitted the normal assistant_said signal.
+                It now shows that guidance, bounded factor, uncertainty, and confirmation details in
+                a Coach message and uses the existing optional TTS path. When speech is off, a visible
+                automatic note explains where to enable it for future replies; no preference changes.
+                A missing baseline still shows/speaks the guidance and explains how to obtain a curve.
+                Invalid or provisional preview attempts clear old actionable previews; model text is not
+                parsed as a curve command. No new model request or provider-history insertion occurs,
+                and the preview itself changes no curve, game or device settings and starts no capture.
+                Failed local analysis says to toggle local analysis off/on to retry. The previous
+                debounced local-only request and its forwarding/privacy caveats still apply.
+              - Focused offscreen tests: 115 passed cleanly, including end-to-end real button clicks,
+                speech on/off via stub, local unavailable/retry, missing baseline, stale preview,
+                resized tiles and unchanged calibration. Four full-suite subprocess groups collectively
+                printed 844 passed and 5 skipped, each then exited -11 during Qt teardown. Two single-
+                process full-suite attempts hung in a Qt widget constructor after 683 tests and were
+                timed out; isolated watchdog test passed. Linux wheel built and assets checked. Actual
+                speakers, real Ollama, real Windows input and hardware telemetry were not tested; no push.
+
+  2026-10-29 (rev106)  TASK INPUT SETTINGS; SQUARE GUIDE BOOK; ARTICULATED REVIEW.
+              - Calibration task has a cog opening a theme-aware input-settings dialog. It holds the
+                original two paths: Windows Raw with an in-app virtual cursor, Desktop Pointer with
+                the natural OS pointer; sample-rate target, honest path explanations and unavailable
+                DPI telemetry warning moved there too. Selector attributes/signals/defaults persist;
+                settings remain locked during a run. Raw capture behavior is unchanged.
+              - Dashboard book is a centered square without surrounding text. Existing module tiles
+                are rectangular, so its resting side matches their height. A 260 ms click-only painted
+                expansion opens the guide afterward; repeated clicks coalesce and hide cancels the open.
+                It opens immediately if animations are off or UI mode is performance. Keyboard and
+                accessible name preserved; animation does not reflow the surrounding layout.
+              - Review scene uses a bundled AI-generated articulated five-finger hand illustration with
+                nails/joint details and a vector fallback if the asset is missing;
+                exact reported grip/motion labels and marker mappings remain, with no anatomical tracking.
+                A one-shot smooth flow explains answers -> optional local AI preview -> confirm the
+                in-app curve. It stops on hide, is static with animation off/performance, and does not
+                apply anything or start capture. Game/device settings are not changed by the guide.
+                Explicit separate confirmation is still required for a guide AI proposal. Regular
+                calibration's measured provisional curve still updates per target as before.
+              - Focused offscreen tests 117 passed. Full suite printed 834 passed, 5 skipped then
+                exited 139 at Qt teardown (known prior behavior). Dark/light Dashboard, Calibration,
+                input dialog and review inspected. Linux wheel built and checked for both UI modules
+                and both the book and review-hand assets. No real Windows input, hardware DPI telemetry, Windows installer
+                or real Ollama test; no push. Check rev106 release notes for package and patch routes.
+
+  2026-10-29 (rev105)  CENTERED GUIDE BOOK; CURRENT-SETUP CARDS AND FINAL REVIEW.
+              - Dashboard guide card now contains only the centered clickable gold book; no description,
+                status, or action text beside it. Accessible name, tooltip and keyboard button remain.
+                Saved-answer discussion and clearing move inside the reopened guide sidebar; discussing
+                saved answers discards any uncommitted edits, and Clear keeps existing privacy behavior.
+              - The fifth guide question has manually entered mouse/game, in-game sensitivity and DPI
+                cards, including unknown checkboxes and explicit ±100 DPI input controls. These are not
+                device discovery, telemetry or game reads. All previous validation, optional values and
+                per-question Skip remain; no cm/360 is invented from DPI and sensitivity alone.
+              - Five questions now lead to a sixth, read-only setup review before Finish. The review
+                shows input game, sensitivity, DPI, usable pad travel, mouse, pad, reported issues,
+                selected grip and selected flick motion, with prominent gold/teal callouts and markers
+                on a stylized desk/mouse/arm schematic. Labels come from the exact normalized user
+                selections; explicit Not sure and skipped Not provided remain distinct. Diagram is not
+                a physical measurement. User text is plain and wraps; long names have tooltips.
+              - Back reopens previous questions and refreshes the review after edits; Cancel still
+                discards. Finish commits session answers. Finish and open Calibration commits and
+                navigates to Calibration without starting capture. AI curve Preview in AI Coach is
+                available on the review only, preserving the explicit separate Send to calibration
+                confirmation and local Ollama privacy caveats introduced in rev104.
+              - 113 focused tests passed cleanly, including every grip × motion combination, skip,
+                unknown, Back/edit, validation, saved actions and navigation. Full offscreen suite
+                printed 826 passed, 5 skipped then exited 139 during Qt teardown. Ruff/diff checks pass;
+                dark/light Dashboard, setup and review screenshots inspected. Linux wheel includes
+                the review module and book asset. No real Ollama model, Windows hardware or Windows
+                installer tested; no push. Rev103 hardware DPI telemetry remains absent.
+
+  2026-10-29 (rev104)  GUIDE GRIP ILLUSTRATIONS, GOLD BOOK, LOCAL AI PREVIEW.
+              - User explicitly chose a preview requiring confirmation and a required installed local
+                AI (no deterministic replacement if the model is absent). Replaced the three grip
+                photos with stylized AI-generated static illustrations and glowing arrows. Art is
+                illustrative and not tracked anatomy; the fingertip contact gap remains schematic.
+                The Dashboard title/button is replaced by a clickable metallic gold book logo with
+                tooltip, accessible name, keyboard support and missing-asset text fallback. The guide
+                remains optional, on Dashboard; grip/motion questions and skip/back/cancel remain.
+              - Guide-local AI is on by default per opening and can be turned off. Editing choices or
+                setup queues a debounced request, as disclosed in the guide and policy. A single daemon
+                worker calls the selected installed Ollama model and shows a relative factor and text;
+                asynchronous revision tokens reject stale results, and a pending request can complete
+                locally after disabling/closing. No auto-pull, online-provider fallback or fabricated
+                AI factor. Raw coordinates are not sent; in-progress normalized answers, typed setup
+                and optional whitelisted numeric session metrics are sent. Finished answers may also
+                accompany regular text Coach requests, including online. Current help documents this.
+              - guide_ai.py restricts HTTP to loopback, bypasses proxies and redirects, refuses cloud
+                tags or remote metadata after /api/tags and /api/show, and requires an installed model.
+                It cannot guarantee a local daemon doesn't forward. Disable Ollama cloud features with
+                OLLAMA_NO_CLOUD=1 or disable_ollama_cloud and restart it for local-only use. The app
+                cannot prove an untrusted service is honest. JSON factors must be finite/plausible and
+                are capped to 0.90–1.10; generated text is plain/untrusted and may be wrong. No grip
+                implies an optimum or guaranteed consistency. This remains an experiment, not a score.
+              - Preview in AI Coach commits the guide answers, builds a before/after overlay on the
+                current Calibration profile (preserving manual edits), and does not change the chart;
+                explicit Send to calibration is required. Without a baseline, calibrate or import a
+                curve first and reopen the guide. No game setting is changed. The native/Python
+                movement analyzer and measured rolling statistics do not consume self-reports.
+              - Fake-loopback HTTP tests and async Qt tests cover unavailable and remote models, no
+                pulls, response limits, staleness, explicit confirmation, current baseline, icon and
+                selection workflow. 77 focused tests passed cleanly; full offscreen suite printed
+                790 passed, 5 skipped then exited 139 during Qt teardown. Ruff/diff checks passed.
+                Dark/light screenshots inspected; a Linux wheel was built and checked for new assets
+                and module. No real Ollama model, offline guarantee, Windows installer or hardware
+                was tested, and no changes were pushed. Rev103 hardware DPI telemetry remains absent.
+
+  2026-10-29 (rev103)  FOREGROUND RAW CALIBRATION; REMOVE TEST MODE.
+              - Removed the Test Mode button, dialog, simulator, their tests and stale documentation.
+                Refactored its Windows capture safety machinery to ui/raw_mouse_capture.py and added
+                a foreground raw calibration mode. Windows defaults to raw; other systems default to
+                the separately labeled legacy desktop-pointer mode. Raw is never silently substituted.
+              - During an explicit session raw relative counts drive a virtual cursor at 1 logical
+                pixel per delivered count until the arena edge. Raw left clicks score exactly once;
+                the OS cursor is temporarily clipped and hidden. Esc, focus or capture/clip loss,
+                navigation, resize/move, hiding or closing releases it. Resume explicitly restarts the
+                unfinished target; failures, absolute input, null or mixed device handles fail closed.
+                An unclip error is prominently retained and blocks further calibration until restart.
+                Device handles are ephemeral and are not queried, stored or sent to identify DPI.
+              - The existing native/Python rolling eight-target analyzer recomputes its measured-data
+                heuristic after accepted targets, with a 95th-percentile movement-speed reference and
+                normalized model domain. Only bounded virtual positions enter that analyzer; counts
+                beyond the edge are not preserved as cursor travel. Input source and telemetry caveat
+                are included in Coach context. This is not game input or a proven end-to-end 1:1 path.
+              - IMPORTANT INCOMPLETE REQUEST: no verified device-specific hardware DPI telemetry
+                provider exists in this release. Configured DPI changes and real physical sensor drift
+                are not measured or compensated, and there is no DPI-normalized measurement path.
+                Windows Raw Input has no generic configured-DPI query; vendor protocol and binding to
+                the actual device require supported hardware/model-specific validation. UI and policy
+                docs state this; no reading, detected drift, or compensation is invented. Keep DPI
+                fixed for each run. To complete telemetry, obtain the mouse model/connection and verify
+                a read-only provider and raw-device binding on real Windows hardware.
+              - Fake API and offscreen tests cover input packets, device checks, ownership, pauses,
+                cleanup, error reporting, ABI layout and UI removal. Focused suite: 42 passed cleanly.
+                Full offscreen suite printed 763 passed, 5 skipped then exited 139 during Qt teardown. No real Windows device/driver, DPI
+                telemetry, game path or Windows installer was tested. No changes were pushed.
+
+  2026-10-29 (rev102)  MOVE THE GUIDE TO DASHBOARD; REALISTIC HAND ILLUSTRATIONS.
+              - User requested removing the standalone What moves when you flick section from the
+                Calibration tab while keeping the question inside the optional guide, moving the guide
+                to Dashboard and replacing hand drawings with realistic animations or illustrations.
+                Dashboard now owns Open/Edit/Clear/Discuss and the transactional session-only state;
+                Calibration has neither a guide button nor a standalone motion selector. The old
+                ui/aiming_motion.py widget and its styling were removed; pure motion guidance remains.
+                The guide's existing question/options, guidance, uncertainty, research and AI behavior
+                are unchanged; Finish propagates motion and other self-reports to Coach. Not sure stays
+                explicit and makes no sensor inference. Privacy clear removes Dashboard guide state.
+                Guide opening is disabled during active calibration and restored on cancel/completion.
+              - Seven bundled, AI-generated static detailed illustrative images replace the grip/motion
+                drawings. These are examples, not anatomical tracking, measurements or animations;
+                pad and unknown options retain simple vectors. QPixmap reads assets locally and has a
+                graceful missing-file fallback. PyInstaller spec includes the image directory; the
+                project's sdist includes package assets. A Linux pure-Python wheel was built and all
+                seven images were verified inside it; Windows PyInstaller was not run. No new runtime
+                dependency. README, privacy and architecture refer to Dashboard and image limits.
+              - 23 focused wizard/motion tests exited cleanly; full offscreen pytest printed 773 passed,
+                5 skipped and then exited -11 in Qt teardown. Ruff/diff checks passed. Dark/light guide
+                and Dashboard/Calibration screenshots inspected. No real AI endpoint, actual game,
+                Windows installer, mouse hardware or biomechanics were tested; no push was made.
+
+  2026-10-29 (rev101)  OPTIONAL FIVE-STEP CALIBRATION GUIDE.
+              - User selected an optional wizard before calibration; no gating or curve effects.
+                Calibration has Open/Edit calibration guide, per-question Continue/Skip, Back,
+                Cancel, Finish and Clear answers. Steps cover issues, grip, motion, pad and setup.
+                Continue can leave answers blank; Skip clears the current step; Cancel discards edits;
+                Finish commits session-only answers. Motion stays in sync with the rev100 selector,
+                including explicit Not sure with no joint-inference claim. The guide is disabled during
+                an active task. In the dialog, descriptive vector cards and research links follow theme.
+              - calibration_wizard.py has bounded self-report, general guidance, normalization and
+                context construction. UI validates optional usable width (0.1–5000 mm), DPI (whole,
+                1–64000), and sensitivity (0.00001–10000); it does not infer cm/360. No device or
+                game detection. Selected answers inform Coach only; the captured-data analyzer, scoring,
+                curve, confidence and export are unchanged. Static guidance is not AI or a diagnosis.
+              - Completed guide data, including game, DPI and sensitivity, can be included in
+                text Coach requests (including enabled proactive requests), independent of the
+                Settings In-Game Mode toggle. Completing or opening a draft sends nothing. Live vision
+                text excludes answers but captured UI frames may show them. The context cap rose from
+                4000 to 6500 chars to accommodate both guide and measured evidence. Free text is bounded
+                and labeled untrusted, though prompting cannot guarantee a model ignores instructions.
+                Clearing guide or Privacy calibration history removes session state; chat/user-edited
+                drafts are separate. Changes invalidate stale replies/previews; generated untouched
+                drafts are cleared rather than silently reused.
+              - docs/calibration-guide-research.md cites the 22-player preferred-grip study, controlled
+                FPS sensitivity trade-offs, and OSHA workplace ergonomics, with limits; the evidence
+                does not establish a superior grip/joint, fatigue prediction or individual ideal sensitivity.
+              - tests/test_calibration_wizard.py: 10 passed and process exited cleanly. Full offscreen
+                suite printed 771 passed, 5 skipped then process exited -11 at Qt shutdown. Ruff and
+                diff checks passed. Offscreen dark/light screenshots inspected. Mock provider only; no
+                real AI service, Windows hardware or game tested. No push was made.
+
+  2026-10-29 (rev100)  SELF-REPORTED FLICK MOTION SELECTION.
+              - User selected context-only calibration effect plus instant general guidance and
+                optional AI; the measured curve, scores, confidence, export and analyzer are unchanged.
+                Calibration now has a visually distinct, keyboard-accessible optional four-way selector:
+                Wrist, Fingers, Arm and Shoulder / Hybrid, with abstract joint illustrations. Each choice
+                reveals clearly labeled non-AI, non-diagnostic flick, tracking and fatigue trade-offs.
+              - Selection is self-reported, session-only, and cleared by Clear or privacy calibration
+                clearing. It is prepended to text-coaching context with current-session rolling metrics
+                when available. No provider request is triggered by selecting or opening the AI draft;
+                Discuss with AI Coach opens an editable question that the user must send. Existing
+                local proactive calibration coaching can include the selection if enabled. Live vision
+                excludes the selection from text context, but captured frames might show the UI.
+              - AI is instructed to avoid claiming measurement, diagnosing, inferring fatigue/skill,
+                guaranteeing performance or prescribing sensitivity from the category. It may still
+                hallucinate. Motion changes invalidate stale in-flight answers and proposal previews;
+                unedited generated drafts update/clear but user-edited drafts and chat are preserved.
+              - Tests cover all options, keyboard, actual payload with measured scores, no automatic
+                request, stale replies, analyzer invariance, session/privacy clearing and light/dark UI.
+                Focused tests exited cleanly (11 passed); full offscreen suite printed 761 passed,
+                5 skipped, then exited -11 at Qt shutdown. No real provider/network or Windows hardware
+                was tested. Synthetic screenshots are in deliverables/screenshots. No push was made.
+
+  2026-10-29 (rev99)  TEST MODE FOREGROUND RAW MOUSE CAPTURE.
+              - The old Test Mode used Qt desktop-position deltas; the real pointer could hit screen
+                edges or leave the arena and click another app. Windows now registers WM_INPUT raw
+                relative mouse data only in the foreground Test Mode, sends each packet (including the
+                first) to both ghosts, and scores a raw left press after the packet's movement. The Qt
+                duplicate click is ignored. Delivered packet timing is only an estimate, not a physical
+                hardware timestamp; exact synchrony or external game equivalence cannot be guaranteed.
+              - Start explicitly acquires a Qt/Win32 mouse grab and clips the shared OS pointer to a
+                point in the arena. If registration/grab/clip fails, it refuses to run. Esc releases;
+                R recenters ghosts. Focus loss, window move/resize, hiding, capture failure and close
+                stop/release; a timer and each raw packet verify foreground, capture and clip ownership.
+                Cleanup restores prior process raw-input registration if still owned and avoids releasing
+                another app's newer clip. Normal app exit has a cleanup handler. OS failure/crash may
+                still prevent normal cleanup. Input is never injected into a game or other app.
+              - Test Mode now takes a counts/s speed reference plus px/count scale. It is Windows-only
+                and requires relative mouse input; unsupported environments fail closed with a message.
+                It uses no global mouse hook; profiles and scores stay local and are not auto-sent.
+                README, privacy documentation and in-app privacy copy updated to disclose OS confinement.
+              - Fake Win32 tests cover raw packet ordering, no double-click scoring, initialization
+                rollback, ownership changes, focus loss, unsupported absolute input, Esc, cleanup,
+                ctypes ABI/parser and identical deltas. Focused suite exited 0 (23 passed). Full suite
+                printed 750 passed, 5 skipped, then exited -11 at Qt shutdown. No real Windows mouse,
+                mixed-DPI monitor, device or actual game tested here; validate on Windows before relying
+                on capture. Synthetic UI screenshot: deliverables/screenshots/test-mode-capture-rev99.png.
+
+  2026-10-28 (rev98)  DARKER SENT BUBBLES + BOLD SPEAKER LABELS.
+              - ChatTranscript's user bubble backgrounds are slightly darker in both themes, with
+                readable light text. You, Coach, and automatic Coach speaker labels are bold inline;
+                message body remains regular, selectable and safely HTML-escaped. Newlines and spaces
+                are preserved. The backing QTextDocument retains plain-text export plus bold role format.
+                User/coach alignment, rounded corners, muted unboxed automatic notes and font zoom remain.
+              - Tests assert role/body formatting, safe literal markup, whitespace, WCAG text contrast,
+                both theme colors and existing layout. Full offscreen suite printed 735 passed, 5 skipped,
+                but exited -11 at Qt teardown (not a clean exit). Coach preview test file exited cleanly.
+                Synthetic screenshot: deliverables/screenshots/ai-chat-rev98.png. No push was made.
+
+  2026-10-28 (rev97)  TEST MODE + CURRENT-SESSION AI COACH CONTEXT.
+              - Calibration has a non-modal Test Mode: two overlaid virtual ghosts share arena mouse
+                deltas while using snapshots of the current profile, neutral 1x, or imported CC4/CC3.
+                A configurable px/s full-speed reference maps desktop event speed to each axis's curve
+                domain; each profile is linearly interpolated independently. Click to score each ghost;
+                Start resets target sequence and statistics. Recenter/leave-reenter manage desktop edges.
+                This is a rough in-app simulation, not raw device input or exact external interpolation.
+                Shared-input hit/error scores are biased, not a controlled test. No OS input is changed.
+              - Every accepted target refreshes the Coach's provisional scores, points and measured
+                baseline from the existing latest-eight rolling analyzer. New session/cancel clear old
+                calibration context. Provider requests receive summary and up to 32 normalized model
+                points, never raw positions; no automatic per-target request is made. Revision tokens on
+                queued Qt requests reject stale responses. Model free text can still be wrong.
+              - AI curve proposals now require a numeric directive and measured current-session baseline;
+                sensitivity scale is capped at +/-10%. AI preset-shape directives are not applied.
+                Quick preset chips are explicitly manual. Sending a proposal while calibration is active
+                is disabled and guarded; it must be explicitly sent afterward.
+              - Calibration pauses on navigation away, restarts the unfinished target on return, and
+                ignores samples while its window is inactive or the pointer outside the visible arena.
+                Starting calibration closes Test Mode; privacy clearing destroys its in-memory state.
+              - New tests cover import failures, simulation profiles and shared deltas, scoring, UI
+                lifecycle/privacy clearing, actual queued stale AI replies, fresh data, graph preview and
+                navigation. Focused suite exited cleanly; full offscreen suite printed 733 passed,
+                5 skipped, then exited -11 during Qt shutdown. Native standalone analyzer test passed.
+                Windows native rebuild and real game/device behavior were not tested. Screenshots are
+                synthetic. Release ZIP and patches are built from a synthetic commit; do not auto-push.
+
+  2026-10-28 (rev96)  REVERT REV95, THEN BALANCE VISIBLE CONTROL POINTS.
+              - The entire rev95 source diff was reverted and the resulting tree verified identical
+                to rev94 before implementing the new selection logic. The synthetic release history
+                includes a separate revert commit; no rev95 analytic optimizer or error metadata remains.
+              - Native and Python sample the existing measured-data model over 129 evenly spaced x
+                positions plus up to 31 recent-speed-quantile candidates. Dynamic programming chooses
+                the fewest candidate anchors that keep every sampled model point within 0.005 normalized
+                chart-space distance of its corresponding line segment. Equal-count choices favor a
+                lower worst sampled error to reduce awkward clusters. This is a visual approximation,
+                not an analytic between-sample guarantee or a global real-valued minimum.
+              - Straight models use two endpoints; curved models get more points where warranted. In a
+                synthetic eight-target example this implementation displayed six points instead of
+                rev95's fourteen. User-edited/imported/AI curves are not simplified; exported files
+                preserve selected points, but third-party interpolation is not guaranteed.
+              - curve_distribution_version=4 causes stale rev94/rev95 native analyzers to fall back
+                to Python without disabling native capture. Model tooltip scope is updated, including
+                imported/manual states and undo. Eight-trial rolling behavior and model math remain.
+              - Full suite printed 717 passed, 5 skipped and exited -11 at Qt shutdown; standalone
+                native test, brute-force candidate-minimum checks, and nonlinear native/Python parity
+                tests passed. Screenshot: deliverables/screenshots/calibration-balanced-rev96.png.
+              - Release: deliverables/FPSCoach-rev96.zip, FPSCoach-rev95-to-rev96.patch, and
+                FPSCoach-rev90-to-rev96.patch. The rev95-to-rev96 patch includes revert + replacement.
+
+  2026-10-28 (rev94)  CALIBRATION GRAPH DOMAIN DISTRIBUTION.
+              - Root cause: the graph already used supplied x-coordinates, but the old analyzer
+                normalized quantiles to a single maximum speed; one outlier could cluster almost
+                all positions. Repeated speeds also collapsed points. A straight shape can still
+                be correct for near-linear measured scores; do not introduce an artificial bend.
+              - Native and Python analyzers retain adaptive point counts. They blend 80% uniform
+                domain coverage with 20% measured-quantile positions normalized to the nearest-rank
+                95th-percentile speed, clipping the upper tail for placement. These are model
+                anchors, not raw input positions. The same anchors feed rendering and export; an
+                imported curve retains its own positions. Window metrics/shape formulas are unchanged.
+              - Summary has curve_distribution_version=2; a stale native extension uses the
+                Python analyzer while retaining native capture. Recommendation exposes the desktop
+                speed reference and count above it; tooltip explains normalized export units.
+              - Tests: full suite printed 700 passed, 5 skipped, then pytest exited -11 at shutdown;
+                direct g++ native test and native/Python distribution parity test passed. Synthetic
+                screenshot: deliverables/screenshots/calibration-domain-coverage-rev94.png.
+              - Release: deliverables/FPSCoach-rev94.zip, FPSCoach-rev94.patch (from rev93), and
+                FPSCoach-rev90-to-rev94.patch (four commits from the user's previously pushed rev90).
+
+  2026-10-28 (rev93)  ROLLING-WINDOW CALIBRATION HEURISTIC.
+              - Native and Python analyzers keep metrics and valid movement-speed samples for the
+                latest eight accepted trials. All summary scores are unweighted means over that window;
+                the bounded existing sensitivity and shape formulas use those means directly. An
+                accepted target refreshes the graph; it does not update continuously per sample.
+              - Trial count remains total accepted this session; window_trial_count/window_capacity
+                disclose the evidence window, and captured_sample_count now counts its segments.
+                Rejected trials do not evict; reset/cancel clears data; confidence uses window size.
+              - Older native binaries without the window metadata use the rolling Python analyzer while
+                keeping native capture. Rebuilding the extension enables native rolling analysis.
+              - Tests: full suite printed 690 passed, 5 skipped, then pytest exited -11 in shutdown;
+                direct g++ native movement analyzer test passed. No real Windows hardware was tested.
+                `deliverables/screenshots/calibration-rolling-window-rev93.png` uses synthetic trials.
+              - Release: `deliverables/FPSCoach-rev93.zip`, `FPSCoach-rev93.patch` (from rev92), and
+                `FPSCoach-rev90-to-rev93.patch` (for the user's previously pushed rev90 source tree).
+
+  2026-10-28 (rev92)  SPEAK-A-QUESTION LISTENING INDICATOR.
+              - Clicking the chat microphone immediately shows a preparing status. SpeechRecognition
+                and Vosk signal listening only after their microphone stream opens; SpeechRecognition
+                reports processing after its stream closes and Vosk reports processing for its final
+                result. The indicator disappears when the worker finishes, including error paths.
+              - One-shot capture is not cancellable mid-flight: the mic button is disabled and its
+                tooltip says the attempt finishes automatically. Recognized speech is still sent using
+                the existing flow, and missing optional dependencies still yield an explanatory message.
+              - Tests use microphone/model doubles: 683 passed, 5 skipped; pytest subsequently exited
+                with signal 11 during shutdown (a similar Qt teardown issue was reproduced on rev88).
+                No real Windows microphone or online speech service was tested. Screenshot uses a fake
+                worker: deliverables/screenshots/ai-coach-listening-rev92.png.
+              - Release files: deliverables/FPSCoach-rev92.zip, FPSCoach-rev92.patch (from rev91), and
+                FPSCoach-rev90-to-rev92.patch (two commits for the user's existing rev90 branch).
+
+  2026-10-28 (rev91)  AI COACH CHAT: QUIET AUTO NOTES AND ROUNDED CHAT BUBBLES.
+              - Automatic calibration/training notes and proactively generated replies are shown as
+                muted gray text without a bubble; live-vision updates use the same quiet treatment.
+                User messages remain on the right in darker rounded bubbles, while ordinary coach
+                replies are on the left in rounded bubbles. Plain-text labels remain selectable.
+              - The scrollable ChatTranscript uses actual rounded Qt frames, wraps text at changing
+                widths, preserves theme refresh and text size, and reserves the thinking strip.
+              - Focused tests: 117 passed; full suite: 676 passed, 5 skipped. Both pytest subprocesses
+                exited -11 after the summary; the shutdown crash prevents treating those runs as clean
+                exits. A similar Qt shutdown crash was previously reproduced on the rev88 baseline.
+              - Release: deliverables/FPSCoach-rev91.zip and deliverables/FPSCoach-rev91.patch;
+                screenshot: deliverables/screenshots/ai-coach-chat-rev91.png (synthetic messages).
+
+
+*** IMPORTANT: Work on the real repository at /home/user/FPSCoach
+*** (https://github.com/AFK-999/FPSCoach.git), branch rev72-screen-recorder-tool.
+*** Older scaffold paths and plans below are historical; do not substitute them
+*** for the files in this working tree. Current layout includes python/fps_coach/,
+*** native/ C++ core + CMakeLists.txt, batch files at repo root, and scripts/*.ps1.
+  2026-10-23 (rev77)  FIX: NATIVE C++ CORE IS OPTIONAL (LNK2001 ON WINDOWS).
+              - CMakeLists.txt: FPSCOACH_SKIP_NATIVE guard (no targets built, compiler-free install),
+                project(... LANGUAGES NONE) + enable_language(CXX) in the build branch, plain if()/else()
+                instead of a top-level return() (needs CMake 3.29, floor is 3.23), and Python::Module linked
+                explicitly into fpscoach_native -> fixes "LNK2001 unresolved external symbol __imp__Py...".
+              - tests/test_cmake_native_optional.py (new, 5): text-level guards, incl. the configure-time warning when
+                find_package(Python) resolves no import library (the root cause of the 149 symbols);
+                verified to fail on a LANGUAGES CXX regression.
+              - README (LNK2001 troubleshooting + three remedies, incl. py -3.12), docs/build-and-packaging.md
+                (new "Installing without the native core"), docs/screen-recorder-tool.md (pointer to the var).
+              - VERIFICATION (sandbox, Linux): skip=1 configures with a bogus compiler, wheel has no native
+                binaries, editable install + MainWindow carry the fallback analyzer; skip=0 builds the analysis
+                core and ctest passes; pytest 455 passed, 5 skipped; ruff clean on the new test.
+
+  2026-10-23 (rev78)  FIX: LIVE CAPTURE PREVIEW WITHOUT THE NATIVE CORE.
+              - python/fps_coach/python_capture.py (new): mss-backed PythonDesktopCapture with the native
+                object's interface + plan_region() preset semantics; guarded mss import, 60 FPS cap.
+              - backend.py: native -> Python capture -> None selection, uses_python_capture, capture_error,
+                outputs() cannot raise on a headless session.
+              - ui/pages_setup.py: live_source_note under the Source card, GPU checkbox disabled without
+                the native core.
+              - tests/test_python_capture.py (new, 20): fake-sct tests, no display touched.
+              - README / docs/architecture.md / pyproject: three capture tiers documented.
+              - VERIFICATION: pytest 476 passed, 5 skipped; offscreen MainWindow capture run painted frames
+                at 60 FPS through the Python path.
+
+  2026-10-23 (rev79)  FEATURE: LIVE VISION - THE COACH READS THE CAPTURE PREVIEW.
+              - python/fps_coach/visual_coach.py (new): frame signature/delta, JPEG encoder with a Qt
+                fallback, and LiveVisionSession (newest-frame loop, change skipping, backoff, ask_now).
+              - ai_chat.py: images= on chat() (Ollama base64 / OpenAI image_url), VISION_SYSTEM_PROMPT,
+                model_supports_images().
+              - ui: "Live vision" card in AI Coach (toggle off at launch, Look now, thumbnail of the exact
+                frame sent, vision-model warning), _LiveVisionThread, "eye" glyph, privacy copy.
+              - tests: test_visual_coach.py (29) + test_vision_payloads.py (21).
+              - VERIFICATION: pytest 526 passed, 5 skipped; offscreen end-to-end with a fake vision model.
+
+  2026-10-23 (rev80)  FEATURE: REAL-TIME WATCHING - THE COACH SEES A MOVING CLIP.
+              - visual_coach.motion_report(): change level + which third of the frame moved.
+              - LiveVisionSession collects ordered windows (clip length / sample interval), adaptive idle
+                skipping, payload cap, richer counters; nothing queued.
+              - prompts describe the clip and its motion; page shows a 4-frame filmstrip + motion meter and
+                gained Clip length / Sample every controls.
+              - privacy copy: clips held in memory only.
+              - VERIFICATION: pytest 536 passed, 5 skipped; offscreen end-to-end with a fake vision model.
+
+  2026-10-23 (rev81)  IMPROVEMENT: TIMESTAMPED FRAMES + QWEN3-VL AS THE RECOMMENDED MODEL.
+              - prompts carry "Frame times, oldest first: 0.0 s, 0.5 s, …" (Ollama has no temporal
+                position ids for images).
+              - suggested_vision_models(): qwen3-vl:8b first (trained on timestamp+frame input;
+                llama.cpp frame-merge turns consecutive frames into a video block).
+              - card note names qwen3-vl:8b and nudges users of non-qwen vision models.
+              - VERIFICATION: pytest 540 passed, 5 skipped.
+
+  2026-10-23 (rev82)  UI: LIVE VISION IS OPT-IN (Settings toggle hides the panel).
+              - "Enable live vision" checkbox in the AI Coach Settings block; the middle card is hidden
+                unless it is on, and hiding it stops any running watch.
+              - The panel's own Watch live switch is still off at every launch.
+              - tests +3; full suite 543 passed, 5 skipped.
+
+  2026-10-23 (rev83)  UI: IN-GAME MODE MOVED INTO SETTINGS > ADVANCED.
+              - _build_ingame_card(embedded=True) renders it as a section (no nested card frame);
+                advanced_body holds it and starts collapsed.
+              - tests +2 (placement + mode still works from inside Advanced).
+              - VERIFICATION: pytest 545 passed, 5 skipped.
+
+  2026-10-28 (rev84 - WITHDRAWN)  Loud mode (post-synthesis gain) was added and then removed at
+              the user's request ("completely revert and remove the previously applied patch titled
+              'Loud Mode Boost Spoken Replies'"). No trace of it remains in the code: git history on
+              the branch was reset to rev83, tests/test_tts_loudness.py and the rev84 patch file are
+              gone. Do not re-add it unless asked again.
+
+  2026-10-28 (rev85)  SPEECH VOLUME: EXPLICIT 100% DEFAULT + WINDOWS GUIDANCE NOTE.
+              - ui/pages_coach: VOLUME_DEFAULT / VOLUME_KEY module constants; the volume slider is
+                explicitly set to VOLUME_DEFAULT (a bare QSlider starts at its 0% minimum) and
+                AIChatPage.ensure_volume_default() writes tts/volume=100 once when the key has never
+                been stored. A stored value - including 0 (muted) - is never overwritten; a corrupt
+                value falls back to 100 instead of silencing the coach.
+              - Settings > Voice: new volume_note under "Speak responses aloud" saying the app already
+                asks for 100% and pointing at Windows Settings > System > Sound > Volume, Volume mixer
+                (lift Vantage above the game) and Sound > More sound settings > Communications >
+                "Do nothing" (so Windows stops ducking audio). Tooltip points back at the in-app slider.
+              - docs/architecture.md "Spoken replies: volume default and guidance (rev85)".
+              - tests: tests/test_voice_volume_guidance.py, 14 tests.
+              - VERIFICATION: pytest 562 passed, 2 skipped (5 skipped without pyttsx3 installed).
+
+  2026-10-28 (rev86)  SETTINGS: THE "REPLIES" CARD IS REMOVED (it duplicated the AI Coach tab).
+              - ui/pages_coach SettingsPage: _build_replies_card() deleted and dropped from the right
+                column; SettingsPage.stop_speaking_requested and SettingsPage.text_size_changed deleted
+                (they existed only for that card). A comment marks where it used to be.
+              - AIChatPage: replies_changed and set_text_size() removed (they only fed the duplicate);
+                the read-aloud tooltip now says "Settings > Voice" instead of "Settings > Replies".
+              - main_window: the three connections and _on_reply_text_size() removed; the read-aloud
+                handler now calls settings_page.refresh_voice_state().
+              - SettingsPage.refresh_replies() -> refresh_voice_state(): syncs only the Voice card's
+                "Speak responses aloud" box, which still shares ui/tts_enabled with the chat.
+              - tests/test_settings_replies.py rewritten (18 tests): the four controls and two signals
+                are gone, no "Replies" heading remains, the AI Coach tab still has read aloud / stop /
+                text size, and the shared read-aloud value still stays in step both ways.
+              - VERIFICATION: pytest 567 passed, 2 skipped.
+
+  2026-10-28 (rev87)  SETTINGS: THE MODEL FIELD IS A DROPDOWN YOU CAN RE-PICK FROM.
+              - User: "investigate the settings module, specifically the models section ... implement a
+                solution that allows me to reselect a model from a list if its name was accidentally
+                removed, avoiding the need to manually type it in".
+              - ai_chat.list_models(base_url, provider, api_key="", timeout=6.0): Ollama /api/tags, or an
+                OpenAI-compatible /models (Bearer only when a key is given). Lenient parsing via
+                _names_from_tags / _names_from_models (_unique_names: strip, drop blanks, case-insensitive
+                dedupe, sorted); _models_endpoint handles base URLs with/without /v1 or /chat/completions.
+                suggested_text_models() = qwen3:1.7b, phi4-mini, qwen3:4b, llama3.2:3b, qwen2.5:7b,
+                mistral:7b (names to offer, NOT a claim that they are installed).
+              - ui/threads.py: _ModelListThread(base_url, provider, api_key) -> models_ready(list) / failed(str).
+              - ui/pages_coach SettingsPage: self.model is an editable QComboBox (placeholder "Pick a model,
+                or type one"). Items come from the saved ai/model, then the cached ai/model_list, then the
+                suggestions; each item's data is {"name", "source"} so "(suggested, not installed)" labels
+                still save the plain name. Picking saves at once (textActivated); typing still commits on
+                editingFinished. New refresh QToolButton (glyph "refresh") calls _list_models(); showEvent
+                probes once when nothing is cached; model_hint explains counts and the current pick;
+                status_label reports "Found N model(s) or the failure. SettingsPage.shutdown() waits for the
+                thread and MainWindow.closeEvent calls it.
+              - tests/test_model_picker.py (34 tests): parsing, endpoints, a real loopback HTTP server for
+                both provider shapes (incl. 401 and unreachable), the thread, and the card - including the
+                exact case the user described (ai/model cleared, names still listable and re-pickable).
+              - VERIFICATION: pytest 601 passed, 2 skipped. Screenshots: settings-model-list.png and
+                settings-model-dropdown.png (served by a fake Ollama on 127.0.0.1:11434).
+              - KNOWN, NOT FIXED (pre-existing, unrelated to this change): the Settings provider combo
+                stores "openai-compatible" but ai_chat.chat() only understands "openai", so choosing the
+                online provider breaks chat with "Unknown AI provider selection". list_models() maps the
+                label correctly; the chat path was left alone because it was not part of this request.
+
+  2026-10-28 (rev88)  UI: EVERY COMBO BOX NOW SHOWS A CHEVRON ("dropdown arrow").
+              - User: "add a visual indicator, such as a dropdown arrow icon, to the far right of the text
+                box in the models dropdown menu ... clear to users that a dropdown menu is available".
+              - Cause: styles.py sets QComboBox::drop-down (borderless, width 22px) with no down-arrow rule,
+                which on these styles removes Qt's own arrow. Every combo looked like a text field; the
+                editable Model field looked exactly like one.
+              - widgets.ComboField(QComboBox): paints the "chevron_down" glyph in paintEvent, centred in the
+                reserved 22px strip (ARROW_WIDTH/ARROW_SIZE), coloured from active_palette()["text"]
+                ("text3" when disabled), so it follows theme switches with no registration step.
+              - styles.py: QComboBox::down-arrow { image: none; width: 0; height: 0; } so no second arrow.
+              - All 15 QComboBox() call sites are now ComboField(): pages_coach (6), pages_setup (6),
+                pages_practice (3). Unused QComboBox imports removed where they became unused.
+              - tests/test_combo_arrow.py (14): geometry, the arrow is painted and only inside the strip,
+                theme/disabled colours, the stylesheet rule, the ARROW_WIDTH/strip agreement, and an AST
+                check that no page builds a bare QComboBox().
+              - VERIFICATION: pytest 615 passed, 2 skipped. Screenshots: combo-arrow-model.png,
+                combo-arrow-provider.png, settings-model-list.png, settings-model-dropdown.png.
+
+  2026-10-28 (rev89)  CALIBRATION: EDITABLE GRAPH + 1,000 HZ SAMPLING TARGET.
+              - User: "Modify the graph in the application's calibration tab to allow users to drag and
+                move existing dots. Also, implement a right-click context menu that includes options to
+                manually add and delete dots on the graph."
+              - `widgets.CurveChart`: every point is shown as a draggable dot on curves up to 64 points;
+                longer curves show up to 64 key bends, sampled evenly if there are more. Drag vertically
+                to change gain; interior dots can also move horizontally to change speed, clamped between
+                neighbors. Endpoints remain
+                at their original speed positions. Zero-gain dots use an additive drag path, not a ratio
+                that would leave them stuck at zero. The cursor and hover state make dots discoverable.
+              - Right-click uses a theme-aware context menu with **Add point here** (inside plot, up to
+                200 points) and **Delete point** (on a dot only; minimum two points).
+              - `curve_geometry_changed` carries y + x data. CalibrationPage mirrors point additions and
+                deletions into the matching horizontal/vertical exported profile, updates speed positions,
+                and records complete Undo/Redo snapshots. Read-only preview charts are untouched.
+              - Calibration sample selector: 125, 250, 500, and 1,000 Hz (default 1,000), saved as
+                `calibration/sample_hz`. At 1,000 Hz the precise Qt timer interval is 1 ms; redraws are
+                throttled separately to about 60 Hz. This is a target cadence, not a promised achieved rate;
+                the tooltip says OS/Qt scheduling or load can reduce it. Mouse-move events are also recorded.
+              - Native and Python fallback analyzer trial caps are 65,536 samples; native and fallback tests
+                exercise 12-second 1,000 Hz trials beyond the old 8,192-sample limit.
+              - `tests/test_calibration_chart_edit.py` (37): short/long point visibility, non-bend drag,
+                vertical and horizontal movement, endpoint limits, zero-gain editing, add/delete/menu
+                availability, exportable profile structure, and Undo. `tests/test_calibration_sample_rate.py`
+                (9): supported rates, precise intervals, persistence, session retuning, repaint throttling,
+                fallback retention, and strict sample-cap endpoint handling.
+              - README and docs/architecture.md updated; screenshot:
+                `/home/user/deliverables/screenshots/calibration-graph-point-menu.png`.
+              - VERIFICATION: full pytest output 658 passed, 5 skipped; pytest exits 139 from a PySide6/Qt
+                shutdown segfault after the summary, also reproduced on untouched rev88 (612 passed, 5
+                skipped). Focused rev89 tests exit cleanly (46 passed). Native C++ movement test compiled
+                with g++ and passed; `ruff` passes on both new calibration test files.
+
+  2026-10-28 (rev90)  CALIBRATION: CURVES FROM CAPTURED MOVEMENT + VISUAL AI CURVE PREVIEWS.
+              - Native and Python fallback analyzers now retain accepted-trial cursor-speed samples,
+                derive curve x-positions from measured speed quantiles, and scale control-point count by
+                sample count (`ceil(log2(n + 1)) + 1`, 2–32 points; duplicate x-values omitted). The
+                graph starts empty and refreshes after each accepted target; completion is one Undo step,
+                cancel restores the pre-session curve, and user edits are locked during the live estimate.
+              - AI Coach's adjacent Curve tuning chart shows the complete calibrated/imported curve and
+                visual before/after overlays for calibration suggestions and supported AI directives. It
+                preserves every source point; an explicit Send to calibration button is required. User
+                bubbles align right, coach bubbles left, HTML is escaped, and transcript colors are
+                re-rendered when the theme changes. Parser-only [ADJUST: ...] tags are hidden from the
+                visible reply and read-aloud output.
+              - Privacy copy now describes cursor sampling accurately (no screen frames; raw timestamped
+                samples are transient/local; aggregate speed samples stay local; text AI requests may
+                include summary and up to 32 active horizontal curve points). README, architecture, and
+                docs/PRIVACY.md updated; privacy policy duplicate content removed.
+              - Tests added/updated: `test_calibration_live_curve.py`, `test_ai_coach_curve_preview.py`,
+                fallback/native recommendations, sample-rate tests, coach focus/bubble tests.
+              - VERIFICATION: focused suite 127 passed (pytest tool reported exit -1 after summary);
+                full suite 671 passed, 5 skipped (tool again reported exit -1 after summary; Qt teardown
+                has a known nonzero exit on this environment, previously reproduced on pristine rev88);
+                direct g++ native movement-analyzer test passed. Ruff on touched Python files reports only
+                the 11 pre-existing import/annotation/zip warnings; new tests pass Ruff. Screenshots:
+                `deliverables/screenshots/ai-coach-curve-preview-rev90.png` and
+                `deliverables/screenshots/calibration-live-data-curve-rev90.png`.
+              - Release artifacts: `deliverables/FPSCoach-rev90.zip` and
+                `deliverables/FPSCoach-rev90.patch`. The ZIP includes the updated repository, the
+                ordered patch series, a combined upstream diff, screenshots, and application instructions.
+
 ================================================================================
 
 --------------------------------------------------------------------------------
@@ -46,30 +1488,29 @@ shooter players.
 --------------------------------------------------------------------------------
 3. CURRENT TASK (what we are building now)
 --------------------------------------------------------------------------------
-Produce TWO distinct build packages, plus backend hardening and AI preconfig.
+The active request, rev96, is complete. Rev95 was fully reverted before implementing a visually
+balanced selector for the rev94 model. It keeps the fewest anchors among finite sampled candidates
+within a 0.005 normalized chart-space tolerance at sampled model positions. This is not an exact or
+between-sample guarantee, and does not guarantee third-party export interpolation. The dots are model
+anchors, not raw samples. Stale native analyzers fall back to the current Python implementation.
 
-  TASK A — Two build packages:
-    A1. "Lite" / foundation build:
-        - Ships WITHOUT any AI models or Ollama runtime.
-        - User installs Ollama themselves and downloads models themselves.
-        - App detects Ollama + models at runtime and guides the user if missing.
-    A2. "Full" build:
-        - Embeds the Ollama runtime AND Qwen 3 1.7B model weights in the installer.
-        - AI is fully functional out of the box, no manual setup.
+Rev93 calibration derives moving averages from the latest eight accepted trials and refreshes the
+bounded heuristic curve after each completed target.
 
-  TASK B — Environment self-repair (backend):
-        - On startup, backend checks the local environment.
-        - If the project folder was MOVED or RENAMED, auto-repair the install
-          (re-point the editable install / fix path references) before running.
+Rev92 speak-a-question shows preparation, listening and processing states. The one-shot microphone
+button is disabled until the worker ends and errors remain visible in the transcript.
 
-  TASK C — AI chat preconfiguration:
-        - A dedicated configuration section to purposefully import
-          instructions + recommendations into the AI chat interface.
-        - Goal: the assistant is pre-configured (system prompt / persona /
-          domain guidance) to effectively fulfill its FPS-coaching role.
+Rev91 displays automatic notes, proactive model responses and live-vision updates as muted text
+without bubbles. Regular coach responses use rounded left-aligned bubbles, and user messages use
+darker rounded right-aligned bubbles. Selectable text retains theme, zoom and scrolling support.
+
+Rev90 calibration continues to build adaptive sensitivity curves from captured cursor movement,
+refreshing after each target; the adjacent AI Coach panel previews full curve proposals. Rev89's
+draggable dots, right-click editing, Undo/Redo and 125–1,000 Hz requested cadence remain intact.
+The older Lite/Full installer and AI preconfiguration plan below is historical context.
 
 --------------------------------------------------------------------------------
-4. IMPLEMENTATION PLAN / SPEC (ready for whoever has the real files)
+4. ORIGINAL IMPLEMENTATION PLAN (historical; not the active request)
 --------------------------------------------------------------------------------
 
 4.A  BUILD PACKAGES
@@ -142,25 +1583,446 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
 7. WHERE WE LEFT OFF  (read me first)
 --------------------------------------------------------------------------------
   REPO (the only source of truth):
-    /home/user/workspace/FPSCoach   (clone of https://github.com/AFK-999/FPSCoach.git)
-    Remote origin/main = e9e69a2   (the visual REDESIGN; based on 04e6b0f)
-    Working branch     = fix/redesign-backend-wiring (from e9e69a2), NOT pushed.
-    REV73 STATUS: AI Coach transcript as chat bubbles. The user's messages are on the right in the
-    accent colour; the coach's replies and the app's notices are on the left in a neutral colour. The
-    speaker label stays inline ("Coach: ..."). Bubbles are redrawn on a theme change. Escaping is new:
-    typed text is shown as text, not HTML. Line breaks in a reply are kept. NOT in this change: showing
-    curve refinements beside the chat (the user dropped it). Tests: test_chat_bubbles.py (8),
-    test_chat_bubbles_page.py (4). Suite 382 passed, 2 skipped (native). Wiring 32/32. ruff F clean.
-    Visual check: offscreen renders in both themes. NOT verified on Windows.
-    REV72 STATUS: the 1120 px top-bar overlap is FIXED. The window's minimum width is now the top bar's
-    measured need, re-measured after every theme change (it was measured once at start-up, before the
-    stylesheet, and came out 21 px short: 1223 px against a 1244 px need). At the narrowest size the tab
-    strip no longer runs under the core dot. The window's floor is now 1244 px in the sandbox (the font
-    decides the exact value), not 1120 px. To reach 1120 px the tabs would have to shrink. That is a
-    design choice, not made here. Tests: tests/test_topbar_fit.py (3; they fail on the previous code).
-    Suite 370 passed, 2 skipped (native fake build). Wiring 32/32. ruff F clean. NOT verified on Windows.
-    PUSHED: origin/fix/redesign-backend-wiring (new remote branch, user push; the PR can be opened from
-    that branch). origin/main is NOT changed; main is still at the older commit 9cce612 locally.
+    /home/user/FPSCoach   (working clone of https://github.com/AFK-999/FPSCoach.git)
+    Working branch     = rev72-screen-recorder-tool. No remote is configured in this workspace;
+                         revisions are committed locally and delivered as replayable patches.
+    REV90 STATUS: Rev89 plus adaptive curves derived from live captured cursor movement, full-point
+    AI curve previews, and opposite-side chat bubbles.
+    Requested: "generate sensitivity curve based on real-time analysis of the captured user input ...
+    adapt the graph dot count ... AI Coach ... display ... adjustments/recommendations ... as visuals ...
+    keep user and coach messages opposite sides."
+      - The historical rev90 point-count and quantile placement rules were superseded in rev96.
+        Accepted movement speeds remain local; current anchors use the visual model simplification
+        described in the rev96 entry at the top of this file.
+      - Calibration graph starts empty and refreshes after each target. It is read-only while provisional;
+        completion becomes one Undo step, cancel restores the old curve, and final points are editable/exportable.
+      - AI Coach displays full calibrated/imported curves and before/after previews for supported AI curve
+        recommendations in the adjacent panel. The proposal is not sent to Calibration until clicked.
+        It does not apply anything to the game. User bubble right; Coach left; HTML is escaped and theme
+        changes re-render stored transcript. Parser-only adjustment tags are omitted from visible/spoken text.
+      - Privacy, README, and architecture docs updated; `docs/PRIVACY.md` was de-duplicated and now
+        distinguishes transient cursor samples from locally retained speed metrics and AI context.
+      - Focused suite: 127 passed, tool exit -1 after summary. Full suite: 671 passed, 5 skipped, tool
+        exit -1 after summary (known Qt teardown issue also reproduced against untouched rev88).
+        Direct g++ native analyzer test passed. Ruff: new tests clean; touched Python has 11 pre-existing
+        import/annotation/zip warnings.
+      - Screenshots: `deliverables/screenshots/ai-coach-curve-preview-rev90.png` and
+        `deliverables/screenshots/calibration-live-data-curve-rev90.png`.
+      - Release files: `deliverables/FPSCoach-rev90.patch` (incremental from rev89) and
+        `deliverables/FPSCoach-rev90.zip` (updated repository and full ordered patch series).
+
+    REV89 STATUS (previous release): Rev88 plus editable Calibration sensitivity-curve points and a
+    persistent 1,000 Hz cursor-sampling target (choices: 125, 250, 500, 1,000 Hz; default 1,000).
+    Requested: "Modify the graph in the application's calibration tab to allow users to drag and move
+    existing dots. Also, implement a right-click context menu that includes options to manually add and
+    delete dots on the graph."
+      - Curves up to 64 points show every point; larger curves show up to 64 key bends. Drag gain vertically;
+        drag interior dots horizontally to change speed (neighbor-clamped; endpoints stay anchored).
+      - Right-click: Add point here (in plot, maximum 200), Delete point (on a dot; minimum 2). Edits update
+        the exportable horizontal/vertical profile and are undoable/redone.
+      - Sample target persists as calibration/sample_hz; 1,000 Hz uses a 1 ms precise timer, redraws
+        throttled around 60 Hz; UI cautions that Windows/Qt scheduling can reduce achieved rate. Native and
+        fallback trial caps are 65,536 samples.
+      - Previous verification: full pytest output 658 passed, 5 skipped then exit 139 from Qt teardown
+        (also reproduced on untouched rev88); 46 focused tests exit cleanly; native test passed.
+        Screenshot: deliverables/screenshots/calibration-graph-point-menu.png.
+
+    REV88 STATUS: rev87 plus a chevron on every combo box (so a dropdown reads as a dropdown).
+    Requested: "add a visual indicator, such as a dropdown arrow icon, to the far right of the text box in
+    the models dropdown menu. This will make it clear to users that a dropdown menu is available."
+      - Root cause: the stylesheet styles ::drop-down but never ::down-arrow, so Qt's arrow disappears on
+        these styles and every combo box looked like a plain text field.
+      - Fix: widgets.ComboField paints the chevron in the reserved strip (theme text colour, muted when
+        disabled); QComboBox::down-arrow { image: none } avoids a duplicate; all 15 combos use it.
+      - tests: tests/test_combo_arrow.py (14).
+    VERIFICATION: 615 passed, 2 skipped. Still NOT pushed.
+
+    REV87 STATUS: rev86 plus a model dropdown in Settings > AI coach (re-pick a model instead of retyping).
+    Requested: "investigate the settings module, specifically the models section. I need you to implement a
+    solution that allows me to reselect a model from a list if its name was accidentally removed, avoiding
+    the need to manually type it in."
+      - The Model row is an editable QComboBox fed by: saved ai/model, cached ai/model_list (the last list the
+        provider gave), then suggested_text_models() labelled "(suggested, not installed)". Item data holds
+        {"name","source"} so the saved value is always the plain name.
+      - ai_chat.list_models() reads Ollama /api/tags or an OpenAI-compatible /models; _ModelListThread runs it
+        off the UI thread; the card has a refresh button, probes once on first show when nothing is cached,
+        keeps known names when the request fails, and reports the result in status_label.
+      - SettingsPage.shutdown() waits for the thread; MainWindow.closeEvent calls it.
+      - tests: tests/test_model_picker.py (34). docs/architecture.md "The model list in Settings (rev87)".
+    VERIFICATION: 601 passed, 2 skipped. Still NOT pushed.
+
+    REV86 STATUS: rev85 plus the Settings > Replies card removed (it duplicated the AI Coach tab).
+    Requested: "remove the 'Replise' option in the settings tab of the app because it already is in
+    the ai coach tab settings".
+      - Removed: SettingsPage._build_replies_card (read aloud, Stop speaking, reply text size) and the
+        signals stop_speaking_requested / text_size_changed that only it used; AIChatPage.replies_changed
+        and set_text_size(); main_window's three connections and _on_reply_text_size().
+      - Kept: the AI Coach tab's settings block (read aloud, Stop speaking, text size) and the Settings
+        > Voice "Speak responses aloud" switch, which shares ui/tts_enabled; refresh_replies() was
+        renamed refresh_voice_state() because it now syncs only that switch.
+      - tests/test_settings_replies.py rewritten; tests/test_voice_volume_guidance.py updated to the
+        renamed method. Docs updated in docs/architecture.md.
+    VERIFICATION: 567 passed, 2 skipped. Screenshot: settings-no-replies-card.png. Still NOT pushed.
+
+    REV85 STATUS: rev83 plus an explicit 100% speech-volume default and a Windows volume note in
+    Settings > Voice. rev84 (Loud mode) was withdrawn and is no longer in the tree.
+    Requested: (1) "completely revert and remove the previously applied patch titled 'Loud Mode Boost
+    Spoken Replies'", (2) "ensure that the volume setting is explicitly initialized to 100% by default
+    upon application startup", (3) "add a note ... within the Settings tab, specifically under the
+    Voice section, that guides users to check their device's volume preferences in Windows if they
+    perceive the AI's voice as being too low".
+      - Revert: git history reset to 4d374e6 (rev83); tts_service.py, pages_coach.py, README,
+        docs/architecture.md and FPS_COACH_CONTINUATION.txt are back to rev83 content, and
+        tests/test_tts_loudness.py plus patches/0013-rev84-*.patch were removed. The rev84 zip is gone.
+      - Volume default: VOLUME_DEFAULT = VOLUME_MAX (100) in ui/pages_coach; the slider is set to it
+        explicitly, and AIChatPage.ensure_volume_default(settings) writes tts/volume once at startup
+        when absent. Saved 0 stays 0; garbage falls back to 100.
+      - Settings > Voice note (self.volume_note, objectName cardSubtitle, word-wrapped) sits under
+        "Speak responses aloud" and names Windows' volume, Volume mixer and Communications ducking.
+      - tests: tests/test_voice_volume_guidance.py (14 tests) covers the default, the preserved user
+        choice, the corrupt value, and the note's presence, wording and honesty.
+    VERIFICATION: 562 passed, 2 skipped. Screenshot: settings-voice-volume-note.png. Still NOT pushed.
+
+    REV83 STATUS: rev82 plus In-Game Mode moved under Settings > Advanced.
+    Requested: "in the settings tab of the app move 'In-Game Mode' option to be under the 'Advance'
+    expendable option".
+      - ui/pages_coach SettingsPage: _build_ingame_card(embedded=True) renders the same widgets as a
+        SECTION (new QFrame#advancedSection style: transparent, no border, top rule) instead of its own
+        card, and self.ingame_card is added to advanced_body, which stays collapsed by default.
+        The card no longer appears in the right column.
+      - Advanced copy now describes itself honestly (session-only and setup options).
+      - tests (+2 in test_ingame_mode.py): the block's parent is advanced_body, it is hidden at launch,
+        appears when Advanced opens and hides again; and the mode still works from inside Advanced
+        (context block + enabled flag).
+    VERIFICATION: 545 passed, 5 skipped; screenshots/settings-advanced-collapsed.png and
+    -open.png. Still NOT pushed.
+
+    REV82 STATUS: rev81 plus the Live vision panel is opt-in.
+    Requested: "in the ai chat tab in the settings add a toggle to enable 'live vision' instead of keeping
+    it always in the middle even when its not used".
+      - ui/pages_coach: a "Live vision" section inside the chat card's Settings block with a checkbox
+        "Enable live vision" (ai/live_enabled, default False) and a one-line explanation. The middle card
+        is now setVisible(live_enable.isChecked()) and kept as self.live_card; turning the Setting off also
+        calls _stop_live_vision(), so hiding the panel never leaves a worker running. _toggle_live_vision
+        switches the Setting on rather than watching from a hidden panel.
+      - Two independent switches on purpose: the Setting is a remembered layout preference, the panel's
+        "Watch live" is not and stays off at every launch.
+      - tests (+3): hidden until enabled and remembered; a saved preference reopens the panel but does not
+        start watching; hiding the panel stops a running watch. Panel-bound tests now enable it first.
+    VERIFICATION: 543 passed, 5 skipped; ruff clean on the touched files; screenshots/
+    ai-live-vision-settings.png shows the toggle with the panel open. Still NOT pushed.
+
+    REV81 STATUS: rev80 plus (a) per-frame timestamps in the prompt and (b) qwen3-vl as the
+    recommended model.
+    Why: Ollama has no video input - frames arrive as images with no temporal position ids
+    (ollama#18151), which is exactly what qwen-vl is trained to use ("timestamps-video frames",
+    per-model temporal position ids), and llama.cpp added frame-merge for qwen-vl (ollama#17321) so
+    consecutive same-size images can reach the model as a video block.
+      - visual_coach: _times() writes "Frame times, oldest first: 0.0 s, 0.5 s, … (N in total)" into
+        both prompts, with "Use them to say when something changed."; suggested_vision_models() is
+        now qwen3-vl:8b first, then qwen3-vl:4b, qwen2.5vl:7b, gemma3:4b, llava:7b, moondream.
+      - ui: the Live vision note names qwen3-vl:8b when the configured model cannot see, and nudges
+        ("qwen3-vl:8b is the better fit for a clip: it is trained on timestamped video frames") when
+        a vision model that is not a qwen-vl variant is set; _is_timestamp_model() decides.
+      - tests: per-frame timestamps present and zero-relative, empty-window "none", every suggested
+        model passes model_supports_images, the nudge appears for gemma3 and not for qwen3-vl.
+    VERIFICATION: 540 passed, 5 skipped; ruff clean on the touched files.
+    Same limits as rev80: no real vision model run here, no real Windows display. Still NOT pushed.
+
+    REV80 STATUS: rev79 plus REAL-TIME WATCHING - the coach now sees the preview as a moving clip, not a still.
+    Requested: "make it that the ai coach sees in real time and watches real-time video capture not an image".
+    Design note: a local Ollama vision model cannot ingest a video stream, so "real time" was implemented as
+    CONTINUOUS SAMPLING + ORDERED MULTI-FRAME WINDOWS: the loop samples the newest preview frame every
+    sample_interval (default 0.5 s), collects frames_per_request of them (default 4 = ~1.5 s of screen), and
+    sends them together, in order, with measured motion. The model compares frames, so its answer is about
+    change ("the HUD bar slides right, everything above is static"), not a frozen picture.
+    What changed:
+      - visual_coach.motion_report(): per-cell luma comparison of two signatures -> level, changed-cell
+        ratio, and WHICH THIRD of the frame moved (top/middle/bottom/full). Threshold ignores dither.
+      - LiveVisionSession now collects a window (_collect_window) instead of one frame: drops repeated
+        frames inside a window, stops after a full window's worth of duplicates on a still screen, then
+        applies adaptive idle skipping (reports "The preview is not changing..."), trims the oldest frames if
+        the payload exceeds max_payload_bytes, and prints its own counters (looks / frames / replies / clip
+        span / idle skips / latency). Nothing is queued: collection stops while a request is in flight.
+      - COACH_PROMPT/LOOK_PROMPT now describe the clip ("N ordered frames, sampled every X s, together about
+        Y s of a moving screen") plus "Motion across the window: low (…% mean cell change, …% of the frame
+        changed, mostly in the bottom third)".
+      - ui: the card grew "Clip length" and "Sample every" controls (Ask every default dropped to 4 s), a
+        FOUR-FRAME FILMSTRIP showing exactly what was sent (oldest first, newest highlighted), and a motion
+        meter ("low · 2% (bottom)"). Reply stamps read "4 frames / 1.3 s · low motion". _LiveVisionThread
+        emits window_sent([jpegs], meta) instead of frame_sent.
+      - Privacy copy (PRIVACY_POINTS + docs/PRIVACY.md): clips of downscaled frames, held in memory only,
+        discarded after the request; nothing recorded by this feature.
+    Tests: tests/test_visual_coach.py rewritten for streaming (39): motion level/band/threshold, clip of N
+    ordered frames with real differences between images, window announced before the request with ages
+    descending, prompt describes clip+motion, single-frame wording, payload cap dropping oldest frames,
+    still screen idling, moving screen continuing, Look now taking a window, stop mid-window sending nothing,
+    plus the encoder/page tests. Full suite 536 passed, 5 skipped.
+    VERIFICATION (sandbox): end-to-end through MainWindow with a fake vision model over a synthetic moving
+    HUD: 2 looks, 4 frames each (~8.6 KB per frame), filmstrip filled, motion "low · 2% (bottom)", status
+    "2 looks · 8 frames · 2 replies · 1.3 s clips". Screenshot: deliverables/screenshots/ai-live-vision.png.
+    NOT verified: a real vision model (gemma3:4b untested here; qwen3:1.7b cannot see) and a real Windows
+    display. Still NOT pushed.
+
+    REV79 STATUS: rev78 plus LIVE VISION - the AI coach reads the capture preview and comments on it.
+    Requested: "update our existing desktop utility script that uses mss and threading to capture the live
+    screen preview within the application and allow the ai in the application to automate responses
+    according to the visual data represented in the preview". Clarified with the user: BOTH automatic
+    commentary while capture runs AND an on-demand "Look now"; payload = real frames from the preview
+    (they answered "the video on being played on the preview screen in realtime"), not a text summary.
+    HARD BOUNDARY KEPT: no target/enemy/aim analysis. The prompt (visual_coach.COACH_PROMPT / LOOK_PROMPT)
+    restricts the coach to the picture and the setup - layout, readability, HUD clutter, lighting, colour,
+    blur - and forbids identifying targets, enemies or players and giving aim/recoil/positioning advice.
+    What was built:
+      - python/fps_coach/visual_coach.py (new, ~470 lines, Qt-free): frame_signature() (32x18 luma grid
+        sampled from BGRA, no resize), frame_delta(), describe_frame() (size/brightness/contrast only),
+        encode_frame() (BGRA -> JPEG <=768 px via OpenCV, else Qt's writer), LiveVisionSession (newest-frame
+        loop: waits for capture, skips unchanged frames at 0.4% mean luma, exponential backoff, stops after
+        max_consecutive_errors, ask_now() bypasses the change check, stop() breaks any wait).
+      - ai_chat.py: chat(..., images=[jpeg]) -> base64 "images" on the Ollama user message, image_url parts
+        for OpenAI-compatible; VISION_SYSTEM_PROMPT added without replacing SYSTEM_PROMPT;
+        model_supports_images() name heuristic (gemma3:1b explicitly text-only) and encode_image().
+      - ui/threads.py: _LiveVisionThread forwards session callbacks as signals (reply_ready,
+        request_failed, status_changed, frame_sent).
+      - ui/pages_coach.py: "Live vision" card in the AI Coach right column - thumbnail of the exact JPEG
+        sent, "Watch preview" toggle (off at every launch), "Look now", ask-every seconds, "Only when the
+        picture changes", status line + counters, and a note naming a vision model when the configured one
+        cannot see / or "frames stay on this machine" for a local vision model. Replies post as
+        "Coach (live)" into the transcript. set_capture_source(backend) is called by MainWindow.
+      - ui/icons.py: "eye" glyph. PRIVACY_POINTS + docs/PRIVACY.md: new Live vision section (off at launch,
+        still frames only, local vs online upload, prompt restrictions).
+    Tests: tests/test_visual_coach.py (29 - signature/delta/stride, describe_frame, JPEG via OpenCV AND via
+    the Qt fallback, no-encoder message, one-frame-one-reply, unchanged skipping, changed-frame sending,
+    static frame re-sent when the check is off, ask_now, history cap, no-frame-yet, provider errors,
+    consecutive failures stopping the loop, empty reply, curve context, settings normalisation, prompt
+    guardrails, stop breaking a long wait, page: warning for a text model, local note, no-backend message,
+    full toggle -> transcript + thumbnail) and tests/test_vision_payloads.py (21 - capability heuristic,
+    exact Ollama/OpenAI payload shapes, no-user-turn fallback, empty bytes ignored).
+    VERIFICATION (sandbox, Linux, no display, no model): full suite 526 passed, 5 skipped; ruff clean on new
+    files; end-to-end through MainWindow -> AI Coach with a fake vision model: 2 frames (8 KB each) sent,
+    2 "Coach (live)" replies in the transcript, status "Watching", note "Local model: frames stay on this
+    machine." Screenshot: deliverables/screenshots/ai-live-vision.png.
+    NOT verified: a real vision model (qwen3:1.7b cannot see; gemma3:4b untested here), a real Windows
+    display, latency on a gaming PC. Still NOT pushed.
+
+    REV78 STATUS: rev77 plus FIX: THE CAPTURE TAB'S LIVE SECTION WORKS WITHOUT THE NATIVE CORE.
+    Reported by the user: "i only see the recording section where is the real-time capture section for this
+    tool?" The live section (left-hand preview stage + Source card) has existed since the redesign, but on
+    their machine it was inert: CoreBackend built capture only from _native, so with no fpscoach_native the
+    page showed "No display output found", Start disabled and "No frame yet" - the Recording card was the
+    only usable thing, which read as if the capture feature was missing.
+    What was built:
+      - python/fps_coach/python_capture.py (new, ~430 lines): PythonDesktopCapture, an mss-backed stand-in
+        with the native object's exact interface (enumerate_outputs, start, stop, running, stats,
+        latest_sequence, latest_frame). Threaded grab loop, drift-free pacing, single-slot latest frame,
+        rolling 1 s FPS, region clamping, at most 5 tolerated grab failures. mss is imported lazily behind
+        a guard (module must import without the recorder extra). Uses mss.MSS() when present (mss 10
+        deprecates mss.mss()).
+      - plan_region(): reproduces the native preset semantics - left/top of -1 centres the region in the
+        monitor (what Balanced/Performance send), any other value is a window origin clamped inside the
+        monitor; reports capture_mode "output" or "region".
+      - backend.CoreBackend: picks native -> PythonDesktopCapture (when mss is present) -> None; new
+        uses_python_capture, core_label "Python capture (mss)", capture_factory= for tests; outputs() never
+        raises (a headless/locked session stores capture_error and returns []), so the window always opens.
+      - ui/pages_setup.CapturePage: the Source card is untouched; added a live_source_note under it
+        ("Live preview is running through mss (Python) because the native core is not built. Up to 60 FPS,
+        and a window is captured as the screen area behind it." / or the pip install line when nothing is
+        available), and the GPU capture (D3D11) checkbox is unstyled-and-disabled when no native core
+        exists, because mss reads the composited desktop on the CPU.
+    Limits kept honest: capped at 60 FPS (reported when 120 was asked for), no occluded-window capture
+    (window mode = screen area behind it), no cursor overlay.
+    tests/test_python_capture.py (new, 20): guarded import, install hint, output enumeration from fake
+    monitors, plan_region centring/full-output/clamping/degenerate, frame publishing with native-shaped
+    fields and stride, stats key parity, FPS cap notice, grab-failure shutdown, double start, idempotent
+    stop closing the handle, missing monitor in the caller's thread, backend selection (native / python /
+    neither), and two CapturePage tests (usable with mss; explains the install when nothing is available).
+    Every test injects a fake sct - no display is touched.
+    Docs: README (feature bullet + a three-tier table for the Capture tab + first-use step now says press
+    Start), docs/architecture.md ("Capture without the native core (rev78)" with a native-vs-Python method
+    table), pyproject recorder-extra comment (no longer "not used by the app").
+    VERIFICATION (sandbox, Linux, no display): pytest 476 passed, 5 skipped; ruff clean on the new files
+    (backend/pages_setup keep their pre-existing I001); end-to-end by hand - MainWindow -> Capture tab with
+    an injected fake sct reports "Monitor 1 - Python (mss) - 1920x1080", Start enabled, GPU box off and
+    disabled, live note shown, preview painted, stats "60.0 FPS - 73 frames - 960x540 - Python (mss)".
+    Screenshot: deliverables/screenshots/capture-live-python-backend.png.
+    NOT verified: a real display, real mss on Windows, and the native path (unchanged).
+    Still NOT pushed.
+
+    REV77 STATUS: rev76 plus FIX: the native C++ core is optional (compiler-free install).
+    Reported from the user's Windows machine (Python 3.13.5 at C:/Python313, VS 2022 Community, MSVC 19.44,
+    CMake 3.31.6, scikit-build-core 1.1.1, pybind11 3.1.0, Windows SDK 10.0.26100):
+      pip install -e".[recorder]"  ->  bindings.obj : error LNK2001: unresolved external symbol
+      __imp__PyThread_tss_create (+ ~140 more __imp__Py...), fatal error LNK1120: 149 unresolved externals,
+      *** CMake build failed.   (Note the missing space: `-e".[recorder]"` is a usage error on top of it.)
+    Diagnosis: not a header/toolchain mismatch - EVERY CPython symbol was missing, so the import library was
+    never on the link line at all (pybind11::module did not carry Python::Module through). Nothing was
+    installed by that run: pip resolves/builds before installing, so the user's existing editable install and
+    their site-packages were untouched; mss/numpy/opencv were downloaded and then discarded.
+    Fix (CMakeLists.txt):
+      1. FPSCOACH_SKIP_NATIVE env guard. Set to anything but "0"/"" -> the file prints a STATUS line and
+         builds no targets, so `pip install -e ".[dev,recorder]"` needs no compiler, no SDK, no Visual Studio.
+         The app then imports with fps_coach.backend falling back to the portable analyzer.
+      2. project(FPSCoach VERSION 0.1.0 LANGUAGES NONE) + enable_language(CXX) inside the non-skip branch.
+         Enabling CXX at project() time makes CMake hunt for a compiler during configure, which would have
+         defeated (1) on a machine with no toolchain.
+      3. The guard is a plain if(FPSCOACH_SKIP_NATIVE)/else()/endif(), NOT a top-level return(): return() at
+         file scope needs CMake >= 3.29 and the declared floor is cmake_minimum_required(VERSION 3.23).
+      4. fpscoach_native now links Python::Module explicitly
+         (target_link_libraries(fpscoach_native PRIVATE fpscoach_analysis Python::Module d3d11 dxgi dxguid
+         WindowsApp)) so the CPython import library is on the link line even if pybind11's indirect link
+         does not surface it - this is the LNK2001 fix itself.
+    New tests: tests/test_cmake_native_optional.py (4) pins all of the above as text-level assertions: no
+    file-scope return() under a <3.29 floor, LANGUAGES NONE + enable_language(CXX), the guard's env-var
+    semantics ("0"/"" keep the native build), every add_library() inside the non-skip branch, and
+    Python::Module in fpscoach_native's link line. Verified to FAIL when the file is edited back to
+    LANGUAGES CXX.
+    Docs: README "Windows prerequisites" now names the LNK2001 signature and gives three escapes
+    (FPSCOACH_SKIP_NATIVE, plain `pip install numpy mss opencv-python-headless` + run from source, or a
+    py -3.12 venv); docs/build-and-packaging.md has a "Installing without the native core" section;
+    docs/screen-recorder-tool.md points at the variable.
+    VERIFICATION (sandbox, Linux): CMake 4.4.4 - skip=1 configures with CC/CXX pointed at /nonexistent (no
+    compiler touched), `cmake --build`/`--install` succeed, `pip wheel` with FPSCOACH_SKIP_NATIVE=1 produces
+    48 files and ZERO .pyd/.so/.dll; skip=0 and unset both configure the analysis core, build it, and ctest
+    passes 1/1; `pip install -e ".[recorder]"` with the guard installs and `import fps_coach` + MainWindow
+    (offscreen) work with the fallback analyzer, Recording card "Idle"/enabled, In-Game Mode off.
+    Full suite 456 passed, 5 skipped. NOT verified: the actual Windows link with Python::Module (no MSVC in
+    the sandbox) - if the user's LNK2001 persists, FPSCOACH_SKIP_NATIVE=1 is the working path.
+    Still NOT pushed.
+
+    REV76 STATUS: rev75 plus FIX: start-up crash when numpy is not installed (reported traceback from the
+    user's Windows machine: python -m fps_coach -> pages_setup -> capture_recording -> screen_recorder line
+    108 "AnalysisCallback = Callable[[np.ndarray, int], None]" -> AttributeError: 'NoneType' object has no
+    attribute 'ndarray'). Cause: numpy is imported behind a guard (np = None when missing), but that
+    module-level type alias is a real runtime expression, so typing evaluated np.ndarray at import time and
+    killed the whole app before the Capture page could disable its Recording card. Fix: the alias is now
+    Callable[["np.ndarray", int], None] (forward reference, not evaluated); _require_dependencies() checks
+    numpy FIRST and raises a clear RuntimeError; the mss/OpenCV messages now also name the recorder extra.
+    Verified with a meta-path import blocker in a subprocess (numpy alone, mss alone, cv2 alone, all three):
+    the engine imports, missing_dependencies() reports the right package label, start() raises "…is required
+    … pip install -e \".[recorder]\"", and the Qt layer (CapturePage + SettingsPage, offscreen) builds with
+    the Recording card reading "Unavailable" and Record disabled. New tests: tests/test_optional_deps.py
+    (5, includes the UI subprocess check) + tests/_blocked_deps.py helper. Also verified by hand: MainWindow
+    constructs with numpy/mss/cv2 blocked and In-Game Mode is still off at launch.
+    USER-SIDE REMEDY (told to the user): either just update to rev76 (app runs; Recording card disabled) or
+    install the extras: pip install -e ".[dev,recorder]" (or pip install numpy mss opencv-python-headless).
+    Tests: full suite 451 passed, 5 skipped. NOT verified: the user's own Windows machine, a real display.
+    Still NOT pushed.
+
+    REV75 STATUS: rev74 plus IN-GAME MODE (Settings > In-Game Mode), off at every launch.
+    Requirement as given: a Settings section; when enabled it lets the user pick the game and gives
+    sensitivity feedback, so the AI can suggest in-game sensitivity values; it must be DISABLED BY
+    DEFAULT AT EVERY LAUNCH.
+    What was built: python/fps_coach/ingame.py (new, 316 lines, no Qt, no I/O): GameProfile catalog
+    (CS2/Source yaw 0.022, VALORANT 0.07, Overwatch 2 0.0066, Apex 0.022, fallback "Other" 0.022),
+    counts_per_360(), cm_per_360(), sensitivity_for_cm_per_360(), effective_yaw() (an optional
+    MEASURED 360 distance overrides the catalog constant), and InGameMode (enabled starts False and is
+    never persisted; game/dpi/sensitivity/measured setters with validation; feedback(), context_block(),
+    question(), suggested_sensitivity(mult), suggestion_cm_per_360(mult)).
+    UI: pages_coach.SettingsPage._build_ingame_card() in the right column between Interface and Replies:
+    "Enable In-Game Mode (this session only)" checkbox (always unchecked at construction), Game combo,
+    Mouse DPI, In-game sensitivity, optional "Measured 360°" (0 = Not measured), live line "GAME: 0.400
+    at 800 DPI = 40.8 cm / 360°. A 1.06× change is 0.424 (38.5 cm / 360°).", counts line, "Ask the coach"
+    button, and a note that Vantage never reads/hooks/changes the game. Controls are disabled while the
+    mode is off. SettingsPage new signals ingame_changed, ingame_question; set_recommendation() and
+    ingame_context()/ingame_model() helpers.
+    AI: MainWindow._sync_ingame_context() pushes the block to AIChatPage.set_ingame_context() ->
+    _with_ingame() appends it to _calibration_context (empty while off). _on_ingame_question() prefills
+    chat_page.input and switches to the chat tab (key "chat"). _on_calibration_result() now also stores
+    _last_recommendation and calls settings_page.set_recommendation(). ai_chat.SYSTEM_PROMPT gained an
+    "In-Game Mode is ON" paragraph: convert cm/360 to the game's units, name a specific in-game value,
+    present it as the user's to apply, small and reversible, never claim to read/measure/change the game,
+    never ask the user to keep the mode on while playing.
+    PERSISTENCE RULE: only ingame/game, ingame/dpi, ingame/sensitivity, ingame/measured_cm360 are saved.
+    ingame/enabled is never written; a test asserts saved.contains("ingame/enabled") is False and that a
+    pre-seeded True still launches unchecked.
+    BOUNDARY: user-typed numbers only. No game/window/process access, no input injection, no capture, no
+    file reads. tests/test_ingame_mode.py walks ingame.py's AST: imports must be stdlib dataclasses/
+    __future__/typing only; no open/exec/eval/compile/__import__ calls; no ShellExecute/keybd_event/
+    mouse_event/SendInput/Popen/run/system attribute calls. Nothing in-game is sent to the AI while the
+    mode is off.
+    Tests: tests/test_ingame_mode.py (new, 28): catalog, maths, round trips, measured override, session
+    toggle, context empty/off, feedback/question text, launch-reset, flag not persisted, disabled
+    controls, persistence of the four values, card text with and without a recommendation, ask-the-coach,
+    chat page receives the block, prompt contains the paragraph, MainWindow context/prefill/recommendation
+    wiring, AST boundary check.
+    VERIFICATION (sandbox, Linux): pytest 446 passed, 5 skipped (full suite); ruff clean on the touched
+    files apart from the repo's pre-existing I001; Settings card rendered offscreen and inspected with
+    VALORANT / 800 DPI / 0.400 / 1.06x -> 0.424 shown.
+    NOT verified: Windows, real Ollama/online model replies to the new block (no model in the sandbox),
+    real game values (catalog yaw constants are published approximations).
+    Still NOT pushed.
+
+    REV74 STATUS: rev73 plus LOOSER RECORDING POLICY (user said "looser" when offered stricter/looser wording).
+    Behaviour: the Recording card gained a "Keep the recording" checkbox and a recordings folder picker
+    (default Videos/FPSCoach via QStandardPaths, saved as capture/record_keep and capture/record_dir).
+    Unticked (default) = old behaviour: the file is deleted at Stop or on app close. Ticked = the file is
+    KEPT, renamed fpscoach-recording-YYYYMMDD-HHMMSS.mp4 in the chosen folder, and it survives both Stop
+    and closing the app (RecordingService.shutdown() also saves it). Status reads "Saved" and the detail
+    names the path. RecordingService.start() takes keep= and save_dir=; RecordingSummary gained kept: bool
+    and path now points at the saved file; _save_file() renames with a counter on collisions. Analysis
+    interval range widened 0.5-60 s (was 0.5-30). Wording loosened in the same commit: docs/PRIVACY.md
+    "Screen capture" now describes discard-vs-keep plainly and says files are never uploaded by the app
+    but what the user does with a kept file is up to them; "unattended/background recording" removed from
+    the not-offered list (still stated that recording stops when the app closes unless kept); in-app
+    PRIVACY_POINTS updated; docs/architecture.md scope line and scratch-recording section updated;
+    README feature bullet and first-use step updated; docs/screen-recorder-tool.md updated.
+    Tests: tests/test_capture_recording.py 12 -> 20 (keep off by default + persists, default dir, kept file
+    lands in the chosen folder, kept file survives page shutdown, widened interval range, service keeps /
+    discards / shutdown-keeps). One trap found: page.record_dir_btn.click() opens a modal QFileDialog and
+    HANGS an offscreen test run; the test now only checks enabled state.
+    STILL NOT LOOSENED (deliberate): gameplay analysis from the file, target/shooting detection, aim
+    feedback, in-game overlays, input hooks - the fair-play/anti-cheat line in docs/PRIVACY.md stands. If
+    the user meant that line too, it needs an explicit decision, not a wording edit.
+    NOT verified: Windows, real display, mss on Windows, mp4v on Windows, PyInstaller freeze, Inno installer.
+    Still NOT pushed.
+
+    REV73 STATUS: rev72 plus SCRATCH RECORDING ON THE CAPTURE TAB (productised at the user's request).
+    The user asked for the rev72 recorder "added to the capture tab in fps coach", so it now ships in
+    the app: engine in python/fps_coach/screen_recorder.py (Qt-free), Qt glue in
+    python/fps_coach/capture_recording.py (RecordingService: started/analysis/stopped/failed signals,
+    poll(), shutdown()), UI card "Recording" on CapturePage (rate 15/30/60 saved as capture/record_fps,
+    analysis interval 0.5-30 s saved as capture/record_interval, Record/Stop, live "Recording · N s ·
+    N frames · N analyses", last analysis line, disabled + install hint when the extra is missing).
+    MainWindow.closeEvent calls capture_page.shutdown() so closing the app deletes the file. Packaging:
+    bootstrap.ps1 and build.ps1 install ".[dev,recorder]"; fpscoach.spec collects mss submodules.
+    Docs: README feature + layout + install line; docs/architecture.md new "Scratch recording" section;
+    docs/PRIVACY.md "Screen capture" rewritten; in-app PRIVACY_POINTS updated (pages_coach.py).
+    Tests: 34 engine + 12 Qt/card = 46 for this feature; full suite 410 passed, 5 skipped.
+    BOUNDARY / DECISION: this reverses the rev71b decline for RECORDING ONLY. What was built: a
+    user-started scratch video of the primary display that is deleted on stop/close, never uploaded, and
+    whose analysis timer samples frame statistics (size, mean brightness) only. Still NOT built, still
+    declined: gameplay analysis from the file, target/shooting detection, aim feedback, unattended or
+    background recording that outlives the session, per-game window targeting. docs/PRIVACY.md,
+    docs/architecture.md and the in-app privacy page were updated in the same commit to say exactly that.
+    The user should confirm the wording if they want the policy stricter or looser.
+    NOT verified: real display, Windows, mss/WGC behaviour, mp4v on Windows, PyInstaller freeze, Inno
+    installer. The encoder path was checked on Linux (OpenCV 5.0.0, numpy 2.3.5, mss 10.2.0): scratch mp4
+    written and decoded back, deleted on stop. PySide6 6.12 offscreen: card rendered and driven in tests.
+    Still NOT pushed.
+
+    REV72 STATUS: rev71c plus a screen-recorder DEVELOPER TOOL (tools/, not in the app).
+    What: tools/screen_recorder.py records the primary monitor with mss into a temp video on a background
+    thread, keeps the newest frame in a lock-protected single-slot buffer (LatestFrameBuffer, private copy per
+    read, sequence counter), and runs a second thread ("screen-analysis") that calls a configurable callback
+    every analysis_interval seconds. ScreenRecorder is a context manager: __exit__ -> cleanup() always runs,
+    which sets the stop event, joins both workers (join_timeout), releases cv2.VideoWriter and closes the mss
+    handle on the capture thread that made them (mss handles are per-thread), clears the buffer and unlinks
+    the temp file (idempotent; atexit hook covers interpreter exit). Tests: tests/test_screen_recorder.py,
+    32 headless tests (fake mss + fake writer, no display, no codec). Docs: docs/screen-recorder-tool.md.
+    DEPENDENCIES: new pyproject extra "recorder" (mss, numpy, opencv-python-headless); numpy added to "dev"
+    for the tests. README layout lists tools/.
+    BOUNDARY: the tool is NOT imported by fps_coach and is not in the wheel (wheel.packages is
+    python/fps_coach). It contains no game analysis and is not wired into the UI, so the fair-play boundary in
+    docs/PRIVACY.md and docs/architecture.md is unchanged and the rev71b decline still stands for product
+    features. DECISION TO CHECK: rev71b declined "record gameplay at 720p for offline AI aim analysis plus
+    auto-clearing temp recordings"; this rev adds the same mechanics only as an out-of-package developer
+    diagnostic utility (codec/timing experiments, synthetic test frames), not as a gameplay feature. Say the
+    word and it is removed, or moved into python/fps_coach to productise it (that WOULD change the boundary).
+    NOT verified: real display, Windows capture, real codec output on Windows (the encoder path was checked on
+    Linux with OpenCV 4.11: 320x240 @ 20 fps mp4 written and decoded back). Full repo pytest suite not run
+    here (PySide6 is not installed in the sandbox); the new file passes its own 32 tests and ruff.
+    Still NOT pushed.
+
     REV71 STATUS: Serious mode. The Dashboard has a "Serious mode" checkbox. When it is on, the six
     dashboard tiles leave the grid and bounce around the dashboard like the DVD screensaver: each starts at
     its grid cell with a random direction (20 to 70 degrees), turns at the edges of the stage, and can
@@ -255,7 +2117,8 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     Calibration: the automatic note and AI recommendation after a calibration run only when Calibration
     is on (this changes the old always-on behaviour). Training: a note and AI recommendation after each
     drill when Training is on (app drill results only). Capture: the coach sees capture settings
-    (preset, FPS) only. Automatic answers are shown but never applied to
+    (preset, FPS) only. NOT BUILT, declined category: any screen or gameplay access, real-time feedback
+    from gameplay, and curves generated from capture. Automatic answers are shown but never applied to
     the curve. Still NOT pushed.
     REV63 STATUS: rev62 plus (1) AI Coach: the Replies controls (Read replies aloud, Stop speaking,
     reply text size) moved from the top of the tab into the gear-opened Settings block, above Voice.
@@ -302,7 +2165,8 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     Still NOT pushed.
     REV54 STATUS: rev53 plus (1) live speech controls: speed (0.5x-2.0x), volume, and voice,
     applied before the next sentence; (2) the coach prompt asks for answers specific to the
-    app's own calibration and curve data. NOT BUILT: pitch (no engine here exposes it).
+    app's own calibration and curve data. NOT BUILT: pitch (no engine here exposes it) and
+    gameplay analysis from screen capture (declined category; see the rev54 changelog).
     Still NOT pushed.
     REV53 STATUS: rev52 plus (1) the Vosk model is loaded once and reused, and one
     model is held at a time (vosk_service.load_model / release_model; released when voice
@@ -325,7 +2189,8 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
     rev46 (drawn training figures), rev47 (top bar fits, core status is a dot,
     slider readouts), rev48 (crosshair overlay, off by default, user-approved
     reversal of the no-draw-over-game boundary) and rev49 (overlay edit mode and
-    lock, privacy policy in app and docs/PRIVACY.md). Still NOT pushed. Push needs GitHub credentials that this
+    lock, privacy policy in app and docs/PRIVACY.md; gameplay feedback and target
+    detection DECLINED, not built). Still NOT pushed. Push needs GitHub credentials that this
     sandbox does not have. Exact command for a machine with access:
         git push origin fix/redesign-backend-wiring:main
                          Commits on it (newest first): f6af4b9 rev43, 9b2c551 rev42,
@@ -813,6 +2678,19 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
                   _on_curve_edited() maps dragged y back to multipliers (speeds kept,
                   vertical=copy of horizontal), updates metric + emits profile_changed.
                 VERIFIED: ruff clean (pre-existing B905 ~515); 30/30 tests pass.
+
+              PART 2 of the request (AI integrate with DXGI/D3D11 capture to detect
+              in-game TARGET POSITIONS and SHOOTING PATTERNS in real-time and auto-
+              adjust the curve) was DECLINED and NOT implemented. Reason: it is real-
+              time game target/aim detection = gameplay-automation/cheat territory,
+              which this app explicitly forbids everywhere (ai_chat.SYSTEM_PROMPT:
+              'Never provide target detection...'; PrivacyPage 'anti-cheat friendly
+              boundary'; GuidePage 'no target detection'). It would also risk anti-
+              cheat bans / ToS violations. Safe alternative offered: keep using the
+              existing in-app calibration task (legit) which already feeds curve
+              adjustments; AI may use capture HEALTH stats (fps) but not analyze game
+              pixels for targets/shots. If a future agent is asked again: do NOT build
+              target/shooting detection.
               Commits: ...93ec2a8, 6734f20 (+ pending rev18 doc). ALL local, NOT pushed.
   2026-10-19 (rev19)  CAPTURE TAB: window selection + performance/hw-accel settings.
               Commit 525954a (local, NOT pushed).
@@ -835,7 +2713,10 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
                 COULD NOT: compile/modify native C++ DXGI/D3D11 for deeper hw-accel
                   (no Windows/build here) - hwaccel is a persisted preference the
                   native layer can honor; region/fps presets are the real low-end win.
-              Window capture restricts the preview region only.
+              DECLINED AGAIN (same as rev18 part 2): the request's goal of 'AI
+                analyzes the gameplay within that chosen application' (game-content/
+                target/shooting analysis) was NOT built. Window capture only restricts
+                the PREVIEW region; it does NOT feed game frames to any AI analysis.
               Commits: ...6734f20, 525954a (+ pending rev19 doc). ALL local, NOT pushed.
   2026-10-19 (rev20)  MODERN UI REDESIGN (4-part request). Commit d7819d1 (local,
               NOT pushed). Addressed:
@@ -882,9 +2763,19 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
                 VERIFIED: ruff clean on new code (pre-existing B905 ~591); 43/43 tests
                   pass (+test_voice_control.py); backend None in sandbox -> graceful.
 
+              DECLINED (part 1): 'real-time in-game overlays to provide instant
+              feedback directly on screen during gameplay'. An overlay drawn over a
+              live game giving gameplay-derived feedback = requires the game target/
+              shooting analysis already declined (rev16/18/19) AND crosses the app's
+              explicit 'does not attach to / draw on the game' anti-cheat boundary
+              (PrivacyPage), risking anti-cheat/ToS bans. NOT built. Compliant
+              alternative offered (not yet built, awaiting user OK): a companion
+              'coach panel' window showing only the USER'S OWN calibration score /
+              curve summary / reminders - no game capture analysis, no injection.
               Also deliberately NO global keyboard hooks for in-fullscreen PTT.
               Commits: ...d7819d1, 4af5d47 (+ pending rev21 doc). ALL local, NOT pushed.
-  2026-10-19 (rev22)  Built the on-screen Coach panel. Commit a2c72b7 (local,
+  2026-10-19 (rev22)  Built the COMPLIANT on-screen Coach panel (the offered
+              alternative to the declined in-game overlay). Commit a2c72b7 (local,
               NOT pushed).
                 - CoachPanel(QWidget) in main_window.py: Frameless + WindowStaysOnTop
                   + Tool, WA_TranslucentBackground, draggable (mouse press/move),
@@ -1323,36 +3214,18 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
               - Full suite 342 passed. ruff F clean. Wiring 32/32.
               - Harness used for the baseline: committed HEAD built with the same fake layer.
 
-  2026-10-23 (rev73)  AI COACH: CHAT BUBBLES.
-              - NEW python/fps_coach/ui/chat_bubbles.py: message_html(who, text, palette) builds a bubble.
-                The user's ("You") messages are right-aligned in the accent colour; all others are
-                left-aligned in the raised colour. Text is HTML-escaped; newlines become <br>.
-              - pages_coach.py: AIChatPage._append stores (who, text) in _transcript_items and appends the
-                bubble. _render_transcript() redraws from the stored list; refresh_from_settings() calls it,
-                so a theme change recolours existing bubbles. clear_history() empties the list.
-              - Behaviour changes: escaping (text that looked like HTML now shows as text); line breaks in
-                replies are kept. The label is still "Who: text" on one line in the plain text.
-              - Tests: tests/test_chat_bubbles.py (8), tests/test_chat_bubbles_page.py (4).
-              - Suite 382 passed, 2 skipped (native fake build). Wiring 32/32. ruff F clean.
-              - Offscreen renders checked in dark and light.
-
-  2026-10-23 (rev72)  TOP BAR: 1120 PX OVERLAP FIXED.
-              - main_window.py: MIN_WINDOW_SIZE = (1120, 680) constant. The width minimum is set by
-                _fit_minimum_width(), which runs at the end of _apply_theme(). It is max(1120, the top bar's
-                layout minimum). The old one-time measurement in __init__ is removed.
-              - Repro: at 1000-1243 px the tab strip ran under the core dot (window 1223 px, bar need 1244 px).
-                Now the window is 1244 px minimum and nothing overlaps (1000, 1120, 1223, 1244, 1300 px).
-              - tests/test_topbar_fit.py (3): minimum matches the bar's need after construction; no overlap at
-                the narrowest size; minimum follows a theme change. All 3 fail on the previous code.
-              - Suite 370 passed, 2 skipped (native fake build). Wiring 32/32. ruff F clean.
-              - NOT verified on Windows (font metrics differ there, so the exact minimum will too).
-
   2026-10-23 (rev71c) WINDOWS BUILD FIX: native/src/capture.cpp line 801-803 (WGC window path) failed to
               compile on MSVC (C3536 'access' cannot be used before it is initialized). The IDirect3DDxgiInterfaceAccess
               name was unqualified; the cast now uses Windows::Graphics::DirectX::Direct3D11::IDirect3DDxgiInterfaceAccess
               (as in Microsoft's capture sample) and the local is renamed dxgi_access. NOT compiled on Windows here (no
               SDK in the sandbox). The WGC path has never compiled on Windows before, so further errors in it are possible.
               Linux suite unaffected (WGC code is Windows-only).
+
+  2026-10-23 (rev71b) REQUEST DECLINED, NO CODE CHANGE: record gameplay at 720p for offline AI aim
+              analysis, plus auto-clearing cache and temp recordings on close. Gameplay analysis from screen
+              capture is a declined feature (re-requested and declined again). The cache-clearing part was not
+              built because it only serves that recording. Offered alternatives: post-session analytics from
+              the app's own drills; a coach grounded in the app's own calibration and curve data.
 
   2026-10-23 (rev71)  SERIOUS MODE: DASHBOARD TILES BOUNCE; SPEED IN SETTINGS.
               - python/fps_coach/dashboard_config.py: BOUNCE_SPEED_MIN/MAX/DEFAULT (25/300/100),
@@ -1501,6 +3374,8 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
               - _maybe_proactive_ai now takes the instruction text. _proactive_received no longer
                 applies a curve change: automatic answers are shown only.
               - main_window._on_session_recorded calls chat_page.notify_new_training.
+              - DECLINED, NOT BUILT: Capture screen/gameplay access, real-time gameplay feedback, curves
+                generated from capture. Gameplay analysis from screen capture is a declined category.
               - Tests: tests/test_coach_focus.py (11). Full suite 280 passed. ruff F clean. compileall OK.
                 Wiring 32/32. Screenshot /tmp/shots13/focus_open.png checked.
 
@@ -1619,7 +3494,7 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
                 to ~/.local/xkb (not in the repo). Needed for the test run only.
               - NOT verified: real capture at 30, 60 or 120 FPS; drill feel at each speed.
 
-  2026-10-19 (rev54)  TTS SPEED, VOLUME, VOICE CONTROLS. COACH PROMPT.
+  2026-10-19 (rev54)  TTS SPEED, VOLUME, VOICE CONTROLS. COACH PROMPT. DECLINED PART.
               - AI Coach: Speed slider (0.5x-2.0x), Volume slider (0-100%), Voice list from the
                 installed engine, and a Test voice button. Changes apply to the next sentence
                 spoken, without restarting the speaker. Saved as tts/speed, tts/volume, tts/voice.
@@ -1633,6 +3508,11 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
                 using the calibration summary and curve data in the conversation, name the values
                 used, say what is missing rather than guess, and state that it cannot see the
                 user's screen or game. Safety rules unchanged.
+              - DECLINED (part 3): screen capture that continuously analyses gameplay, gives
+                voice feedback on aim at set intervals, and recommends aim adjustments. This is
+                the declined category of rev49 part 2 (gameplay-derived feedback, target and
+                shooting detection from game capture). NOT built. Offered alternatives: post-
+                session analytics from the app's own drills, the coach panel, in-app calibration.
               - Tests: tests/test_tts_controls.py (20). Full suite 194 passed. ruff F clean.
                 compileall OK. Wiring 32/32. Offscreen screenshot of the AI Coach page checked.
               - NOT verified: real audio on any engine; Windows SAPI5 or System.Speech voices;
@@ -1711,7 +3591,7 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
                 reply (the indicator is driven by its start and stop calls).
               - OPEN: 1120 px top-bar overlap (unchanged).
 
-  2026-10-19 (rev49)  CROSSHAIR EDIT MODE, LOCK, PRIVACY POLICY.
+  2026-10-19 (rev49)  CROSSHAIR EDIT MODE, LOCK, PRIVACY POLICY. DECLINED PART 2.
               - Crosshair tab: "Edit position..." turns into "Lock position" while
                 editing. Edit mode shows a dashed frame and the overlay takes the mouse,
                 so you can drag the crosshair. Lock makes the overlay click-through again
@@ -1731,6 +3611,13 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
               - NOT verified: real display, Windows behaviour, whether a Tool window
                 takes focus when clicked in edit mode, multi-monitor, exclusive
                 fullscreen (a Qt window does not appear above it).
+              DECLINED (part 2): the user asked for gameplay-based feedback and target
+              detection, and for an in-game overlay that gives such feedback. NOT built.
+              Reason: target detection from game capture plus live on-screen feedback
+              during play is an aim-assist tool. It breaks anti-cheat rules and gives an
+              unfair advantage over other players. The earlier decline (rev16/18/19 and
+              the rev21 note) still stands. Offered instead: post-session analytics from
+              the app's own drills (already built, Training page), and the coach panel.
               The overlay that remains draws only a static crosshair the user placed.
 
   2026-10-19 (rev48)  CROSSHAIR ACTIVATION (on-screen overlay).
@@ -1747,7 +3634,8 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
                 confirmed it after I flagged the conflict. Those docstrings and the
                 Privacy page now describe the overlay as off by default, drawn on the
                 user's own screen only, and not reading, attaching to, or injecting into
-                any game.
+                any game. Still declined and NOT built: gameplay-derived feedback,
+                target or shooting detection.
               - Wiring: CrosshairPage.activation_changed(bool) and config_changed(object)
                 are new signals. config_changed is emitted from _refresh, because the
                 existing "edited" signal is still a no-op. MainWindow creates the
@@ -1857,3 +3745,122 @@ Produce TWO distinct build packages, plus backend hardening and AI preconfig.
       The build pulls the Ollama tag qwen3:1.7b; the license has not been confirmed.
   [ ] Ollama redistribution terms for the embedded Full build (not confirmed).
   [ ] Target Windows arch and minimum OS. Installers are x64; no minimum OS is set.
+
+  2026-10-23 (rev72)  SCREEN RECORDER DEVELOPER TOOL (out of package).
+              - tools/screen_recorder.py (new, 909 lines): ScreenRecorder context manager on mss + cv2.VideoWriter;
+                LatestFrameBuffer (single slot, lock, sequence, copy-on-read, Event for wait_for_frame);
+                capture loop ("screen-capture") grabs the primary monitor, writes the frame, publishes it
+                (copy=False, fresh array per tick), drift-free pacing, 5 tolerated transient grab errors;
+                analysis loop ("screen-analysis") fires analysis_callback(frame_copy, sequence) on an absolute
+                schedule via Event.wait (no drift, no catch-up burst, callback exceptions logged and the timer
+                continues, ticks before the first frame skipped); stop()/cleanup()/__exit__/atexit teardown;
+                injectable sct_factory and writer_factory; CLI (--duration, --fps, --analysis-interval,
+                --monitor, --output-dir, --keep, --log-level).
+              - tests/test_screen_recorder.py (new, 32 tests): buffer integrity under three concurrent readers
+                (no torn frames), monotonic sequence, timer cadence and spacing, callback receives a private
+                copy, callback exception does not stop the timer, no callback before the first frame, stop from
+                inside the callback, cleanup after an exception in the with body, idempotent cleanup, keep /
+                output_dir, capture and writer failures reported via capture_error, atexit hook, param checks.
+              - docs/screen-recorder-tool.md (new); README layout lists tools/; pyproject extra "recorder"
+                (mss, numpy, opencv-python-headless) and numpy added to "dev".
+              - VERIFICATION (sandbox, Linux): pytest tests/test_screen_recorder.py 32/32; ruff check (repo
+                config) clean on both files; end-to-end with the REAL cv2.VideoWriter: 320x240 @ 20 fps mp4,
+                13 frames, decoded back with cv2.VideoCapture, temp file removed on exit; 20 start/stop cycles
+                left no threads, writers, or mss handles behind. NOT verified: real display, Windows, real
+                monitor sizes, GPU load. Full suite not run (PySide6 absent).
+              - Boundary: not imported by fps_coach, not in the wheel, no game analysis, no UI wiring.
+
+  2026-10-23 (rev73)  SCRATCH RECORDING ON THE CAPTURE TAB.
+              - python/fps_coach/screen_recorder.py (new, 807 lines): rev72 engine moved into the package;
+                numpy is imported behind a guard, missing_dependencies()/dependencies_available() added,
+                logger renamed fps_coach.screen_recorder, CLI removed (it moved to tools/).
+              - python/fps_coach/capture_recording.py (new, 222 lines): RecordingService(QObject) with
+                AnalysisTick/RecordingStatus/RecordingSummary dataclasses, availability() install hint,
+                start/stop/poll/shutdown, analysis callback guarded by a lock and a closed flag, frame
+                sampled every 8th pixel for the mean.
+              - python/fps_coach/ui/pages_setup.py: CapturePage._build_recording_card() under the Source
+                card (Recording rate, Analysis every, Record/Stop, status, detail, analysis line, note);
+                _start_recording/_stop_recording/_on_recording_started/_on_recording_stopped/
+                _on_recording_failed/_on_analysis_tick/_refresh_recording/_set_record_buttons/
+                _set_record_status/_show_record_detail/_apply_recording_availability/shutdown;
+                _refresh_stats() polls the recorder first; right column wrapped in a QWidget so both cards
+                scroll together.
+              - python/fps_coach/ui/main_window.py: closeEvent calls capture_page.shutdown().
+              - python/fps_coach/ui/pages_coach.py: PRIVACY_POINTS now describe the scratch recording and
+                that preview frames are not written to disk.
+              - tools/screen_recorder.py: now a thin CLI over fps_coach.screen_recorder (sys.path
+                bootstrap for source checkouts, dependency check with the install hint).
+              - scripts/bootstrap.ps1, scripts/build.ps1: ".[dev,recorder]"; installer/fpscoach.spec:
+                hiddenimports += collect_submodules("mss").
+              - tests/_recording_doubles.py (new): FakeScreenshot/FakeMSS/FakeWriter/Harness shared by both
+                suites. tests/test_screen_recorder.py repointed at the package (+2 tests: dependency report,
+                CLI --help). tests/test_capture_recording.py (new, 12 tests): card defaults and persistence,
+                disabled state, record/stop through the page, analysis ticks in the label, shutdown while
+                recording, capture failure through poll(), service signals and summary, MainWindow.closeEvent.
+              - docs/screen-recorder-tool.md rewritten for the in-app feature; README feature list, layout
+                and install line; docs/architecture.md "Scratch recording" section; docs/PRIVACY.md updated.
+              - VERIFICATION (sandbox, Linux): pytest 410 passed, 5 skipped (includes the 46 recorder
+                tests); ruff clean on every file this rev touched apart from the repo's pre-existing
+                I001/UP037/B905 in pages_setup.py/pages_coach.py; CapturePage rendered offscreen to a PNG
+                and inspected (Recording card sits under Source: 30 FPS, 2.0 s, Record enabled, Stop
+                disabled, Idle); end-to-end mp4 with the real cv2.VideoWriter decoded back and deleted.
+                NOT verified: Windows, real display, mss on Windows, PyInstaller freeze, Inno installer.
+
+  2026-10-23 (rev74)  LOOSER RECORDING POLICY: KEEP THE RECORDING, SAVED FOLDER.
+              - python/fps_coach/capture_recording.py: start(keep=False, save_dir=None) forwards
+                keep_temp_file/output_dir to the engine; _keep flag; RecordingSummary.kept; stop() and
+                shutdown() both call _save_file() when keep is on; _save_file renames the scratch file to
+                fpscoach-recording-<YYYYmmdd-HHMMSS>.mp4 (counter on collision, OSError logged and the
+                original path kept); docstring describes the retention rules.
+              - python/fps_coach/ui/pages_setup.py: "Keep the recording" QCheckBox, read-only folder
+                QLineEdit + "Folder..." button (QFileDialog.getExistingDirectory), default_record_dir()
+                (QStandardPaths MoviesLocation / FPSCoach), _sync_record_keep_controls(),
+                _on_record_keep_toggled(), _choose_record_dir(); start passes keep/save_dir; stop reports
+                "Saved" + path or "discarded"; interval range 0.5-60 s. Guard: _sync_record_keep_controls
+                runs during card construction, before self.recording exists (getattr guard).
+              - docs/PRIVACY.md, docs/architecture.md, docs/screen-recorder-tool.md, README.md,
+                python/fps_coach/ui/pages_coach.py (PRIVACY_POINTS): loosened wording, discard-vs-keep
+                described plainly, "unattended recording" removed from the not-offered list, kept files
+                explicitly outlive the session until the user deletes them.
+              - tests/test_capture_recording.py: 20 tests (8 new).
+              - VERIFICATION (sandbox, Linux): pytest tests/ 418 passed, 5 skipped; ruff clean on the
+                touched files apart from the repo's pre-existing I001/UP037/B905. Offscreen screenshot of
+                the card with Keep ticked and a saved file verified by hand.
+              - Still declined and untouched: gameplay analysis, target detection, aim feedback, overlays,
+                input hooks.
+
+  2026-10-23 (rev75)  IN-GAME MODE IN SETTINGS (off at every launch).
+              - python/fps_coach/ingame.py (new): GameProfile + GAMES catalog, counts_per_360, cm_per_360,
+                sensitivity_for_cm_per_360, effective_yaw (measured distance overrides the catalog), and
+                InGameMode with enabled=False at construction and no persistence of the flag; feedback(),
+                context_block(mult), question(mult).
+              - python/fps_coach/ui/pages_coach.py: SettingsPage._build_ingame_card() (session toggle, game,
+                DPI, sensitivity, measured 360, live conversion, counts line, Ask the coach, boundary note);
+                ingame_changed/ingame_question signals; set_recommendation(), ingame_model(),
+                ingame_context(); _on_ingame_toggled/_on_ingame_values_changed/_sync_ingame_controls/
+                _refresh_ingame_result/_ask_ingame. AIChatPage: _ingame_context, set_ingame_context(),
+                _with_ingame() in _refresh_context(). PRIVACY_POINTS gained the In-Game Mode point.
+              - python/fps_coach/ai_chat.py: SYSTEM_PROMPT paragraph for the "In-Game Mode is ON" block.
+              - python/fps_coach/ui/main_window.py: ingame_changed -> _sync_ingame_context();
+                ingame_question -> _on_ingame_question() (prefill + go to chat); _on_calibration_result also
+                stores _last_recommendation and calls settings_page.set_recommendation().
+              - docs/PRIVACY.md (rev75, new "In-Game Mode" section), docs/architecture.md (new section),
+                README.md (feature bullet).
+              - tests/test_ingame_mode.py (new, 28 tests) including an AST check that ingame.py has no I/O
+                or game access.
+              - VERIFICATION (sandbox, Linux): full suite 446 passed, 5 skipped; ruff clean apart from
+                pre-existing I001; card rendered offscreen and inspected.
+              - Still declined: engine-side game reading, input automation, target detection.
+
+  2026-10-23 (rev76)  FIX: CRASH AT STARTUP WITHOUT NUMPY.
+              - python/fps_coach/screen_recorder.py: AnalysisCallback now uses a string forward reference
+                ("np.ndarray") so the module imports when numpy is absent; _require_dependencies() checks
+                numpy first and all three dependency messages point at the recorder extra.
+              - tests/_blocked_deps.py (new): meta-path import blocker driven by FPSCoach_BLOCK_MODULES.
+              - tests/test_optional_deps.py (new, 5): engine imports with numpy / mss / cv2 / all three
+                blocked, missing_dependencies labels, start() error text, and an offscreen subprocess that
+                builds CapturePage + SettingsPage with the Recording card reading "Unavailable".
+              - docs/screen-recorder-tool.md: install section notes the app runs without the extra and names
+                this traceback; README: same one-liner.
+              - VERIFICATION (sandbox, Linux): pytest 451 passed, 5 skipped; ruff clean on the touched files;
+                MainWindow built by hand with all three packages blocked.

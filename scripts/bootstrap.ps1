@@ -5,6 +5,6 @@ if (-not (Test-Path ".venv")) {
 }
 
 & .\.venv\Scripts\python.exe -m pip install --upgrade pip
-& .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+& .\.venv\Scripts\python.exe -m pip install -e ".[dev,recorder]"
 
 Write-Host "Setup complete. Run scripts\run.ps1" -ForegroundColor Green

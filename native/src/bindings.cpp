@@ -20,6 +20,9 @@ namespace {
 py::dict summary_dict(const MovementSummary& value) {
     py::dict result;
     result["trial_count"] = value.trial_count;
+    result["window_trial_count"] = value.window_trial_count;
+    result["window_capacity"] = value.window_capacity;
+    result["curve_distribution_version"] = value.curve_distribution_version;
     result["path_efficiency"] = value.path_efficiency;
     result["overshoot_score"] = value.overshoot_score;
     result["underreach_score"] = value.underreach_score;
@@ -34,6 +37,12 @@ py::dict summary_dict(const MovementSummary& value) {
 py::dict recommendation_dict(const CurveRecommendation& value) {
     py::dict result;
     result["points"] = value.points;
+    result["curve_distribution_version"] = kCurveDistributionVersion;
+    result["captured_sample_count"] = value.captured_sample_count;
+    result["speed_reference_px_s"] = value.speed_reference_px_s;
+    result["clipped_speed_count"] = value.clipped_speed_count;
+    result["window_trial_count"] = value.window_trial_count;
+    result["window_capacity"] = value.window_capacity;
     result["sensitivity_multiplier"] = value.sensitivity_multiplier;
     result["confidence"] = value.confidence;
     result["title"] = value.title;
@@ -175,6 +184,7 @@ PYBIND11_MODULE(fpscoach_native, module) {
              py::arg("x"),
              py::arg("y"),
              py::arg("timestamp_seconds"))
+        .def("set_target", &MovementAnalyzer::set_target, py::arg("x"), py::arg("y"))
         .def("end_trial",
              &MovementAnalyzer::end_trial,
              py::arg("x"),

@@ -23,7 +23,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from copy import deepcopy
 
-from fps_coach.curve_io import CurveProfile
+from fps_coach.curve_io import CurveProfile, chart_axis_scale
 
 _MIN_GAIN = 0.05
 _MAX_GAIN = 20.0
@@ -236,12 +236,9 @@ def normalized_overlay(
     """Return (previous_points, current_points) normalized to a SHARED scale so
     the two curves can be compared directly on the chart (scaling differences
     stay visible, unlike per-curve normalization)."""
-    speed = max(_max_speed(previous), _max_speed(current)) or 1.0
-    gain = max(
-        max((p.multiplier for p in previous.horizontal), default=1.0),
-        max((p.multiplier for p in current.horizontal), default=1.0),
-        1e-9,
-    )
+    # Use precisely the same maxima as the chart metadata. A per-profile
+    # speed fallback or an arbitrary gain floor distorts zero/tiny curves.
+    speed, gain, _units = chart_axis_scale(previous, current)
     prev_pts = [(p.speed / speed, p.multiplier / gain) for p in previous.horizontal]
     cur_pts = [(p.speed / speed, p.multiplier / gain) for p in current.horizontal]
     return prev_pts, cur_pts

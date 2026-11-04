@@ -17,6 +17,21 @@ with a different `-Flavor` argument.
   downloads the Ollama Windows runtime and pulls `qwen3:1.7b` automatically - no
   pre-installed Ollama and no environment variables required.
 
+## Installing without the native core
+
+`CMakeLists.txt` skips the C++ core when `FPSCOACH_SKIP_NATIVE` is set to anything other
+than `0` or empty. The wheel then contains only the Python package, no compiler or Windows
+SDK is needed, and `fps_coach.backend` falls back to the portable analyzer:
+
+```powershell
+$env:FPSCOACH_SKIP_NATIVE = "1"
+pip install -e ".[dev,recorder]"
+```
+
+Use this when the native link step fails on the machine (`LNK2001: unresolved external
+symbol __imp__Py...`), which usually means the Python version and MSVC/import library do
+not match. Unset the variable (or set it to `0`) to build the native core again.
+
 ## Build
 
 Double-click one of these in the project root, or run from a terminal:

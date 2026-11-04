@@ -7,8 +7,10 @@ Off by default. Two states:
 * Edit: the window accepts the mouse so the user can drag the crosshair to the spot
   they want. A dashed frame shows the area. Lock again to fix the position.
 
-The overlay only draws. It does not read the screen, the game, or any process, and it
-never injects into or hooks any process. It does not take keyboard focus.
+The normal crosshair only draws. Optional magnification captures pixels from a small
+primary-screen region while enabled; it does not read process memory, inject input or
+take keyboard focus. The overlay is excluded from supported Windows screen captures
+while magnification is active to reduce recursive capture.
 
 Focus: the overlay is a top-level window with no owner. An owned window (a child of the
 main window) can pull activation back to its owner on Windows, so it must not have one.
@@ -20,18 +22,23 @@ does not take it back.
 from __future__ import annotations
 
 import ctypes
+import math
 from ctypes import wintypes
 
-from PySide6.QtCore import QPoint, QRect, Qt, Signal
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtCore import QPoint, QRect, QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import QApplication, QWidget
 
 from fps_coach.crosshair import CrosshairConfig
 
+from .magnification import set_capture_exclusion
 from .widgets import _draw_crosshair
 
 _MIN_SIDE = 32
 _EDIT_MIN_SIDE = 200  # larger target area while editing, so it is easy to grab
+# 16 ms requests a 62.5 Hz capture cadence. Qt and desktop capture are not
+# real-time: slow grabs, painting and the compositor can lower the actual rate.
+_MAGNIFICATION_INTERVAL_MS = 16
 
 _WM_MOUSEACTIVATE = 0x0021
 _MA_NOACTIVATE = 3  # receive the click, but do not activate this window
@@ -78,6 +85,8 @@ class CrosshairOverlay(QWidget):
     """The crosshair window. `centre` is the crosshair's screen position (global px)."""
 
     position_committed = Signal(QPoint)  # emitted when a drag ends (use it to save)
+    magnification_stopped = Signal(str)
+    overlay_visibility_changed = Signal(bool)
 
     def __init__(self, config: CrosshairConfig, centre: QPoint | None = None):
         # Always a top-level window with no parent or owner. See the module docstring.
@@ -89,6 +98,20 @@ class CrosshairOverlay(QWidget):
         self._centre = QPoint(centre) if centre is not None else _primary_area().center()
         self._drag_origin: QPoint | None = None
         self._drag_start: QPoint | None = None
+        self._magnification_enabled = False
+        self._excluded_hwnd: int | None = None
+        self._magnification_diameter = 240
+        self._magnification_zoom = 2.0
+        self._magnified_frame = QPixmap()
+        self._source_rect = QRectF()
+        self._captured_rect = QRect()
+        self._lens_cache_key: tuple[int, int] | None = None
+        self._lens_cache_rect = QRectF()
+        self._lens_cache_path = QPainterPath()
+        self._magnification_timer = QTimer(self)
+        self._magnification_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._magnification_timer.setInterval(_MAGNIFICATION_INTERVAL_MS)
+        self._magnification_timer.timeout.connect(self._capture_magnification)
         self._apply_mode()
 
     @staticmethod
@@ -128,6 +151,9 @@ class CrosshairOverlay(QWidget):
         on = bool(on)
         if on == self._editing:
             return
+        if on and self._magnification_enabled:
+            self.stop_magnification()
+            self.magnification_stopped.emit("Magnification stopped while editing the overlay position.")
         self._editing = on
         visible = self.isVisible()
         self._apply_mode()
@@ -136,7 +162,7 @@ class CrosshairOverlay(QWidget):
         self.update()
 
     def move_centre(self, centre: QPoint) -> None:
-        """Move the crosshair. Clamped so the whole window stays on the primary display."""
+        """Move the crosshair, clamping its normal overlay size to the primary display."""
         self._centre = QPoint(centre)
         self._place()
         self.update()
@@ -144,10 +170,120 @@ class CrosshairOverlay(QWidget):
     def reset_centre(self) -> None:
         self.move_centre(_primary_area().center())
 
+    @property
+    def magnification_enabled(self) -> bool:
+        return self._magnification_enabled
+
+    def set_magnification_options(self, diameter: int, zoom: float) -> None:
+        self._magnification_diameter = min(600, max(80, int(diameter)))
+        self._magnification_zoom = min(5.0, max(1.0, float(zoom)))
+        if self._magnification_enabled:
+            self._place()
+            self._capture_magnification()
+
+    def start_magnification(self, diameter: int, zoom: float) -> tuple[bool, str]:
+        """Start opt-in capture after excluding this overlay from supported grabs."""
+        if not self.isVisible() or self._editing:
+            return False, "Turn on the crosshair overlay and lock its position first."
+        if self._magnification_enabled:
+            self.set_magnification_options(diameter, zoom)
+            return self._magnification_enabled, "" if self._magnification_enabled else "Screen capture failed."
+        self.set_magnification_options(diameter, zoom)
+        hwnd = int(self.winId())
+        ok, message = set_capture_exclusion(hwnd, True)
+        # A Windows error-8 retry may briefly change the native layered style.
+        # Repaint even on failure to restore the transparent crosshair surface.
+        self.update()
+        if not ok:
+            return False, message
+        self._excluded_hwnd = hwnd
+        self._magnification_enabled = True
+        self._place()
+        if not self._capture_magnification():
+            return False, "Screen capture failed. Protected or exclusive-fullscreen content may not be available."
+        self._magnification_timer.start()
+        self.update()
+        return True, ""
+
+    def stop_magnification(self) -> None:
+        self._magnification_timer.stop()
+        was_active = self._magnification_enabled
+        self._magnification_enabled = False
+        self._magnified_frame = QPixmap()  # no screen frames are retained while off
+        self._source_rect = QRectF()
+        self._captured_rect = QRect()
+        if was_active:
+            # Affinity belongs to an HWND, not the QWidget. Never modify a new
+            # handle if Qt or Windows recreated the original native window.
+            hwnd = int(self.winId())
+            ok, message = (set_capture_exclusion(hwnd, False)
+                           if hwnd == self._excluded_hwnd else (True, ""))
+            self._excluded_hwnd = None
+            self._place()
+            self.update()
+            if not ok:
+                self.magnification_stopped.emit(f"Magnification stopped, but capture exclusion could not be restored: {message}")
+        self.update()
+
+    def _capture_magnification(self) -> bool:
+        if not self._magnification_enabled:
+            return False
+        if int(self.winId()) != self._excluded_hwnd:
+            self.stop_magnification()
+            self.magnification_stopped.emit("The overlay window changed. Magnification stopped; turn it on again.")
+            return False
+        screen = QApplication.primaryScreen()
+        if screen is None:
+            self.stop_magnification()
+            self.magnification_stopped.emit("No primary screen is available for magnification.")
+            return False
+        # Keep both the requested zoom and the crosshair centre exact even
+        # when diameter/zoom is fractional. The integer grab encloses that
+        # logical-pixel source square; painting clips the extra edge pixels.
+        sample_side = self._magnification_diameter / self._magnification_zoom
+        source = QRectF(self._centre.x() - sample_side / 2, self._centre.y() - sample_side / 2,
+                        sample_side, sample_side)
+        x0, y0 = math.floor(source.left()), math.floor(source.top())
+        x1, y1 = math.ceil(source.right()), math.ceil(source.bottom())
+        requested = QRect(x0, y0, x1 - x0, y1 - y0)
+        screen_rect = screen.geometry()
+        clipped = requested.intersected(screen_rect)
+        try:
+            frame = (screen.grabWindow(0, clipped.x() - screen_rect.x(), clipped.y() - screen_rect.y(),
+                                       clipped.width(), clipped.height()) if not clipped.isEmpty() else QPixmap())
+        except Exception as exc:
+            self.stop_magnification()
+            self.magnification_stopped.emit(f"Screen capture failed: {exc}")
+            return False
+        if frame.isNull():
+            self.stop_magnification()
+            self.magnification_stopped.emit("Screen capture failed. Protected or exclusive-fullscreen content may not be available.")
+            return False
+        # Treat pixmap dimensions as physical source pixels when drawing into
+        # the logical-pixel destination; Qt scales for the target display.
+        frame.setDevicePixelRatio(1.0)
+        self._magnified_frame = frame
+        self._source_rect, self._captured_rect = source, clipped
+        self.update()
+        return True
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        self.overlay_visibility_changed.emit(True)
+
+    def hideEvent(self, event) -> None:  # noqa: N802
+        if self._magnification_enabled:
+            self.stop_magnification()
+            self.magnification_stopped.emit("Magnification stopped because the overlay was hidden.")
+        super().hideEvent(event)
+        self.overlay_visibility_changed.emit(False)
+
     # -- internals -------------------------------------------------------------
     def _side(self) -> int:
         base = overlay_side(self._cfg)
-        return max(base, _EDIT_MIN_SIDE) if self._editing else base
+        base = max(base, _EDIT_MIN_SIDE) if self._editing else base
+        side = max(base, self._magnification_diameter + 4) if self._magnification_enabled else base
+        return side + side % 2  # even size keeps the painter and screen centre identical
 
     def _apply_mode(self) -> None:
         click_through = not self._editing
@@ -164,8 +300,11 @@ class CrosshairOverlay(QWidget):
         side = self._side()
         area = _primary_area()
         half = side // 2
-        x = min(max(self._centre.x(), area.left() + half), area.right() - half)
-        y = min(max(self._centre.y(), area.top() + half), area.bottom() - half)
+        # Growing the lens must not shift the crosshair; at display edges the
+        # circular overlay/capture is clipped rather than moving its centre.
+        clamp_half = (max(overlay_side(self._cfg), _EDIT_MIN_SIDE) if self._editing else overlay_side(self._cfg)) // 2 if self._magnification_enabled else half
+        x = min(max(self._centre.x(), area.left() + clamp_half), area.right() - clamp_half)
+        y = min(max(self._centre.y(), area.top() + clamp_half), area.bottom() - clamp_half)
         self._centre = QPoint(x, y)
         self.setGeometry(QRect(x - half, y - half, side, side))
 
@@ -199,6 +338,29 @@ class CrosshairOverlay(QWidget):
     def paintEvent(self, event) -> None:  # noqa: N802 - Qt naming
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        if self._magnification_enabled and not self._magnified_frame.isNull():
+            diameter = float(self._magnification_diameter)
+            half = self.width() / 2
+            key = (self.width(), self._magnification_diameter)
+            if key != self._lens_cache_key:
+                self._lens_cache_key = key
+                self._lens_cache_rect = QRectF(half - diameter / 2, half - diameter / 2, diameter, diameter)
+                self._lens_cache_path = QPainterPath()
+                self._lens_cache_path.addEllipse(self._lens_cache_rect)
+            lens = self._lens_cache_rect
+            source, clipped = self._source_rect, self._captured_rect
+            scale = diameter / max(1, source.width())
+            dest = QRectF(lens.left() + (clipped.left() - source.left()) * scale,
+                          lens.top() + (clipped.top() - source.top()) * scale,
+                          clipped.width() * scale, clipped.height() * scale)
+            painter.save()
+            painter.setClipPath(self._lens_cache_path)
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+            painter.drawPixmap(dest, self._magnified_frame, QRectF(self._magnified_frame.rect()))
+            painter.restore()
+            painter.setPen(QPen(QColor(255, 255, 255, 190), 1))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawEllipse(lens)
         if self._editing:
             # A faint, dashed frame so the movable area is visible on any background.
             painter.fillRect(self.rect(), QColor(0, 0, 0, 60))

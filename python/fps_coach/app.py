@@ -27,6 +27,7 @@ def main() -> int:
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
     )
     app = QApplication(sys.argv)
+    app.setApplicationDisplayName("CurveCoach")
     app.setApplicationName("FPS Coach")
     app.setOrganizationName("FPS Coach")
     app.setFont(QFont("Segoe UI", 10))
@@ -35,6 +36,7 @@ def main() -> int:
     backend = CoreBackend()
     window = MainWindow(backend)
     window.show()
+    window.play_startup_animation()
     return app.exec()
 
 

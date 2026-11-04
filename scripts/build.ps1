@@ -34,7 +34,7 @@ if (-not (Test-Path ".venv")) {
 }
 $Py = Join-Path $Root ".venv\Scripts\python.exe"
 & $Py -m pip install --upgrade pip
-& $Py -m pip install -e ".[dev]"
+& $Py -m pip install -e ".[dev,recorder]"
 & $Py -m pip install "pyinstaller>=6"
 
 # --- 2. Stamp build flavor so the running app knows what it is ---------------

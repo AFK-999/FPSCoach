@@ -162,11 +162,16 @@ def test_focus_note_says_capture_cannot_see_the_screen(page) -> None:
 
 # -- automatic answers never change the curve -------------------------------------
 
-def test_automatic_answer_is_shown_but_not_applied(page, monkeypatch) -> None:
-    applied: list[str] = []
-    monkeypatch.setattr(page, "_apply_ai_adjustment", lambda answer: applied.append(answer))
+def test_automatic_answer_can_preview_but_never_sends_a_curve(page, monkeypatch) -> None:
+    previews: list[str] = []
+    sent: list[tuple] = []
+    monkeypatch.setattr(page, "_apply_ai_adjustment", lambda answer: previews.append(answer))
+    page.curve_adjusted.connect(lambda *args: sent.append(args))
+
     page._proactive_received("Try a multiplier of 0.9.")
-    assert applied == []
+
+    assert previews == ["Try a multiplier of 0.9."]
+    assert sent == []
     assert "Try a multiplier of 0.9." in page.transcript.toPlainText()
 
 

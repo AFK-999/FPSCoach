@@ -20,9 +20,9 @@ _KEEP_ALIVE: list = []  # Qt widgets are torn down in a fixed order when kept un
 
 
 def _calibration_page(qapp):
-    from fps_coach.ui.pages_setup import CalibrationPage
-
     from types import SimpleNamespace
+
+    from fps_coach.ui.pages_setup import CalibrationPage
 
     # The curve history paths never use the backend; only its analyzer is read at construction.
     page = CalibrationPage(SimpleNamespace(analyzer=None))
@@ -51,6 +51,7 @@ def test_undo_then_redo_restores_each_drag(qapp) -> None:
     edited = [0.0, 0.4, 0.55, 0.78, 1.0]
 
     _drag(page, edited)
+    committed = list(page.chart.points)
     assert page.undo_btn.isEnabled()
     assert not page.redo_btn.isEnabled()
 
@@ -60,7 +61,7 @@ def test_undo_then_redo_restores_each_drag(qapp) -> None:
     assert page.redo_btn.isEnabled()
 
     page.redo()
-    assert page.chart.points == edited
+    assert page.chart.points == committed
     assert page.undo_btn.isEnabled()
     assert not page.redo_btn.isEnabled()
 
@@ -69,10 +70,11 @@ def test_undo_button_click_runs_undo(qapp) -> None:
     page = _calibration_page(qapp)
     start = list(page.chart.points)
     _drag(page, [0.0, 0.1, 0.2, 0.3, 0.4])
+    committed = list(page.chart.points)
     page.undo_btn.click()
     assert page.chart.points == start
     page.redo_btn.click()
-    assert page.chart.points == [0.0, 0.1, 0.2, 0.3, 0.4]
+    assert page.chart.points == committed
 
 
 def test_new_change_after_undo_clears_redo(qapp) -> None:

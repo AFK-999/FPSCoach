@@ -56,3 +56,47 @@ def key_indices(xs: list[float], ys: list[float], tolerance: float = KEY_TOLERAN
             stack.append((a, worst_index))
             stack.append((worst_index, b))
     return [i for i, kept in enumerate(keep) if kept]
+
+
+def balanced_indices(xs: list[float], ys: list[float], tolerance: float = KEY_TOLERANCE) -> list[int]:
+    """Choose the fewest anchors that represent the sampled model within tolerance.
+
+    The candidates and the points being approximated are the same ordered, finite
+    input samples. Dynamic programming finds a shortest path through the candidates;
+    among equally short paths it minimizes the worst sampled point-to-segment
+    distance. It does not promise an error bound between samples or a global
+    minimum over arbitrary real-valued positions. Imported curves are not changed.
+    """
+    if len(xs) != len(ys):
+        raise ValueError("xs and ys must have the same length")
+    if tolerance < 0 or not math.isfinite(tolerance):
+        raise ValueError("tolerance must be finite and nonnegative")
+    n = len(xs)
+    if n <= 2:
+        return list(range(n))
+    counts = [n + 1] * n
+    worst_errors = [math.inf] * n
+    previous = [-1] * n
+    counts[0] = 1
+    worst_errors[0] = 0.0
+    tie_epsilon = 1e-12
+    for end in range(1, n):
+        for start in range(end):
+            count = counts[start] + 1
+            if count > counts[end]:
+                continue
+            if count == counts[end] and worst_errors[start] >= worst_errors[end] - tie_epsilon:
+                continue
+            worst = worst_errors[start]
+            for i in range(start + 1, end):
+                worst = max(worst, _distance_to_segment(xs[i], ys[i], xs[start], ys[start], xs[end], ys[end]))
+                if worst > tolerance or (count == counts[end] and worst >= worst_errors[end] - tie_epsilon):
+                    break
+            else:
+                if worst <= tolerance and (count < counts[end] or worst < worst_errors[end] - tie_epsilon):
+                    counts[end], worst_errors[end], previous[end] = count, worst, start
+    indices = [n - 1]
+    while indices[-1] != 0:
+        indices.append(previous[indices[-1]])
+    indices.reverse()
+    return indices

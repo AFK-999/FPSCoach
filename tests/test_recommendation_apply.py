@@ -38,13 +38,15 @@ def window(qapp, monkeypatch):
 
 
 def test_generate_button_opens_calibration_and_draws_the_curve(window, qapp) -> None:
-    from fps_coach.ui.widgets import _curve_samples
+    from fps_coach.curve_io import recommendation_profile
 
     window._select_page("recommendation")
     window.recommendation_page.generate_btn.click()
     qapp.processEvents()
     assert window.stack.currentWidget() is window.calibration_page
-    assert window.calibration_page.chart.points == _curve_samples(RECOMMENDATION["points"])
+    chart = window.calibration_page.chart
+    expected = recommendation_profile(RECOMMENDATION)
+    assert [v * chart.axis_y_max for v in chart.points] == pytest.approx([p.multiplier for p in expected.horizontal])
 
 
 def test_applied_curve_keeps_the_old_curve_for_comparison(window, qapp) -> None:
@@ -53,7 +55,8 @@ def test_applied_curve_keeps_the_old_curve_for_comparison(window, qapp) -> None:
     window._select_page("recommendation")
     window.recommendation_page.generate_btn.click()
     qapp.processEvents()
-    assert list(window.calibration_page.chart.previous_points) == old
+    chart = window.calibration_page.chart
+    assert [y * chart.axis_y_max for y in chart.previous_points] == pytest.approx(old)
     assert window.calibration_page.hint.text()  # the page says what was applied
 
 

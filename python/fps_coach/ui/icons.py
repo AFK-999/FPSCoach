@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import QColor, QIcon, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
 
 _GRID = 24.0
 _STROKE = 1.7
@@ -294,11 +294,62 @@ def _draw_edit(p: QPainter, c: QColor) -> None:
     _line(p, (13.0, 7.0), (17.0, 11.0))
 
 
+def _draw_eye(p: QPainter, c: QColor) -> None:
+    """Watch: an eye outline with a pupil. Used by Live vision."""
+    _outline(p, c, 1.7)
+    p.drawPath(
+        _poly([(4.0, 12.0), (8.0, 8.0), (16.0, 8.0), (20.0, 12.0), (16.0, 16.0), (8.0, 16.0), (4.0, 12.0)])
+    )
+    p.drawEllipse(QPointF(12.0, 12.0), 2.4, 2.4)
+
+
 def _draw_brand(p: QPainter, c: QColor) -> None:
-    """The Vantage mark: a sighting ring with a V-shaped aim point."""
-    _outline(p, c, 2.0)
-    p.drawEllipse(QPointF(12.0, 12.0), 9.0, 9.0)
-    p.drawPath(_poly([(7.5, 8.5), (12.0, 15.5), (16.5, 8.5)]))
+    """Polished CurveCoach robot in front of a rising curve chart."""
+    bg = QLinearGradient(0, 0, 0, 24)
+    bg.setColorAt(0, QColor("#28322f"))
+    bg.setColorAt(1, QColor("#11191a"))
+    p.setPen(_pen(QColor("#77846e"), 0.45))
+    p.setBrush(bg)
+    p.drawRoundedRect(QRectF(0.6, 0.6, 22.8, 22.8), 6.1, 6.1)
+    grid = QColor("#9aaa86")
+    grid.setAlpha(107)
+    _outline(p, grid, 0.3)
+    for x in (8.1, 12.0, 15.9):
+        _line(p, (x, 4), (x, 19.8))
+    for y in (7.9, 11.8, 15.7):
+        _line(p, (4.2, y), (19.8, y))
+    _line(p, (4.2, 4), (4.2, 19.8))
+    _line(p, (4.2, 19.8), (19.8, 19.8))
+    curve = QPainterPath(QPointF(3.9, 18.5))
+    curve.cubicTo(QPointF(6.7, 18.1), QPointF(8.4, 15.1), QPointF(10.1, 12.9))
+    curve.cubicTo(QPointF(11.8, 10.7), QPointF(15.5, 9.3), QPointF(20.1, 5))
+    glow = QColor("#d7f249")
+    glow.setAlpha(46)
+    _outline(p, glow, 2.1)
+    p.drawPath(curve)
+    _outline(p, QColor("#d7f249"), 1.05)
+    p.drawPath(curve)
+    _fill(p, QColor("#d7f249"))
+    for x, y in ((3.9, 18.5), (20.1, 5)):
+        p.drawEllipse(QPointF(x, y), 0.8, 0.8)
+    ivory = QColor("#e6e5cf")
+    _outline(p, ivory, 0.8)
+    _line(p, (12, 6.4), (12, 8.5))
+    _line(p, (6.6, 12.5), (5.5, 12.5))
+    _line(p, (18.5, 12.5), (17.4, 12.5))
+    face = QLinearGradient(0, 8.5, 0, 16.8)
+    face.setColorAt(0, QColor("#34403a"))
+    face.setColorAt(1, QColor("#151e1d"))
+    p.setBrush(face)
+    p.drawRoundedRect(QRectF(6.6, 8.5, 10.8, 8.3), 2.8, 2.8)
+    _fill(p, QColor("#d7f249"))
+    for x in (9.8, 14.2):
+        p.drawEllipse(QPointF(x, 12), 0.78, 0.78)
+    p.drawEllipse(QPointF(12, 5.9), 0.7, 0.7)
+    _outline(p, QColor("#c3d2ad"), 0.65)
+    smile = QPainterPath(QPointF(10.3, 14.7))
+    smile.quadTo(QPointF(12, 15.7), QPointF(13.7, 14.7))
+    p.drawPath(smile)
 
 
 _DRAWERS: dict[str, Callable[[QPainter, QColor], None]] = {
@@ -312,6 +363,7 @@ _DRAWERS: dict[str, Callable[[QPainter, QColor], None]] = {
     "chat": _draw_chat,
     "privacy": _draw_privacy,
     "settings": _draw_settings,
+    "eye": _draw_eye,
     "chevron_left": _draw_chevron_left,
     "chevron_right": _draw_chevron_right,
     "chevron_up": _draw_chevron_up,

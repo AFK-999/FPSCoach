@@ -26,6 +26,28 @@ void add_overshoot_trial(MovementAnalyzer& analyzer, const double time_offset) {
     assert(analyzer.end_trial(100.0, 0.0, time_offset + 0.06));
 }
 
+void add_underreach_trial(MovementAnalyzer& analyzer, const double time_offset) {
+    analyzer.begin_trial(0.0, 0.0, 100.0, 0.0, time_offset);
+    analyzer.add_sample(10.0, 0.0, time_offset + 0.01);
+    analyzer.add_sample(25.0, 3.0, time_offset + 0.02);
+    analyzer.add_sample(55.0, -2.0, time_offset + 0.03);
+    analyzer.add_sample(70.0, 0.0, time_offset + 0.04);
+    assert(analyzer.end_trial(75.0, 0.0, time_offset + 0.05));
+}
+
+void add_variable_speed_trial(MovementAnalyzer& analyzer,
+                              const int segments,
+                              const double time_offset) {
+    analyzer.begin_trial(0.0, 0.0, 100.0, 0.0, time_offset);
+    for (int i = 1; i <= segments; ++i) {
+        const double fraction = static_cast<double>(i) / static_cast<double>(segments + 1);
+        analyzer.add_sample(100.0 * fraction * fraction, 0.0,
+                            time_offset + static_cast<double>(i) * 0.01);
+    }
+    assert(analyzer.end_trial(100.0, 0.0,
+                              time_offset + static_cast<double>(segments + 1) * 0.01));
+}
+
 } // namespace
 
 int main() {
@@ -53,6 +75,129 @@ int main() {
         assert(overshoot_curve.points[i].first > overshoot_curve.points[i - 1].first);
         assert(overshoot_curve.points[i].second >= overshoot_curve.points[i - 1].second);
     }
+
+    MovementAnalyzer sparse;
+    MovementAnalyzer dense;
+    add_variable_speed_trial(sparse, 2, 1.0);
+    add_variable_speed_trial(dense, 24, 1.0);
+    const auto sparse_curve = sparse.recommend();
+    const auto dense_curve = dense.recommend();
+    assert(sparse_curve.captured_sample_count == 3);
+    assert(dense_curve.captured_sample_count == 25);
+    // More samples do not create redundant points on a straight model.
+    assert(sparse_curve.points.size() == 2 && dense_curve.points.size() == 2);
+    assert(overshoot_curve.points.size() > straight_curve.points.size());
+    assert(overshoot_curve.points.size() <= 32);
+    assert(sparse.recommend().points.front().first == 0.0);
+    assert(dense_curve.points.back().second == 1.0);
+    for (std::size_t i = 1; i < dense_curve.points.size(); ++i) {
+        assert(dense_curve.points[i].first > dense_curve.points[i - 1].first);
+        assert(dense_curve.points[i].second >= dense_curve.points[i - 1].second);
+    }
+
+    // Once eight newer trials have arrived, the old trials must no longer
+    // influence either the moving-average scores or speed-quantile positions.
+    MovementAnalyzer rolling;
+    MovementAnalyzer latest_only;
+    for (int i = 0; i < 8; ++i) {
+        add_overshoot_trial(rolling, static_cast<double>(i) * 2.0);
+    }
+    const auto before = rolling.recommend();
+    MovementAnalyzer first_new;
+    add_underreach_trial(first_new, 30.0);
+    const auto first_new_metrics = first_new.summary();
+    const auto before_metrics = rolling.summary();
+    add_underreach_trial(rolling, 30.0);
+    const auto mixed = rolling.summary();
+    assert(mixed.trial_count == 9 && mixed.window_trial_count == 8);
+    assert(std::abs(mixed.overshoot_score - (7.0 * before_metrics.overshoot_score + first_new_metrics.overshoot_score) / 8.0) < 1e-12);
+    assert(std::abs(mixed.underreach_score - (7.0 * before_metrics.underreach_score + first_new_metrics.underreach_score) / 8.0) < 1e-12);
+    assert(std::abs(mixed.correction_score - (7.0 * before_metrics.correction_score + first_new_metrics.correction_score) / 8.0) < 1e-12);
+    assert(std::abs(mixed.tremor_score - (7.0 * before_metrics.tremor_score + first_new_metrics.tremor_score) / 8.0) < 1e-12);
+    add_underreach_trial(latest_only, 30.0);
+    for (int i = 1; i < 8; ++i) {
+        add_underreach_trial(rolling, 30.0 + static_cast<double>(i) * 2.0);
+        add_underreach_trial(latest_only, 30.0 + static_cast<double>(i) * 2.0);
+    }
+    const auto rolling_summary = rolling.summary();
+    const auto latest_summary = latest_only.summary();
+    const auto rolling_curve = rolling.recommend();
+    const auto latest_curve = latest_only.recommend();
+    assert(rolling_summary.trial_count == 16);
+    assert(rolling_summary.window_trial_count == 8);
+    assert(rolling_summary.window_capacity == 8);
+    assert(std::abs(rolling_summary.overshoot_score - latest_summary.overshoot_score) < 1e-12);
+    assert(std::abs(rolling_summary.underreach_score - latest_summary.underreach_score) < 1e-12);
+    assert(std::abs(rolling_summary.correction_score - latest_summary.correction_score) < 1e-12);
+    assert(std::abs(rolling_summary.tremor_score - latest_summary.tremor_score) < 1e-12);
+    assert(rolling_curve.sensitivity_multiplier > before.sensitivity_multiplier);
+    assert(std::abs(rolling_curve.sensitivity_multiplier - latest_curve.sensitivity_multiplier) < 1e-12);
+    assert(rolling_curve.captured_sample_count == latest_curve.captured_sample_count);
+    assert(rolling_curve.points.size() == latest_curve.points.size());
+    for (std::size_t i = 0; i < rolling_curve.points.size(); ++i) {
+        assert(std::abs(rolling_curve.points[i].first - latest_curve.points[i].first) < 1e-12);
+        assert(std::abs(rolling_curve.points[i].second - latest_curve.points[i].second) < 1e-12);
+    }
+    // Moving-target metrics use the actual hit-time center, not the spawn center.
+    MovementAnalyzer moving;
+    moving.begin_trial(0, 0, 100, 0, 10);
+    moving.add_sample(70, 0, 10.01);
+    moving.add_sample(130, 0, 10.02);
+    moving.set_target(130, 0);
+    assert(moving.end_trial(130, 0, 10.03));
+    assert(std::abs(moving.summary().mean_endpoint_error_px) < 1e-9);
+
+    // Coalesced single-packet motion remains a real (but sparse) trial.
+    fpscoach::MovementAnalyzer sparse_packet;
+    sparse_packet.begin_trial(0, 0, 100, 0, 10);
+    sparse_packet.add_sample(100, 0, 10.01);
+    assert(sparse_packet.end_trial(100, 0, 10.02));
+    assert(sparse_packet.summary().trial_count == 1);
+    assert(sparse_packet.recommend().captured_sample_count == 1);
+    assert(sparse_packet.recommend().confidence <= 0.0625);
+
+    rolling.begin_trial(0, 0, 100, 0, 60);
+    assert(!rolling.end_trial(0, 0, 61));
+    assert(rolling.summary().trial_count == 16);
+    assert(rolling.summary().window_trial_count == 8);
+    rolling.reset();
+    assert(rolling.summary().trial_count == 0);
+    assert(rolling.summary().window_trial_count == 0);
+    assert(rolling.recommend().points.empty());
+
+    // Repeated normal speeds and an extreme speed outlier should still produce
+    // distributed, strictly increasing MODEL anchors without inventing a bend.
+    MovementAnalyzer distribution;
+    distribution.begin_trial(0.0, 0.0, 100.0, 0.0, 0.0);
+    double timestamp = 0.0;
+    for (int i = 1; i < 50; ++i) {
+        timestamp += (i == 25) ? 0.000001 : 0.01;
+        distribution.add_sample(static_cast<double>(i * 2), 0.0, timestamp);
+    }
+    assert(distribution.end_trial(100.0, 0.0, timestamp + 0.01));
+    const auto distributed = distribution.recommend();
+    assert(distributed.points.size() == 2);
+    assert(std::abs(distributed.speed_reference_px_s - 200.0) < 1e-6);
+    assert(distributed.clipped_speed_count >= 1);
+    for (std::size_t i = 0; i < distributed.points.size(); ++i) {
+        const auto [x, y] = distributed.points[i];
+        assert(std::abs(x - y) < 1e-12);
+        if (i > 0) {
+            assert(x > distributed.points[i - 1].first);
+        }
+    }
+    assert(distribution.summary().curve_distribution_version == fpscoach::kCurveDistributionVersion);
+
+    // A 1 kHz, 12-second trial must retain samples past the old 8192-point cap.
+    MovementAnalyzer high_polling;
+    high_polling.begin_trial(0.0, 0.0, 100.0, 0.0, 1.0);
+    for (int i = 1; i <= 12'000; ++i) {
+        const double x = 100.0 * static_cast<double>(i) / 12'000.0;
+        const double y = (i % 2 == 0) ? 5.0 : -5.0;
+        high_polling.add_sample(x, y, 1.0 + static_cast<double>(i) / 1000.0);
+    }
+    assert(high_polling.end_trial(100.0, 0.0, 13.1));
+    assert(high_polling.summary().mean_speed_px_s > 9'000.0);
 
     std::cout << "movement analyzer tests passed\n";
     return 0;

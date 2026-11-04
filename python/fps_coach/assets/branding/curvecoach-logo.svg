@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" role="img" aria-labelledby="title desc">
+  <title id="title">CurveCoach</title>
+  <desc id="desc">A polished robot face layered over a rising custom curve chart.</desc>
+  <defs>
+    <linearGradient id="surface" x1="0" y1="0" x2="0" y2="1">
+      <stop stop-color="#28322f"/><stop offset="1" stop-color="#11191a"/>
+    </linearGradient>
+    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
+      <stop stop-color="#34403a"/><stop offset="1" stop-color="#151e1d"/>
+    </linearGradient>
+  </defs>
+  <rect x=".6" y=".6" width="22.8" height="22.8" rx="6.1" fill="url(#surface)" stroke="#77846e" stroke-width=".45"/>
+  <g fill="none" stroke="#9aaa86" stroke-width=".3" opacity=".42">
+    <path d="M4.2 4v15.8h15.6M8.1 4v15.8M12 4v15.8M15.9 4v15.8M4.2 7.9h15.6M4.2 11.8h15.6M4.2 15.7h15.6"/>
+  </g>
+  <path d="M3.9 18.5C6.7 18.1 8.4 15.1 10.1 12.9S15.5 9.3 20.1 5" fill="none" stroke="#d7f249" opacity=".18" stroke-width="2.1" stroke-linecap="round"/>
+  <path d="M3.9 18.5C6.7 18.1 8.4 15.1 10.1 12.9S15.5 9.3 20.1 5" fill="none" stroke="#d7f249" stroke-width="1.05" stroke-linecap="round"/>
+  <g fill="#d7f249"><circle cx="3.9" cy="18.5" r=".8"/><circle cx="20.1" cy="5" r=".8"/></g>
+  <g fill="none" stroke="#e6e5cf" stroke-width=".8" stroke-linecap="round">
+    <path d="M12 6.4v2.1M6.6 12.5h-1.1M18.5 12.5h-1.1"/>
+  </g>
+  <circle cx="12" cy="5.9" r=".7" fill="#d7f249"/>
+  <rect x="6.6" y="8.5" width="10.8" height="8.3" rx="2.8" fill="url(#face)" stroke="#e6e5cf" stroke-width=".8"/>
+  <g fill="#d7f249"><circle cx="9.8" cy="12" r=".78"/><circle cx="14.2" cy="12" r=".78"/></g>
+  <path d="M10.3 14.7Q12 15.7 13.7 14.7" fill="none" stroke="#c3d2ad" stroke-width=".65" stroke-linecap="round"/>
+</svg>
